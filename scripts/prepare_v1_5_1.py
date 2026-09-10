@@ -37,6 +37,13 @@ XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 DERIVED = (['INDEX.md'] + [f'CBA_注册_{y}-{y+1}.md' for y in range(2017, 2027)]
            + ['MASTER.csv', 'MASTER.jsonl', 'provenance.json', 'validation.json'])
 PRODUCTS = ('CBA_外籍球员注册_SNAPSHOTS.xlsx', 'CBA_球员注册_EVENTS.xlsx')
+EXTRAS = {'v1.5.1-2': [
+    {'logical_key': 'report/v1.5.1-release-report.md', 'name': 'v1.5.1-release-report.md',
+     'parent': ARCHIVE, 'mime': 'text/markdown'},
+    {'logical_key': 'ai/v1.5.1-gemini-acceptance-prompt.md',
+     'name': 'v1.5.1-gemini-acceptance-prompt.md', 'parent': AI, 'mime': 'text/markdown'}]}
+REGISTRY_STATUS = 'workspace/staging/registry-status.json'
+REPORT_DIR = 'workspace/reports'
 
 
 def git(*command):
@@ -44,7 +51,11 @@ def git(*command):
 
 
 def base_definitions(root, policy):
-    allocation = read(root/'workspace/production/v1.5.0/allocation.json')
+    candidates = sorted((root/'workspace/production').glob('*/allocation.json'),
+                        key=lambda path: len(read(path)['definitions']))
+    if not candidates:
+        raise RuntimeError('No previous allocation to derive target names from')
+    allocation = read(candidates[-1])
     by_id = {item['id']: item for item in allocation['definitions']}
     definitions = []
     for file_id, item in policy['targets'].items():
@@ -81,6 +92,12 @@ def reserve(root, release):
         definitions.append({'logical_key': 'facts/' + name, 'name': name, 'id': file_id,
                             'mime': XLSX, 'mode': 'binary', 'allowed_parents': [DATA, staging],
                             'staging_parent': staging, 'publish_parent': DATA})
+    for extra in EXTRAS.get(release, []):
+        file_id = drive.ensure(staging, extra['logical_key'], extra['name'], extra['mime'], b'')
+        definitions.append({'logical_key': extra['logical_key'], 'name': extra['name'], 'id': file_id,
+                            'mime': extra['mime'], 'mode': 'binary',
+                            'allowed_parents': [extra['parent'], staging], 'staging_parent': staging,
+                            'publish_parent': extra['parent']})
     expected, dependencies = {}, []
     for name, item in read(root/'config/runtime.json')['inputs'].items():
         if name not in ('MASTER.xlsx', 'source_registry.csv'):
@@ -120,6 +137,33 @@ def merged_registry(root, raw):
     return stream.getvalue().encode('utf-8-sig'), added
 
 
+def apply_status(registry, status_path):
+    """Advance registered sources along DISCOVERED -> EXTRACTED without inventing extraction."""
+    status_path = Path(status_path)
+    if not status_path.exists():
+        return registry, []
+    updates = json.loads(status_path.read_text())
+    rows = list(csv.DictReader(io.StringIO(registry.decode('utf-8-sig'))))
+    columns = list(rows[0])
+    applied = []
+    for row in rows:
+        change = updates.get(row['source_id'])
+        if not change:
+            continue
+        if change.get('business_status') == 'EXTRACTED' and not row.get('records_generated'):
+            raise RuntimeError(f'{row["source_id"]} has no extracted records to advance')
+        for key, value in change.items():
+            if not key.startswith('_'):
+                row[key] = value
+        applied.append({'source_id': row['source_id'], 'business_status': row['business_status'],
+                        'extraction_status': row['extraction_status']})
+    stream = io.StringIO(newline='')
+    writer = csv.DictWriter(stream, fieldnames=columns, lineterminator='\n')
+    writer.writeheader()
+    writer.writerows(rows)
+    return stream.getvalue().encode('utf-8-sig'), applied
+
+
 def freeze(root, release, staging_runs):
     if git('status', '--porcelain'):
         raise RuntimeError('Clean committed tree required')
@@ -149,6 +193,7 @@ def freeze(root, release, staging_runs):
             dependencies.append({'id': copy_id, 'sha256': digest(frozen_content),
                                  'meta': fingerprint(frozen_meta)})
     registry, added = merged_registry(root, raw['source_registry.csv'])
+    registry, applied = apply_status(registry, root/REGISTRY_STATUS)
     baseline_rows, baseline = inspect(inputs/'MASTER.xlsx')
     candidate = area/'candidate'
     result = build_products(collect([Path(root)/run for run in staging_runs]), baseline_rows, baseline,
@@ -163,7 +208,7 @@ def freeze(root, release, staging_runs):
            'Gemini 请直接提供所需文件链接；入口递归读取与自动刷新不保证。'
            'auto_validated 不是人工核验，空值不是零，记录数不是独立球员数，快照数不是注册人数。\n')
     links = '\n'.join(f'- {key}: {value}' for key, value in urls.items()
-                      if key.startswith(('derived/', 'input/', 'facts/')))
+                      if key.startswith(('derived/', 'input/', 'facts/', 'report/', 'ai/')))
     index = (candidate/'INDEX.md').read_text() + '\n\n' + nav + '\n' + links + '\n代码镜像：' + urls['entry/code'] + '\n'
     code = ['# 当前代码镜像', f'GitHub: https://github.com/SkyCjq/cba-kb-engine/tree/{commit}',
             f'commit: {commit}',
@@ -195,6 +240,8 @@ def freeze(root, release, staging_runs):
             data = raw['manifest.csv']
         elif key.startswith('facts/'):
             data = (candidate/item['name']).read_bytes()
+        elif key.startswith(('report/', 'ai/')):
+            data = (root/REPORT_DIR/item['name']).read_bytes()
         elif key == 'control/drive_map.yaml':
             data = yaml.safe_dump(mapping, allow_unicode=True, sort_keys=False).encode()
         elif key == 'entry/code':
@@ -244,8 +291,9 @@ def freeze(root, release, staging_runs):
     save(area/'release-links.json', {'release_id': release, 'commit': commit,
                                      'status': status_url, 'urls': urls})
     print(json.dumps({'release': release, 'commit': commit, 'targets': len(entries),
-                      'registry_rows_added': added, 'products': result['products'],
-                      'merge': result['merge']}, ensure_ascii=False, indent=2))
+                      'registry_rows_added': added, 'registry_status_applied': applied,
+                      'products': result['products'], 'merge': result['merge']},
+                     ensure_ascii=False, indent=2))
 
 
 def main():

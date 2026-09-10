@@ -1,6 +1,6 @@
 # CBA-KB Engine v1.5.1 (dev)
 
-本地执行，GitHub 管理代码，Drive 保存已发布知识库。生产事实当前为 **v1.5.1-1**（release_status COMPLETE，100 个产出物独立回读通过）；v1.5.1 尚未封板，两季外籍球员 PNG 来源仍待 OCR 验收。
+本地执行，GitHub 管理代码，Drive 保存已发布知识库。生产事实当前为 **v1.5.1-1**（release_status COMPLETE，100 个产出物独立回读通过）；Codex 侧正式 ID 验收 13/13 通过，v1.5.1 尚未封板，等第二 AI 回传结果后创建 tag。两季外籍球员 PNG 来源按用户决定不在 v1.5.1 实施 OCR，保持 `DISCOVERED`。
 
 v1.5.0 已封板并发布（Git tag `v1.5.0`，提交 c4bebec，release_status COMPLETE，76 个产出物回读通过）。当前分支在 v1.5.0 基础上开发 v1.5.1 注册事实扩展：国内注册关系之外，新增外籍球员注册快照与注册事件两种 grain，来源解析只在本地 staging 进行，未写入生产 `20_data`。状态与证据见 docs/CBA-KB_v1.5.1.md，方案见 Drive CBA-KB v1.5.1。
 
