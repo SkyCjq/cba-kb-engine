@@ -131,6 +131,8 @@ def freeze(root, release, staging_runs):
     inputs = area/'inputs'
     inputs.mkdir(exist_ok=True)
     raw, dependencies = {}, []
+    copies = {item.get('appProperties', {}).get('cba_key'): item['id']
+              for item in drive.list(allocation['staging_id'])}
     for name, item in read(root/'config/runtime.json')['inputs'].items():
         content, meta = snapshot(drive, item['id'])
         atomic(inputs/name, content)
@@ -138,7 +140,14 @@ def freeze(root, release, staging_runs):
         if name in allocation['expected']:
             if digest(content) != allocation['expected'][name]:
                 raise RuntimeError(f'{name} changed since reserve; re-check the baseline')
-            dependencies.append({'id': item['id'], 'sha256': digest(content), 'meta': fingerprint(meta)})
+            copy_id = copies.get('input/' + name)
+            if not copy_id or copy_id not in allocation['dependency_ids']:
+                raise RuntimeError(f'Frozen input copy missing for {name}')
+            frozen_content, frozen_meta = snapshot(drive, copy_id)
+            if digest(frozen_content) != allocation['expected'][name]:
+                raise RuntimeError(f'Frozen input copy changed for {name}')
+            dependencies.append({'id': copy_id, 'sha256': digest(frozen_content),
+                                 'meta': fingerprint(frozen_meta)})
     registry, added = merged_registry(root, raw['source_registry.csv'])
     baseline_rows, baseline = inspect(inputs/'MASTER.xlsx')
     candidate = area/'candidate'
