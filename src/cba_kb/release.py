@@ -1,21 +1,32 @@
-"""Frozen binary release plans, optimistic checks, journaling and rollback.
+"""Frozen release plans, optimistic checks, journaling and rollback.
 
 Cross-client exclusion still requires a human-maintained single-writer window.
-No native document is accepted by this binary publisher.
+Native Docs require explicit managed_doc mode; Sheets byte writes are rejected.
 """
 from pathlib import Path
 from .common import atomic, child, digest, lock, read, save
 
 FOLDER = 'application/vnd.google-apps.folder'
+DOC = 'application/vnd.google-apps.document'
+
+
+def payload(drive,entry):
+    if entry.get('mode')=='managed_doc':return drive.get_managed_doc(entry['id'])
+    return drive.get(entry['id'])
+
+
+def write_payload(drive,entry,data):
+    if entry.get('mode')=='managed_doc':return drive.put_managed_doc(entry['id'],data)
+    return drive.put(entry['id'],data,entry['mime'])
 
 
 def fingerprint(meta):
     return {k:meta.get(k) for k in ('id','version','modifiedTime','mimeType','parents')}
 
 
-def snapshot(drive, file_id):
+def snapshot(drive, file_id, mode='binary'):
     before=drive.meta(file_id)
-    data=drive.get(file_id)
+    data=payload(drive,{'id':file_id,'mode':mode})
     after=drive.meta(file_id)
     if fingerprint(before)!=fingerprint(after):
         raise RuntimeError('Remote changed during download')
@@ -45,11 +56,19 @@ def prepare(drive, root, release_id, entries, archive_id, status_id):
             name=entry['name']
             if Path(name).name!=name: raise ValueError('Unsafe artifact name')
             new=Path(entry['path']).read_bytes()
-            old,meta=snapshot(drive,entry['id'])
-            if meta['mimeType']!=entry['mime'] or meta['mimeType'].startswith('application/vnd.google-apps.'):
+            mode=entry.get('mode','binary')
+            meta=drive.meta(entry['id'])
+            if mode not in ('binary','managed_doc'):raise ValueError('Unknown publication mode')
+            allowed_native=mode=='managed_doc' and meta['mimeType']==DOC
+            if meta['mimeType']!=entry['mime'] or (meta['mimeType'].startswith('application/vnd.google-apps.') and not allowed_native):
                 raise ValueError('MIME mismatch or native object')
+            if mode=='managed_doc':
+                from .native import BEGIN, END
+                text=new.decode()
+                if not text.startswith(BEGIN) or not text.endswith(END):raise ValueError('Managed Doc prefix required')
+            old,meta=snapshot(drive,entry['id'],mode)
             atomic(root/f'before/{i}',old); atomic(root/f'candidate/{i}',new)
-            plan['entries'].append({'id':entry['id'],'name':name,'mime':entry['mime'],
+            plan['entries'].append({'id':entry['id'],'name':name,'mime':entry['mime'],'mode':mode,
                 'before':f'before/{i}','candidate':f'candidate/{i}',
                 'before_hash':digest(old),'after_hash':digest(new),'meta':fingerprint(meta)})
         save(root/'plan.json',plan)
@@ -95,7 +114,7 @@ def publish(drive, root, single_writer=False):
             verify(drive,root); return journal
         # Preflight every object before any production mutation.
         for e in plan['entries']:
-            data,meta=snapshot(drive,e['id']); sha=digest(data)
+            data,meta=snapshot(drive,e['id'],e.get('mode','binary')); sha=digest(data)
             if e['id'] in journal['uploaded'] or journal['inflight']==e['id']:
                 if sha==e['after_hash']: continue
                 if sha!=e['before_hash']: raise RuntimeError('Conflict while resuming')
@@ -112,24 +131,29 @@ def publish(drive, root, single_writer=False):
         folder=drive.ensure(plan['archive_id'],plan['release_id'],plan['release_id'],FOLDER)
         previous=[]
         for i,e in enumerate(plan['entries']):
+            native=e.get('mode')=='managed_doc'
+            native_backup=None
+            if native:
+                native_backup=drive.ensure_copy(folder,f'native-before-{i}',e['id'],f'before_{e["name"]}')
             for kind in ('before','candidate'):
                 data=verified_local(root,e,kind)
-                fid=drive.ensure(folder,f'{kind}-{i}',f'{kind}_{e["name"]}',e['mime'],data)
-                if kind=='before': previous.append({'original_id':e['id'],'snapshot_id':fid,'name':e['name'],'sha256':e['before_hash']})
+                fid=drive.ensure(folder,f'{kind}-{i}',f'{kind}_{e["name"]}'+('.txt' if native else ''),'text/plain' if native else e['mime'],data)
+                if kind=='before': previous.append({'original_id':e['id'],'snapshot_id':native_backup or fid,'name':e['name'],
+                    'sha256':e['before_hash'],'hash_scope':'managed_prefix' if native else 'bytes'})
         drive.ensure(folder,'plan','plan.json','application/json',(root/'plan.json').read_bytes())
         journal['previous_snapshot']=previous
         journal['state']='PUBLISHING'; save(root/'journal.json',journal)
         try:
             set_status(drive,plan,'PUBLISHING',previous)
             for e in plan['entries']:
-                data=drive.get(e['id'])
+                data=payload(drive,e)
                 if digest(data)==e['after_hash']:
                     journal['uploaded'][e['id']]=True
                     save(root/'journal.json',journal); continue
                 if digest(data)!=e['before_hash']: raise RuntimeError('Remote changed during publication')
                 journal['inflight']=e['id']; save(root/'journal.json',journal)
-                drive.put(e['id'],verified_local(root,e,'candidate'),e['mime'])
-                if digest(drive.get(e['id']))!=e['after_hash']: raise RuntimeError('Readback mismatch')
+                write_payload(drive,e,verified_local(root,e,'candidate'))
+                if digest(payload(drive,e))!=e['after_hash']: raise RuntimeError('Readback mismatch')
                 journal['uploaded'][e['id']]=True; journal['inflight']=None
                 save(root/'journal.json',journal)
             verify(drive,root)
@@ -146,7 +170,7 @@ def publish(drive, root, single_writer=False):
 def verify(drive, root):
     plan=read(Path(root)/'plan.json')
     for e in plan['entries']:
-        if drive.meta(e['id'])['mimeType']!=e['mime'] or digest(drive.get(e['id']))!=e['after_hash']:
+        if drive.meta(e['id'])['mimeType']!=e['mime'] or digest(payload(drive,e))!=e['after_hash']:
             raise RuntimeError('Remote verification failed: '+e['name'])
     return {'verified':len(plan['entries'])}
 
@@ -164,12 +188,12 @@ def restore(drive, root, single_writer=False):
             raise RuntimeError('Cannot roll back another release')
         for e in plan['entries']:
             verified_local(root,e,'before')
-            if digest(drive.get(e['id'])) not in (e['before_hash'],e['after_hash']):
+            if digest(payload(drive,e)) not in (e['before_hash'],e['after_hash']):
                 raise RuntimeError('Rollback would overwrite an external edit')
         for e in reversed(plan['entries']):
             old=verified_local(root,e,'before')
-            if digest(drive.get(e['id']))!=e['before_hash']: drive.put(e['id'],old,e['mime'])
-            if digest(drive.get(e['id']))!=e['before_hash']: raise RuntimeError('Rollback readback failed')
+            if digest(payload(drive,e))!=e['before_hash']: write_payload(drive,e,old)
+            if digest(payload(drive,e))!=e['before_hash']: raise RuntimeError('Rollback readback failed')
         previous_status=read(root/'status.before.json')
         previous_status['state']='ROLLED_BACK'
         previous_status['rolled_back_release_id']=plan['release_id']

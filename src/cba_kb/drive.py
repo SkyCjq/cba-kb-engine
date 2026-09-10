@@ -35,7 +35,27 @@ def credentials(root, interactive=False):
 class Drive:
     def __init__(self, root):
         from googleapiclient.discovery import build
-        self.api = build('drive','v3',credentials=credentials(root),cache_discovery=False)
+        creds=credentials(root)
+        self.api = build('drive','v3',credentials=creds,cache_discovery=False)
+        from .native import NativeDocs
+        self.docs=NativeDocs(build('docs','v1',credentials=creds,cache_discovery=False))
+
+    def get_managed_doc(self,file_id):
+        if self.meta(file_id)['mimeType']!='application/vnd.google-apps.document':
+            raise ValueError('Not a native Doc')
+        return self.docs.get(file_id)
+
+    def put_managed_doc(self,file_id,content):
+        if self.meta(file_id)['mimeType']!='application/vnd.google-apps.document':
+            raise ValueError('Not a native Doc')
+        return self.docs.put(file_id,content)
+
+    def ensure_copy(self,parent,key,file_id,name):
+        matches=[f for f in self.list(parent) if f.get('appProperties',{}).get('cba_key')==key]
+        if len(matches)>1:raise RuntimeError('Duplicate backup copy')
+        if matches:return matches[0]['id']
+        return self.api.files().copy(fileId=file_id,body={'name':name,'parents':[parent],
+            'appProperties':{'cba_key':key}},fields='id',supportsAllDrives=True).execute(num_retries=0)['id']
 
     def meta(self, file_id):
         return self.api.files().get(fileId=file_id,fields=FIELDS,supportsAllDrives=True).execute()

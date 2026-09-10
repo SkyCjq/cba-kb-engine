@@ -106,3 +106,24 @@ def test_complete_release_cannot_mask_external_status(tmp_path):
     d,r=setup(tmp_path);publish(d,r,True)
     d.put('status',b'{"state":"COMPLETE","current_release_id":"other"}','application/json')
     with pytest.raises(RuntimeError,match='status'):publish(d,r,True)
+
+
+def test_managed_native_doc_publish_and_rollback(tmp_path):
+    from cba_kb.native import wrap
+    from cba_kb.release import DOC
+    class NativeDrive(FakeDrive):
+        def __init__(self):
+            super().__init__();self.add('doc',b'',DOC);self.native_copies=[]
+        def get_managed_doc(self,fid):return self.files[fid]['data']
+        def put_managed_doc(self,fid,data):return self.put(fid,data,DOC)
+        def ensure_copy(self,parent,key,fid,name):
+            self.native_copies.append(fid);return 'full-native-backup'
+    d=NativeDrive();p=tmp_path/'native.txt';p.write_text(wrap('Current facts'))
+    r=tmp_path/'native-release'
+    prepare(d,r,'nr',[{'id':'doc','name':'INDEX','mime':DOC,'mode':'managed_doc','path':str(p)}],'arc','status')
+    publish(d,r,True)
+    assert d.get_managed_doc('doc')==p.read_bytes()
+    assert d.native_copies==['doc']
+    assert json.loads(d.get('status'))['previous_snapshot'][0]['snapshot_id']=='full-native-backup'
+    restore(d,r,True)
+    assert d.get_managed_doc('doc')==b''

@@ -10,7 +10,7 @@ def doc(text,after=None):
 def test_first_insert_preserves_original():
     d=doc('Original styled content\n')
     requests=update_requests(d,wrap('New release'))
-    assert len(requests)==1 and 'insertText' in requests[0]
+    assert len(requests)==3 and 'insertText' in requests[0]
     assert requests[0]['insertText']['location']['index']==1
 
 def test_update_only_deletes_managed_prefix_utf16():
@@ -31,4 +31,4 @@ def test_reject_multitab_and_truncated_prefix():
 
 def test_original_table_not_modified():
     d=doc('old\n',[{'table':{'rows':2},'startIndex':5}])
-    assert len(update_requests(d,wrap('new')))==1
+    assert len(update_requests(d,wrap('new')))==3

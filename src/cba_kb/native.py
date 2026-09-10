@@ -56,6 +56,9 @@ def update_requests(document,new_prefix):
         requests.append({'deleteContentRange':{'range':{'tabId':tab_id,'startIndex':1,'endIndex':1+units(old)}}})
     if new_prefix:
         requests.append({'insertText':{'location':{'tabId':tab_id,'index':1},'text':new_prefix}})
+        area={'tabId':tab_id,'startIndex':1,'endIndex':1+units(new_prefix)}
+        requests.append({'updateParagraphStyle':{'range':area,'paragraphStyle':{'namedStyleType':'NORMAL_TEXT'},'fields':'namedStyleType'}})
+        requests.append({'updateTextStyle':{'range':area,'textStyle':{'fontSize':{'magnitude':10,'unit':'PT'},'bold':False},'fields':'fontSize,bold'}})
     return requests
 
 

@@ -20,6 +20,7 @@ def main():
             q.add_argument('--output',type=Path,required=True); q.add_argument('--release-id',required=True)
             q.add_argument('--generated-at',default=None)
     q=sub.add_parser('pull'); q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('catalog');q.add_argument('--candidate',type=Path,required=True);q.add_argument('--output',type=Path,required=True)
     q=sub.add_parser('plan'); q.add_argument('--entries',type=Path,required=True); q.add_argument('--release-id',required=True)
     q.add_argument('--status-id',required=True); q.add_argument('--archive-id',required=True)
     for cmd in ('publish','verify','restore'):
@@ -34,7 +35,7 @@ def main():
                     'oauth_client_present':(root/'.credentials/credentials.json').exists(),
                     'oauth_token_present':(root/'.credentials/token.json').exists(),
                     'production_enabled':False,
-                    'note':'Production requires native view adapter, sandbox gate, and AI acceptance.'}
+                    'note':'Production requires local OAuth sandbox exercise, complete catalog, and AI acceptance.'}
         elif a.command=='validate':
             _,result=inspect(a.master)
         elif a.command=='build':
@@ -52,6 +53,11 @@ def main():
                 if meta['mimeType']!=item['mime']: raise ValueError('Input MIME mismatch')
                 atomic(a.output/name,data); result[name]={'metadata':meta,'sha256':digest(data)}
             save(a.output/'snapshot.json',result)
+        elif a.command=='catalog':
+            from .catalog import catalog
+            artifacts=catalog(root,a.candidate,a.output)
+            result={'artifacts':len(artifacts),'unassigned_ids':sum(not e['id'] for e in artifacts),
+                    'catalog':str(a.output/'artifact_catalog.json')}
         elif a.command=='plan':
             entries=read(a.entries)
             # Initial deployment is restricted to a sandbox folder, configured after OAuth.
