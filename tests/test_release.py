@@ -127,3 +127,45 @@ def test_managed_native_doc_publish_and_rollback(tmp_path):
     assert json.loads(d.get('status'))['previous_snapshot'][0]['snapshot_id']=='full-native-backup'
     restore(d,r,True)
     assert d.get_managed_doc('doc')==b''
+
+
+def test_rollback_exposes_in_progress_and_repeats(tmp_path):
+    d,r=setup(tmp_path);publish(d,r,True);original=d.put;seen=[]
+    def put(fid,data,mime):
+        if fid in ('a','b'):seen.append(json.loads(d.get('status'))['state'])
+        return original(fid,data,mime)
+    d.put=put;restore(d,r,True)
+    assert seen==['ROLLING_BACK','ROLLING_BACK']
+    restore(d,r,True)
+
+
+def test_rollback_lost_status_response_resumes(tmp_path):
+    d,r=setup(tmp_path);publish(d,r,True);original=d.put
+    def put(fid,data,mime):
+        original(fid,data,mime)
+        if fid=='status' and json.loads(data)['state']=='ROLLED_BACK':raise OSError('response lost')
+    d.put=put
+    with pytest.raises(OSError):restore(d,r,True)
+    d.put=original;restore(d,r,True)
+    assert read(r/'journal.json')['state']=='ROLLED_BACK'
+
+
+def test_dependency_change_blocks_before_writes(tmp_path):
+    from cba_kb.release import fingerprint
+    d,r=setup(tmp_path);d.add('input',b'frozen')
+    plan=read(r/'plan.json');plan['dependencies']=[dict(id='input',sha256=digest(b'frozen'),meta=fingerprint(d.meta('input')))]
+    from cba_kb.common import save
+    save(r/'plan.json',plan);d.put('input',b'changed','text/plain');d.calls=[]
+    with pytest.raises(RuntimeError,match='dependency'):publish(d,r,True)
+    assert not d.calls
+
+
+def test_new_object_moves_and_restores(tmp_path):
+    from cba_kb.common import save
+    d,r=setup(tmp_path);plan=read(r/'plan.json')
+    plan['entries'][0].update(staging_parent='sandbox',publish_parent='live')
+    save(r/'plan.json',plan)
+    def move(fid,destination,previous):d.files[fid]['parents']=[destination]
+    d.move=move;publish(d,r,True)
+    assert d.meta('a')['parents']==['live']
+    restore(d,r,True);assert d.meta('a')['parents']==['sandbox']

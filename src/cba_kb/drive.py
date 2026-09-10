@@ -80,6 +80,10 @@ class Drive:
         return self.api.files().update(fileId=file_id,media_body=MediaIoBaseUpload(io.BytesIO(content),mimetype=mime),
                                       fields=FIELDS,supportsAllDrives=True).execute(num_retries=0)
 
+    def move(self,file_id,destination,previous):
+        return self.api.files().update(fileId=file_id,addParents=destination,removeParents=previous,
+            fields=FIELDS,supportsAllDrives=True).execute(num_retries=0)
+
     def list(self, parent):
         items, page = [], None
         while True:

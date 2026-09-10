@@ -33,14 +33,15 @@ def snapshot(drive, file_id, mode='binary'):
     return data, after
 
 
-def prepare(drive, root, release_id, entries, archive_id, status_id):
+def prepare(drive, root, release_id, entries, archive_id, status_id, dependencies=None):
     root=Path(root)
     if root.exists(): raise ValueError('Release already exists; resume it instead')
     if not entries: raise ValueError('Empty release')
     ids=[e['id'] for e in entries]
     if len(ids)!=len(set(ids)) or status_id in ids:
         raise ValueError('Duplicate target or status overlaps payload')
-    plan={'release_id':release_id,'archive_id':archive_id,'status_id':status_id,'entries':[]}
+    plan={'release_id':release_id,'archive_id':archive_id,'status_id':status_id,'entries':[], 'dependencies':dependencies or []}
+    check_dependencies(drive,plan)
     root.mkdir(parents=True)
     try:
         status_data,status_meta=snapshot(drive,status_id)
@@ -70,13 +71,32 @@ def prepare(drive, root, release_id, entries, archive_id, status_id):
             atomic(root/f'before/{i}',old); atomic(root/f'candidate/{i}',new)
             plan['entries'].append({'id':entry['id'],'name':name,'mime':entry['mime'],'mode':mode,
                 'before':f'before/{i}','candidate':f'candidate/{i}',
-                'before_hash':digest(old),'after_hash':digest(new),'meta':fingerprint(meta)})
+                'before_hash':digest(old),'after_hash':digest(new),'meta':fingerprint(meta),
+                **{k:entry[k] for k in ('staging_parent','publish_parent','logical_key') if k in entry}})
         save(root/'plan.json',plan)
         save(root/'journal.json',{'state':'PREPARED','uploaded':{},'inflight':None})
     except BaseException:
         save(root/'prepare_failed.json',{'state':'PREPARE_FAILED'})
         raise
     return plan
+
+
+def check_dependencies(drive, plan):
+    for dependency in plan.get('dependencies',[]):
+        content,meta=snapshot(drive,dependency['id'],dependency.get('mode','binary'))
+        if digest(content)!=dependency['sha256'] or fingerprint(meta)!=dependency['meta']:
+            raise RuntimeError('Input dependency changed: '+dependency['id'])
+
+
+def relocate(drive, entry, destination):
+    if not entry.get('staging_parent'):return
+    other=entry['staging_parent'] if destination==entry['publish_parent'] else entry['publish_parent']
+    parents=drive.meta(entry['id']).get('parents',[])
+    if destination in parents:return
+    if other not in parents:raise RuntimeError('New object moved outside release ownership')
+    drive.move(entry['id'],destination,other)
+    if destination not in drive.meta(entry['id']).get('parents',[]):
+        raise RuntimeError('Object move verification failed')
 
 
 def verified_local(root, entry, key):
@@ -103,7 +123,8 @@ def publish(drive, root, single_writer=False):
     if not single_writer: raise RuntimeError('Single-writer maintenance window must be acknowledged')
     with lock(root.parent/'publish.lock'):
         plan,journal=read(root/'plan.json'),read(root/'journal.json')
-        if journal['state']=='ROLLED_BACK': raise RuntimeError('Create a new plan after rollback')
+        if journal['state'] in ('ROLLED_BACK','ROLLING_BACK'): raise RuntimeError('Create a new plan after rollback')
+        check_dependencies(drive,plan)
         for e in plan['entries']:
             verified_local(root,e,'before'); verified_local(root,e,'candidate')
         if journal['state']=='COMPLETE':
@@ -144,6 +165,7 @@ def publish(drive, root, single_writer=False):
         journal['previous_snapshot']=previous
         journal['state']='PUBLISHING'; save(root/'journal.json',journal)
         try:
+            check_dependencies(drive,plan)
             set_status(drive,plan,'PUBLISHING',previous)
             for e in plan['entries']:
                 data=payload(drive,e)
@@ -152,11 +174,15 @@ def publish(drive, root, single_writer=False):
                     save(root/'journal.json',journal); continue
                 if digest(data)!=e['before_hash']: raise RuntimeError('Remote changed during publication')
                 journal['inflight']=e['id']; save(root/'journal.json',journal)
+                latest,latest_meta=snapshot(drive,e['id'],e.get('mode','binary'))
+                if digest(latest)!=e['before_hash']:raise RuntimeError('Target changed immediately before write')
                 write_payload(drive,e,verified_local(root,e,'candidate'))
                 if digest(payload(drive,e))!=e['after_hash']: raise RuntimeError('Readback mismatch')
                 journal['uploaded'][e['id']]=True; journal['inflight']=None
                 save(root/'journal.json',journal)
             verify(drive,root)
+            check_dependencies(drive,plan)
+            for e in plan['entries']:relocate(drive,e,e.get('publish_parent'))
             set_status(drive,plan,'COMPLETE',previous)
             journal['state']='COMPLETE'; save(root/'journal.json',journal)
         except BaseException:
@@ -184,16 +210,28 @@ def restore(drive, root, single_writer=False):
             raise RuntimeError('Frozen previous status was altered')
         import json
         status=json.loads(drive.get(plan['status_id']))
-        if status.get('pending_release_id')!=plan['release_id'] and status.get('current_release_id')!=plan['release_id']:
+        already=(status.get('state')=='ROLLED_BACK' and status.get('rolled_back_release_id')==plan['release_id'])
+        if not already and status.get('pending_release_id')!=plan['release_id'] and status.get('current_release_id')!=plan['release_id']:
             raise RuntimeError('Cannot roll back another release')
         for e in plan['entries']:
             verified_local(root,e,'before')
             if digest(payload(drive,e)) not in (e['before_hash'],e['after_hash']):
                 raise RuntimeError('Rollback would overwrite an external edit')
+        if already:
+            for e in plan['entries']:
+                if digest(payload(drive,e))!=e['before_hash']:raise RuntimeError('Restored object changed externally')
+                if e.get('staging_parent') and e['staging_parent'] not in drive.meta(e['id']).get('parents',[]):
+                    raise RuntimeError('Restored object parent changed')
+            journal['state']='ROLLED_BACK';save(root/'journal.json',journal);return journal
+        journal['state']='ROLLING_BACK';save(root/'journal.json',journal)
+        set_status(drive,plan,'ROLLING_BACK',journal.get('previous_snapshot',[]))
         for e in reversed(plan['entries']):
             old=verified_local(root,e,'before')
-            if digest(payload(drive,e))!=e['before_hash']: write_payload(drive,e,old)
+            now=payload(drive,e)
+            if digest(now) not in (e['before_hash'],e['after_hash']):raise RuntimeError('Target changed during rollback')
+            if digest(now)!=e['before_hash']: write_payload(drive,e,old)
             if digest(payload(drive,e))!=e['before_hash']: raise RuntimeError('Rollback readback failed')
+            relocate(drive,e,e.get('staging_parent'))
         previous_status=read(root/'status.before.json')
         previous_status['state']='ROLLED_BACK'
         previous_status['rolled_back_release_id']=plan['release_id']

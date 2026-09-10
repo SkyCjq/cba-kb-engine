@@ -23,6 +23,7 @@ def main():
     q=sub.add_parser('catalog');q.add_argument('--candidate',type=Path,required=True);q.add_argument('--output',type=Path,required=True)
     q=sub.add_parser('plan'); q.add_argument('--entries',type=Path,required=True); q.add_argument('--release-id',required=True)
     q.add_argument('--status-id',required=True); q.add_argument('--archive-id',required=True)
+    q.add_argument('--dependencies',type=Path);q.add_argument('--environment',choices=['sandbox','production'],default='sandbox')
     for cmd in ('publish','verify','restore'):
         q=sub.add_parser(cmd); q.add_argument('--release',type=Path,required=True)
         if cmd!='verify':q.add_argument('--single-writer',action='store_true')
@@ -60,20 +61,19 @@ def main():
                     'catalog':str(a.output/'artifact_catalog.json')}
         elif a.command=='plan':
             entries=read(a.entries)
-            # Initial deployment is restricted to a sandbox folder, configured after OAuth.
-            mapping=read(root/'config/runtime.json'); sandbox=mapping.get('sandbox_folder_id')
-            if not sandbox:raise RuntimeError('Sandbox folder must be configured before planning writes')
+            dependencies=read(a.dependencies) if a.dependencies else []
             drive=Drive(root)
-            for fid in [e['id'] for e in entries]+[a.status_id,a.archive_id]:
-                meta=drive.meta(fid)
-                if sandbox not in meta.get('parents',[]):raise RuntimeError('Only sandbox targets currently enabled')
-            result=prepare(drive,root/'workspace/outbox'/a.release_id,a.release_id,entries,a.archive_id,a.status_id)
+            from .gates import authorize_plan
+            request={'entries':entries,'status_id':a.status_id,'archive_id':a.archive_id,'dependencies':dependencies}
+            authorize_plan(drive,root,request,a.environment)
+            result=prepare(drive,root/'workspace/outbox'/a.release_id,a.release_id,entries,a.archive_id,a.status_id,dependencies)
+            result['environment']=a.environment
+            save(root/'workspace/outbox'/a.release_id/'plan.json',result)
         else:
             drive=Drive(root)
-            # Do not bypass the sandbox gate with a hand-written plan.
-            plan=read(a.release/'plan.json'); sandbox=read(root/'config/runtime.json').get('sandbox_folder_id')
-            for fid in [e['id'] for e in plan['entries']]+[plan['status_id'],plan['archive_id']]:
-                if not sandbox or sandbox not in drive.meta(fid).get('parents',[]):raise RuntimeError('Sandbox targets required')
+            plan=read(a.release/'plan.json')
+            from .gates import authorize_plan
+            authorize_plan(drive,root,plan,plan.get('environment','sandbox'))
             fn={'publish':publish,'verify':verify,'restore':restore}[a.command]
             result=fn(drive,a.release,**({'single_writer':a.single_writer} if a.command!='verify' else {}))
         print(json.dumps(result,ensure_ascii=False,indent=2))
