@@ -1,6 +1,6 @@
 # CBA-KB Engine v1.5.1 (dev)
 
-本地执行，GitHub 管理代码，Drive 保存已发布知识库。当前工程处于部署中，生产仍为 v1.1 FINAL。
+本地执行，GitHub 管理代码，Drive 保存已发布知识库。生产事实当前为 v1.5.0；v1.5.1 处于开发与本地候选阶段。
 
 v1.5.0 已封板并发布（Git tag `v1.5.0`，提交 c4bebec，release_status COMPLETE，76 个产出物回读通过）。当前分支在 v1.5.0 基础上开发 v1.5.1 注册事实扩展：国内注册关系之外，新增外籍球员注册快照与注册事件两种 grain，来源解析只在本地 staging 进行，未写入生产 `20_data`。状态与证据见 docs/CBA-KB_v1.5.1.md，方案见 Drive CBA-KB v1.5.1。
 
