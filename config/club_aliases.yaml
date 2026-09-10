@@ -1,0 +1,128 @@
+version: 1
+_说明: >-
+  club_id 的唯一解析来源。国内名与赛季冠名商名分开登记，未知名称在 production/strict
+  模式下必须 fail-closed，不做模糊匹配。新增别名必须有真实来源证据，并补回归测试。
+_来源: >-
+  official_domestic 取自 20_data 现有 MASTER 与 60_config taxonomy；
+  official_foreign_sponsor_by_season 取自对应赛季外籍球员注册来源文件的原始球队名。
+_禁止: 未经证据的高风险别名（例如把无关球队昵称映射到 bayi）不得写入。
+
+clubs:
+  beijing_konggu:
+    status: active
+    official_domestic: [北京控股]
+    official_foreign_sponsor_by_season:
+      2024-2025: [北京控股]
+  beijing_shougang:
+    status: active
+    official_domestic: [北京首钢]
+    official_foreign_sponsor_by_season:
+      2024-2025: [北京北汽]
+    _说明: 北京北汽为该赛季冠名商，俱乐部实体为北京首钢。
+  fujian_xunxing:
+    status: active
+    official_domestic: [福建浔兴]
+    historical_domestic: [福建豹发力]
+    official_foreign_sponsor_by_season:
+      2024-2025: [福建晋江文旅]
+  guangdong_hongyuan:
+    status: active
+    official_domestic: [广东宏远]
+    official_foreign_sponsor_by_season:
+      2024-2025: [广东东阳光]
+  guangzhou_longshi:
+    status: active
+    official_domestic: [广州龙狮]
+    media: [龙狮]
+    official_foreign_sponsor_by_season:
+      2024-2025: [广州朗肽海本]
+  jiangsu_kendiya:
+    status: active
+    official_domestic: [江苏肯帝亚]
+    official_foreign_sponsor_by_season:
+      2024-2025: [江苏肯帝亚]
+  jilin_jiutai:
+    status: active
+    official_domestic: [吉林九台农商行]
+    historical_domestic: [吉林东北虎, 吉林九台农商银行]
+    official_foreign_sponsor_by_season:
+      2024-2025: [九台农商银行]
+  liaoning_shenyang_sansheng:
+    status: active
+    official_domestic: [辽宁沈阳三生]
+    historical_domestic: [辽宁衡润]
+    official_foreign_sponsor_by_season:
+      2024-2025: [辽宁本钢]
+  nanjing_tongxi:
+    status: active
+    official_domestic: [南京同曦]
+    official_foreign_sponsor_by_season:
+      2024-2025: [南京头排苏酒]
+  ningbo_fubang:
+    status: active
+    official_domestic: [宁波富邦]
+    official_foreign_sponsor_by_season:
+      2024-2025: [宁波町渥]
+  qingdao_guoxin_haitian:
+    status: active
+    official_domestic: [青岛国信海天]
+    historical_domestic: [青岛国信双星]
+    official_foreign_sponsor_by_season:
+      2024-2025: [青岛国信制药]
+  shandong_gaosu:
+    status: active
+    official_domestic: [山东高速]
+    historical_domestic: [山东山高, 山东西王]
+    official_foreign_sponsor_by_season:
+      2024-2025: [山东高速]
+  shanghai_jiushi:
+    status: active
+    official_domestic: [上海久事]
+    official_foreign_sponsor_by_season:
+      2024-2025: [上海久事]
+  shanxi_fenjiu:
+    status: active
+    official_domestic: [山西汾酒]
+    historical_domestic: [山西国投]
+    official_foreign_sponsor_by_season:
+      2024-2025: [山西汾酒]
+  shenzhen_xinshiji:
+    status: active
+    official_domestic: [深圳新世纪]
+    official_foreign_sponsor_by_season:
+      2024-2025: [深圳马可波罗]
+  sichuan_jincheng:
+    status: active
+    official_domestic: [四川锦城]
+    historical_domestic: [四川, 四川金强]
+    official_foreign_sponsor_by_season:
+      2024-2025: [四川丰谷酒业]
+  tianjin_ronggang:
+    status: active
+    official_domestic: [天津荣钢]
+    official_foreign_sponsor_by_season:
+      2024-2025: [天津先行者]
+  xinjiang_guanghui:
+    status: active
+    official_domestic: [新疆广汇]
+    official_foreign_sponsor_by_season:
+      2024-2025: [新疆伊力特]
+  zhejiang_chouzhou:
+    status: active
+    official_domestic: [浙江稠州]
+    official_foreign_sponsor_by_season:
+      2024-2025: [浙江稠州金租]
+  zhejiang_guangsha:
+    status: active
+    official_domestic: [浙江广厦]
+    official_foreign_sponsor_by_season:
+      2024-2025: [浙江方兴渡]
+  bayi:
+    status: defunct
+    historical_roster_allowed: true
+    last_roster_season: 2019-2020
+    post_dissolution_new_roster_forbidden: true
+    official_domestic: [八一, 八一队, 八一男篮, 八一富邦]
+    _说明: >-
+      八一为历史有效 club_id，解散后仍可作为 former_club 出现，但不得在
+      last_roster_season 之后创建新的 active-season roster。

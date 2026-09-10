@@ -1,6 +1,16 @@
-# CBA-KB Engine v1.5
+# CBA-KB Engine v1.5.1 (dev)
 
 本地执行，GitHub 管理代码，Drive 保存已发布知识库。当前工程处于部署中，生产仍为 v1.1 FINAL。
+
+v1.5.0 已封板并发布（Git tag `v1.5.0`，提交 c4bebec，release_status COMPLETE，76 个产出物回读通过）。当前分支在 v1.5.0 基础上开发 v1.5.1 注册事实扩展：国内注册关系之外，新增外籍球员注册快照与注册事件两种 grain，来源解析只在本地 staging 进行，未写入生产 `20_data`。状态与证据见 docs/CBA-KB_v1.5.1.md，方案见 Drive CBA-KB v1.5.1。
+
+## v1.5.1 新增
+
+- 赛季感知 club 别名解析（`config/club_aliases.yaml`），未知冠名商在 strict 模式 fail-closed。
+- 三个来源适配器：`midseason_md`、`foreign_xlsx`、`foreign_image`；外援英文名 raw/normalized 双列，球衣号按文本保留，取消注册事件按赛季边界补年份并标记 `date_year_inferred`。
+- 三种 grain 分离的事实产品：国内注册关系 MASTER、`CBA_外籍球员注册_SNAPSHOTS.xlsx`、`CBA_球员注册_EVENTS.xlsx`。
+- CLI `extract` / `facts`，真实来源验收 `make accept`，来源登记提案 `make registry`。
+- 只读 Drive 调用的脱敏诊断、阶段日志与有界重试；`doctor` 输出真实 `production_enabled` 与版本 `1.5.1.dev0`。
 
 ## 已实现
 

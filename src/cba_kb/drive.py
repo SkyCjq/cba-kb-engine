@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 from .common import atomic, digest
+from .transport import retry_read
 
 SCOPES = ['https://www.googleapis.com/auth/drive']
 FIELDS = 'id,name,mimeType,parents,version,modifiedTime,headRevisionId,md5Checksum,size,webViewLink'
@@ -43,7 +44,7 @@ class Drive:
     def get_managed_doc(self,file_id):
         if self.meta(file_id)['mimeType']!='application/vnd.google-apps.document':
             raise ValueError('Not a native Doc')
-        return self.docs.get(file_id)
+        return retry_read(lambda: self.docs.get(file_id), label='native doc')
 
     def put_managed_doc(self,file_id,content):
         if self.meta(file_id)['mimeType']!='application/vnd.google-apps.document':
@@ -58,19 +59,22 @@ class Drive:
             'appProperties':{'cba_key':key}},fields='id',supportsAllDrives=True).execute(num_retries=0)['id']
 
     def meta(self, file_id):
-        return self.api.files().get(fileId=file_id,fields=FIELDS,supportsAllDrives=True).execute()
+        return retry_read(lambda: self.api.files().get(fileId=file_id,fields=FIELDS,
+            supportsAllDrives=True).execute(), label='meta')
 
     def get(self, file_id):
         from googleapiclient.http import MediaIoBaseDownload
         meta = self.meta(file_id)
         if meta['mimeType'].startswith('application/vnd.google-apps.'):
             raise ValueError('Native object requires native adapter; raw download rejected')
-        buf = io.BytesIO()
-        downloader = MediaIoBaseDownload(buf,self.api.files().get_media(fileId=file_id,supportsAllDrives=True))
-        done = False
-        while not done:
-            _, done = downloader.next_chunk(num_retries=3)
-        return buf.getvalue()
+        def download():
+            buf = io.BytesIO()
+            downloader = MediaIoBaseDownload(buf,self.api.files().get_media(fileId=file_id,supportsAllDrives=True))
+            done = False
+            while not done:
+                _, done = downloader.next_chunk(num_retries=0)
+            return buf.getvalue()
+        return retry_read(download, label='download')
 
     def put(self, file_id, content, mime):
         from googleapiclient.http import MediaIoBaseUpload
@@ -87,9 +91,10 @@ class Drive:
     def list(self, parent):
         items, page = [], None
         while True:
-            result = self.api.files().list(q=f"'{parent}' in parents and trashed=false",pageToken=page,
+            result = retry_read(lambda: self.api.files().list(
+                q=f"'{parent}' in parents and trashed=false",pageToken=page,
                 pageSize=1000,fields=f'nextPageToken,files({FIELDS},appProperties)',supportsAllDrives=True,
-                includeItemsFromAllDrives=True).execute(num_retries=3)
+                includeItemsFromAllDrives=True).execute(num_retries=0), label='list')
             items.extend(result.get('files',[])); page=result.get('nextPageToken')
             if not page: return items
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cba-kb-engine"
-version = "1.5.0.dev0"
+version = "1.5.1.dev0"
 requires-python = ">=3.11"
 dependencies = ["google-api-python-client", "google-auth-oauthlib", "openpyxl", "PyYAML", "lxml", "beautifulsoup4", "pypdf", "python-docx"]
 

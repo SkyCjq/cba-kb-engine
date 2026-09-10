@@ -67,11 +67,25 @@ topic:
 - 其他
 source_type:
 - cba_official
+- cbaleague_official_api
+- historical_paddleocr
+- web_cross_checked
 - wechat_mp
 - local_file
 - gdrive
 - obsidian_legacy
 - manual
+player_type:
+- domestic
+- foreign
+event_type:
+- registration_change
+- registration_cancelled
+verification_level:
+- official_api
+- human_verified
+- auto_validated
+- needs_review
 status:
 - 待归类
 - 已归类

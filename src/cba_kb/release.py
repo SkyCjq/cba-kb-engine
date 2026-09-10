@@ -5,6 +5,7 @@ Native Docs require explicit managed_doc mode; Sheets byte writes are rejected.
 """
 from pathlib import Path
 from .common import atomic, child, digest, lock, read, save
+from .transport import stage
 
 FOLDER = 'application/vnd.google-apps.folder'
 DOC = 'application/vnd.google-apps.document'
@@ -123,6 +124,7 @@ def publish(drive, root, single_writer=False):
     if not single_writer: raise RuntimeError('Single-writer maintenance window must be acknowledged')
     with lock(root.parent/'publish.lock'):
         plan,journal=read(root/'plan.json'),read(root/'journal.json')
+        stage('publish',f'release {plan["release_id"]} journal {journal["state"]}')
         if journal['state'] in ('ROLLED_BACK','ROLLING_BACK'): raise RuntimeError('Create a new plan after rollback')
         check_dependencies(drive,plan)
         for e in plan['entries']:
@@ -143,6 +145,7 @@ def publish(drive, root, single_writer=False):
                 raise RuntimeError('Remote conflict: '+e['name'])
         if journal['state']=='PREPARED' and fingerprint(drive.meta(plan['status_id']))!=plan['status_before_meta']:
             raise RuntimeError('Publication status changed')
+        stage('publish','preflight passed')
         import json
         if journal['state']!='PREPARED':
             status=json.loads(drive.get(plan['status_id']))
@@ -164,10 +167,12 @@ def publish(drive, root, single_writer=False):
         drive.ensure(folder,'plan','plan.json','application/json',(root/'plan.json').read_bytes())
         journal['previous_snapshot']=previous
         journal['state']='PUBLISHING'; save(root/'journal.json',journal)
+        stage('publish',f'archive snapshot for {len(plan["entries"])} artifacts')
         try:
             check_dependencies(drive,plan)
             set_status(drive,plan,'PUBLISHING',previous)
-            for e in plan['entries']:
+            for index,e in enumerate(plan['entries'],1):
+                stage('publish',f'{index}/{len(plan["entries"])} {e["name"]}')
                 data=payload(drive,e)
                 if digest(data)==e['after_hash']:
                     journal['uploaded'][e['id']]=True
@@ -185,6 +190,7 @@ def publish(drive, root, single_writer=False):
             for e in plan['entries']:relocate(drive,e,e.get('publish_parent'))
             set_status(drive,plan,'COMPLETE',previous)
             journal['state']='COMPLETE'; save(root/'journal.json',journal)
+            stage('publish','COMPLETE')
         except BaseException:
             journal['state']='FAILED'; save(root/'journal.json',journal)
             try: set_status(drive,plan,'FAILED',previous)
@@ -206,6 +212,7 @@ def restore(drive, root, single_writer=False):
     if not single_writer: raise RuntimeError('Single-writer maintenance window required')
     with lock(root.parent/'publish.lock'):
         plan,journal=read(root/'plan.json'),read(root/'journal.json')
+        stage('restore',f'release {plan["release_id"]} from {journal["state"]}')
         if digest((root/'status.before.json').read_bytes())!=plan['status_before_hash']:
             raise RuntimeError('Frozen previous status was altered')
         import json
@@ -225,7 +232,9 @@ def restore(drive, root, single_writer=False):
             journal['state']='ROLLED_BACK';save(root/'journal.json',journal);return journal
         journal['state']='ROLLING_BACK';save(root/'journal.json',journal)
         set_status(drive,plan,'ROLLING_BACK',journal.get('previous_snapshot',[]))
-        for e in reversed(plan['entries']):
+        stage('restore','ROLLING_BACK published; restoring original bytes')
+        for index,e in enumerate(reversed(plan['entries']),1):
+            stage('restore',f'{index}/{len(plan["entries"])} {e["name"]}')
             old=verified_local(root,e,'before')
             now=payload(drive,e)
             if digest(now) not in (e['before_hash'],e['after_hash']):raise RuntimeError('Target changed during rollback')
@@ -239,4 +248,5 @@ def restore(drive, root, single_writer=False):
         drive.put(plan['status_id'],data,'application/json')
         if drive.get(plan['status_id'])!=data: raise RuntimeError('Rollback status verification failed')
         journal['state']='ROLLED_BACK'; save(root/'journal.json',journal)
+        stage('restore','ROLLED_BACK')
         return journal
