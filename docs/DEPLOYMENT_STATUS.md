@@ -6,23 +6,29 @@
 数据内容保持原字节不变，1,019 条官方 API 行以官网 URL 追溯，未补造 source_file_id。
 16 份 Drive 原文件已导入并核对长度，代码导入清单见 import_inventory.json。
 
-本地实现已通过 29 项测试：既有 9 项，以及 MASTER 导出、正常发布、重复发布、原 ID 回退、冲突阻断、响应丢失重试、部分失败恢复、候选防篡改、类型保护、单写者要求、锁与路径保护、发布状态恢复，以及 native Docs 受控前缀的范围和回退测试。
+本地实现已通过 30 项测试：既有 9 项，以及 MASTER 导出、正常发布、重复发布、原 ID 回退、冲突阻断、响应丢失重试、部分失败恢复、候选防篡改、类型保护、单写者要求、锁与路径保护、发布状态恢复，以及 native Docs 受控前缀的范围和回退测试。
 故障测试当前为离线模拟，不等于 Drive 生产环境验证。
 
 已创建并核实私有仓库 [SkyCjq/cba-kb-engine](https://github.com/SkyCjq/cba-kb-engine)，GitHub CLI 已授权，初始代码已推送。第二 AI 选择 Gemini。
 
 工程已安装于 `/Users/skychengneo/Agent/CBA_kb`，Python 3.11.15 独立虚拟环境已就绪。首批本地候选包含完整 CSV/JSONL、10 个赛季阅读版、INDEX、provenance 与 validation 共 15 个文件，MASTER 原文件字节不变。
 
-native Docs 适配原型仅改写受控的当前发布前缀，原正文保留在“历史内容”分界下，可通过删除前缀回退；范围测试通过。已接入发布器。通过当前 AI 的 Drive 连接在独立沙盒 INDEX 完成真实插入、样式修正和删除回退；回退前后 tabs/body 结构完全相同，仅 revisionId 变化。此结果不代表本地 OAuth 通道已验收。
+native Docs 适配原型仅改写受控的当前发布前缀，原正文保留在“历史内容”分界下，可通过删除前缀回退；范围测试通过。已接入发布器。通过当前 AI 的 Drive 连接在独立沙盒 INDEX 完成真实插入、样式修正和删除回退；回退前后 tabs/body 结构完全相同，仅 revisionId 变化。随后本地 OAuth 通道也完成独立验收，原文 tabs/body/styles 回退一致。
+
+本地真实验收（2026-09-10）：
+
+- Desktop OAuth 授权完成，令牌刷新成功；凭据仅保存在本机。
+- 三份输入文件 SHA256 与既有基线一致，MASTER 为 3,451 行、20 列、无重复键。
+- sandbox-oauth-001：原生 Docs 发布、回读、重复发布、原 ID 回退通过；原正文及样式恢复。
+- sandbox-oauth-002：仅修改沙盒 XLSX 的 ZIP 注释、保持表格值不变，完成实际字节覆盖与回读、原 ID 回退。
+- 官方来源 6a97f61ed5 返回 code 200，实际解析出 14 行；仅为抽样来源可达性，不代表全来源复核。
+- 网络中断、响应丢失等故障注入仍只有离线测试证据。
 
 待完成：
 
-1. 用户创建 Desktop OAuth 客户端 JSON；本地浏览器同意授权。
-2. 真实本地 Drive 拉取、OAuth refresh、来源可达性测试。
-3. Drive 沙盒已创建（config/sandbox.json），待本地 publish/verify/restore 真机演练。
-4. 原生 Docs 适配已完成离线和连接器验证，待本地 OAuth 验证。
-5. 全量发布清单、代码镜像、上下文入口及生产切换。
-6. ChatGPT/Codex + Gemini 验收与 v1.5.0 release tag。
+1. 全量生产发布清单、代码镜像、上下文入口与生产切换。
+2. ChatGPT/Codex + Gemini 的候选消费验收；用户选择自行在 Gemini 按提示词测试并返回结果。
+3. 生产切换后的两 AI 复验与 v1.5.0 release tag。
 
 当前生产版本仍为 v1.1 FINAL。不得把部署中标记成 IMPLEMENTED。
 

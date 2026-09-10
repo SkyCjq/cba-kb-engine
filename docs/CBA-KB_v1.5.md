@@ -1,7 +1,7 @@
 # CBA-KB v1.5 — 本地部署、GitHub 代码管理与 Drive 发布
 
 > 修订日期：2026-09-10（Asia/Singapore）
-> 状态：PLANNED / 方案完成，工程实施尚未开始。
+> 状态：IN_PROGRESS / 本地 OAuth 与沙盒验收完成，生产切换及两 AI 验收待完成。
 > 实施顺序：v1.1 FINAL → v1.5 → v2.1 Unified Target。
 > 本地部署目录：/Users/skychengneo/Agent/CBA_kb
 > 本次修订替代本文件旧草案；历史内容由 Drive 文件版本历史及修订前备份保留。
@@ -13,7 +13,7 @@
 | 位置 | v1.5 角色 | 管理规则 |
 | --- | --- | --- |
 | 本地 /Users/skychengneo/Agent/CBA_kb | 执行环境、输入快照、候选产物和重试队列 | 可加工数据；未发布内容不是当前生产事实 |
-| GitHub 私有仓库 | 代码、测试、依赖锁定、配置模板、工程文档的版本源 | 建议仓库名 cba-kb-engine；owner、URL 在实施前核实，不假定已创建 |
+| GitHub 私有仓库 | 代码、测试、依赖锁定、配置模板、工程文档的版本源 | 已核实私有仓库 SkyCjq/cba-kb-engine |
 | Drive 10_sources / 20_data / 60_config | 证据、已发布事实、处理与同步控制 | 保留既有 file ID，生产状态以已验证的发布结果为准 |
 | Drive 40_ai | 不同 AI 的导航、阅读版和可检索派生数据 | 从同一 MASTER 快照生成，携带版本和来源，不另建可人工维护的事实表 |
 | Drive 50_scripts | 已发布代码的阅读镜像 | 标明 GitHub URL、commit SHA；改动回 GitHub，不在镜像直接开发 |
@@ -45,7 +45,7 @@ auto_validated 不等于官方或人工核验；仍保留字段质量边界。
 旧 native Sheet 1XbNpuYD9wLFSPtD8260s3NT8_eLnybjkpjkLQRn6pzQ 已是归档工作历史，不得作为生产写入目标。
 旧 make sync / build_bundles.py 的 fail-closed guard 保留，直到 MASTER-aware 替代流程通过测试。
 原草案的多标签生产表、旧计数、统一 revisionId 假设、OAuth 一次授权永久有效、保证所有 AI 自动刷新等描述不再作为实施依据。
-当前本地部署目录已存在但为空；未据此认定环境、仓库或同步程序已部署。
+本地部署、GitHub 推送和 OAuth 沙盒已完成；最新实际结果见 DEPLOYMENT_STATUS.md。
 
 ## 3. 本地工程与 GitHub
 
