@@ -15,7 +15,7 @@ make validate MASTER=workspace/inputs/oauth-001/MASTER.xlsx
 准备仅指向沙盒的混合类型测试：
 
 ```sh
-.venv/bin/python - <<'PY'
+PYTHONPATH=src .venv/bin/python - <<'PY'
 from pathlib import Path
 import json
 from cba_kb.native import wrap
