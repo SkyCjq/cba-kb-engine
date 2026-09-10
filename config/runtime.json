@@ -1,0 +1,11 @@
+{
+  "deployment_root": "/Users/skychengneo/Agent/CBA_kb",
+  "github_repository": "SkyCjq/cba-kb-engine",
+  "production_enabled": false,
+  "sandbox_folder_id": null,
+  "inputs": {
+    "MASTER.xlsx": {"id": "1Nb4-4rrySjKW7GSA_PLh1SCkPgW9kJtc", "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    "source_registry.csv": {"id": "106NV6lV4mPLNjohMcSLdOyPRct0uOUsx", "mime": "text/csv"},
+    "manifest.csv": {"id": "1OsaC9ZQRC8pljd6VRMtub2YOVIv1QYKl", "mime": "text/csv"}
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "columns": 20,
+  "jiahao": "2024年12月7日5:00",
+  "master_file_id": "1Nb4-4rrySjKW7GSA_PLh1SCkPgW9kJtc",
+  "registry_rows": 89,
+  "rows": 3451,
+  "seasons": {
+    "2017-2018": 308,
+    "2018-2019": 331,
+    "2019-2020": 346,
+    "2020-2021": 355,
+    "2021-2022": 380,
+    "2022-2023": 358,
+    "2023-2024": 349,
+    "2024-2025": 357,
+    "2025-2026": 335,
+    "2026-2027": 332
+  },
+  "semantic_sha256": "6a9f4ed33efbc9f265d098dcee3ff2fabf07843a8137137e5e09cc43d2d9d3a8",
+  "sha256": "75a937bbb0f7696ba966b56aaafc4cc4d34b8e7751e9fb4a6995be44354a8aa7",
+  "unique_keys": 3451,
+  "verification_levels": {
+    "auto_validated": 2432,
+    "official_api": 1019
+  }
+}

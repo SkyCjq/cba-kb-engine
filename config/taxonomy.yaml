@@ -1,0 +1,79 @@
+_说明: 受控词表（controlled vocabulary）。自动打标签时只允许从这里选，选不出的一律写 待归类，由人工定期审阅后决定是否扩表。不设这道闸门，三个月后标签体系必然腐化成几百个近义词。
+_版本: '2026-09-08'
+season:
+- 2024-2025
+- 2025-2026
+- 2026-2027
+club_id:
+  beijing_konggu: 北京控股
+  beijing_shougang: 北京首钢
+  fujian_xunxing: 福建浔兴
+  guangdong_hongyuan: 广东宏远
+  guangzhou_longshi: 广州龙狮
+  jiangsu_kendiya: 江苏肯帝亚
+  jilin_jiutai: 吉林九台农商行
+  liaoning_shenyang_sansheng: 辽宁沈阳三生
+  nanjing_tongxi: 南京同曦
+  ningbo_fubang: 宁波富邦
+  qingdao_guoxin_haitian: 青岛国信海天
+  shandong_gaosu: 山东高速
+  shanghai_jiushi: 上海久事
+  shanxi_fenjiu: 山西汾酒
+  shenzhen_xinshiji: 深圳新世纪
+  sichuan_jincheng: 四川锦城
+  tianjin_ronggang: 天津荣钢
+  xinjiang_guanghui: 新疆广汇
+  zhejiang_chouzhou: 浙江稠州
+  zhejiang_guangsha: 浙江广厦
+_球队改名说明: >-
+  官网 club_official 在赛季之间改过名，club_id / club_normalized 已做归一，
+  查询一律用 club_id。已知改名：吉林九台农商行 -> 吉林东北虎（2025-2026 起）；
+  山东高速 -> 山东山高（2025-2026 起）；广州龙狮在 2024-2025、2025-2026 官网写作「龙狮」。
+registration_type:
+- 变更
+- 延续
+- 首次
+registration_method:
+- 上赛季注册球员
+- 其他联赛返回
+- 匹配
+- 合同期内
+- 独家签约权转让
+- 认领
+- 续约
+- 自行培养
+- 转会
+contract_category:
+- A1类
+- A2类
+- B类
+- C类
+- D类
+- E类
+registration_status:
+- 注册完成
+- 预注册完成
+topic:
+- 注册与转会
+- 合同与薪资
+- 选秀
+- 伤病
+- 赛程与战绩
+- 俱乐部运营
+- 联赛政策
+- 商业与赞助
+- 青训与梯队
+- 外援
+- 其他
+source_type:
+- cba_official
+- wechat_mp
+- local_file
+- gdrive
+- obsidian_legacy
+- manual
+status:
+- 待归类
+- 已归类
+- 需复核
+- 已归档

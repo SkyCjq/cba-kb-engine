@@ -1,0 +1,57 @@
+version: 1
+root:
+  local: .
+  drive_id: 1bQybVHV_RRtZvvFuFhLpM-rXbVsNT2Dq
+  drive_name: cba-kb
+
+folders:
+  inbox:
+    local: 00_inbox_待处理
+    drive_id: 1wKERXv7u_BcxSAdPXZpKL_zrv7IcVpPf
+  sources:
+    local: 10_sources_原始证据
+    drive_id: 1n1YRK7GQ2hQgAkMxvf-GsIzKpLSToSKf
+  data:
+    local: 20_data_结构化事实
+    drive_id: 1nL4xomHNQInbskeYdqa45hHfleHhExW-
+    exclude:
+      # v1.1 final: 20_data_结构化事实 only publishes the single-tab MASTER workbook.
+      # Working tables, QA/OCR artifacts and old flat exports must never be reintroduced.
+      - cba_registrations.csv
+      - cba_registrations.jsonl
+      - historical_registrations_2017_2025.csv
+      - cba_historical_qa_2017_2025.csv
+      - rapidocr_targeted_review_2017_2023.csv
+      - rapidocr_coordinates_2017_2023.zip
+      - rapidocr_review_summary_2017_2023.json
+      - rapidocr_layout_manifest_2017_2023.json
+      - cba_team_pages.csv
+      - player_club_changes.csv
+  notes:
+    local: 30_notes_人工知识
+    drive_id: 1bEf8gUmatoWij0Hl4GRmOxTAmNXM7HG-
+  ai:
+    local: 40_ai_投喂与索引
+    drive_id: 1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp
+  scripts:
+    local: 50_scripts_自动化脚本
+    drive_id: 1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC
+  config:
+    local: 60_config_配置与词表
+    drive_id: 1ccYmxy8NKt79pgyhDnyHUE14C6_wsn83
+  tools:
+    local: 70_tools_辅助工具
+    drive_id: 1ZJFbQpCNfZtpSCwkTFXQgwaGIdF_-jEN
+  archive:
+    local: 90_archive_历史归档
+    drive_id: 1GjDMkAYs7JpIrI9_kQduxlqygZmxeb9M
+
+# 默认只同步稳定产物/代码/配置。inbox/sources/notes/archive 不自动全量上传，避免过程文件误入消费层。
+default_sync_roles:
+  - data
+  - ai
+  - scripts
+  - config
+  - tools
+
+manifest: 60_config_配置与词表/manifest.csv
