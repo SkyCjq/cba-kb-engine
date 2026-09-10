@@ -66,11 +66,15 @@ def build(staging, baseline_rows, baseline_summary, output, release_id, commit, 
                                   'snapshots': fingerprint(snapshots), 'events': fingerprint(events)}
     save(output/'validation.json', validation)
     index = (output/'INDEX.md').read_text()
+    snapshot_seasons = sorted({row['season'] for row in snapshots})
+    event_seasons = sorted({row['season'] for row in events})
     index += ('\n## v1.5.1 事实产品\n'
               f'- {SNAPSHOTS_FILE}：{snapshot_summary["rows"]} 条外籍注册快照；grain 为赛季+快照时点+俱乐部+球员。\n'
               f'- {EVENTS_FILE}：{event_summary["rows"]} 条注册事件；grain 为单次注册/取消事件，不等于 roster 关系。\n'
               f'- {MASTER_FILE}：{domestic_summary["rows"]} 条国内注册关系（{merge_report["baseline_rows"]} 条基线 + '
               f'{len(merge_report["added"])} 条新增）。\n'
+              f'- 覆盖赛季：快照 {", ".join(snapshot_seasons) or "无"}；事件 {", ".join(event_seasons) or "无"}。'
+              '已登记但尚未完成验收的来源（含等待 OCR 复核的外籍球员图片来源）不在本次事实产品内。\n'
               '新增对象在 release_status 为 COMPLETE 前不作为当前事实；事件日期由赛季边界推导时 date_year_inferred=true。\n')
     (output/'INDEX.md').write_text(index)
     return {'release_id': release_id, 'rows': summary['rows'],
