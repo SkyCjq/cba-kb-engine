@@ -6,10 +6,14 @@
 数据内容保持原字节不变，1,019 条官方 API 行以官网 URL 追溯，未补造 source_file_id。
 16 份 Drive 原文件已导入并核对长度，代码导入清单见 import_inventory.json。
 
-本地实现已通过 18 项测试：既有 9 项，以及 MASTER 导出、正常发布、重复发布、原 ID 回退、冲突阻断、响应丢失重试、部分失败恢复、候选防篡改、类型保护与单写者要求。
+本地实现已通过 27 项测试：既有 9 项，以及 MASTER 导出、正常发布、重复发布、原 ID 回退、冲突阻断、响应丢失重试、部分失败恢复、候选防篡改、类型保护、单写者要求、锁与路径保护、发布状态恢复，以及 native Docs 受控前缀的范围和回退测试。
 故障测试当前为离线模拟，不等于 Drive 生产环境验证。
 
-已选择 GitHub 私有仓库 SkyCjq/cba-kb-engine，GitHub CLI 已授权。第二 AI 选择 Gemini。
+已创建并核实私有仓库 [SkyCjq/cba-kb-engine](https://github.com/SkyCjq/cba-kb-engine)，GitHub CLI 已授权，初始代码已推送。第二 AI 选择 Gemini。
+
+工程已安装于 `/Users/skychengneo/Agent/CBA_kb`，Python 3.11.15 独立虚拟环境已就绪。首批本地候选包含完整 CSV/JSONL、10 个赛季阅读版、INDEX、provenance 与 validation 共 15 个文件，MASTER 原文件字节不变。
+
+native Docs 适配原型仅改写受控的当前发布前缀，原正文保留在“历史内容”分界下，可通过删除前缀回退；范围测试通过。尚未接入生产发布器或执行真实 Docs 写入。
 
 待完成：
 
