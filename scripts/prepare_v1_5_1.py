@@ -300,9 +300,34 @@ def freeze(root, release, staging_runs):
                      ensure_ascii=False, indent=2))
 
 
+def refresh_dependencies(root, release):
+    """Re-pin the immutable input copies right before plan.
+
+    Drive may bump a freshly created object's `version` without changing its
+    bytes while the upload settles, which would otherwise trip the release gate
+    between freeze and publish. Content is re-verified; only metadata is re-pinned.
+    """
+    drive = Drive(root)
+    area = root/'workspace/production'/release
+    allocation = read(area/'allocation.json')
+    dependencies = read(area/'dependencies.json')
+    copies = {item.get('appProperties', {}).get('cba_key'): item['id']
+              for item in drive.list(allocation['staging_id'])}
+    refreshed = []
+    for dependency in dependencies:
+        content, meta = snapshot(drive, dependency['id'])
+        if digest(content) != dependency['sha256']:
+            raise RuntimeError(f"Input dependency bytes changed: {dependency['id']}")
+        refreshed.append({'id': dependency['id'], 'sha256': dependency['sha256'],
+                          'meta': fingerprint(meta)})
+    save(area/'dependencies.json', refreshed)
+    print(json.dumps({'release': release, 'dependencies': [item['id'] for item in refreshed],
+                      'copies': copies}, ensure_ascii=False, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('step', choices=['reserve', 'freeze'])
+    parser.add_argument('step', choices=['reserve', 'freeze', 'refresh-dependencies'])
     parser.add_argument('--release', default='v1.5.1-1')
     parser.add_argument('--staging', action='append',
                         default=['workspace/staging/bayi-2020-2021',
@@ -311,6 +336,8 @@ def main():
     root = Path.cwd()
     if arguments.step == 'reserve':
         reserve(root, arguments.release)
+    elif arguments.step == 'refresh-dependencies':
+        refresh_dependencies(root, arguments.release)
     else:
         freeze(root, arguments.release, arguments.staging)
 
