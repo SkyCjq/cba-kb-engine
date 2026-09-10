@@ -13,3 +13,10 @@ def test_production_requires_complete_explicit_policy(tmp_path):
  with pytest.raises(RuntimeError,match='complete'):authorize_plan(d,tmp_path,plan,'production')
  plan['entries']=[{'id':'a','mime':'text/plain','publish_parent':'unapproved'}]
  with pytest.raises(RuntimeError,match='move'):authorize_plan(d,tmp_path,plan,'production')
+
+
+def test_legacy_upload_entry_is_disabled():
+ import subprocess,sys
+ from pathlib import Path
+ result=subprocess.run([sys.executable,str(Path('legacy/upload_drive.py'))],capture_output=True,text=True)
+ assert result.returncode!=0 and 'Legacy uploader is disabled' in result.stderr

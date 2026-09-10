@@ -6,7 +6,7 @@
 数据内容保持原字节不变，1,019 条官方 API 行以官网 URL 追溯，未补造 source_file_id。
 16 份 Drive 原文件已导入并核对长度，代码导入清单见 import_inventory.json。
 
-本地实现已通过 30 项测试：既有 9 项，以及 MASTER 导出、正常发布、重复发布、原 ID 回退、冲突阻断、响应丢失重试、部分失败恢复、候选防篡改、类型保护、单写者要求、锁与路径保护、发布状态恢复，以及 native Docs 受控前缀的范围和回退测试。
+本地实现已通过 36 项测试：既有 9 项，以及 MASTER 导出、正常发布、重复发布、原 ID 回退、冲突阻断、响应丢失重试、部分失败恢复、候选防篡改、类型保护、单写者要求、锁与路径保护、发布状态恢复，以及 native Docs 受控前缀的范围和回退测试。
 故障测试当前为离线模拟，不等于 Drive 生产环境验证。
 
 已创建并核实私有仓库 [SkyCjq/cba-kb-engine](https://github.com/SkyCjq/cba-kb-engine)，GitHub CLI 已授权，初始代码已推送。第二 AI 选择 Gemini。
@@ -33,3 +33,9 @@ native Docs 适配原型仅改写受控的当前发布前缀，原正文保留�
 当前生产版本仍为 v1.1 FINAL。不得把部署中标记成 IMPLEMENTED。
 
 发布清单生成器会冻结代码副本、记录提交号，并保留已知旧文件 ID；未分配 ID 的新增产出物仍需发布前解析。沙盒演练步骤见 SANDBOX_RUNBOOK.md。
+
+## 封板前修复（生产冻结前记录）
+
+恢复中状态、重复恢复、最终状态响应丢失重试、只读输入依赖、完整生产白名单、新对象暂存/发布/归档恢复已实现；36项测试通过。真实Drive closeout-fault-002验证ROLLING_BACK可见、最终响应丢失可恢复、重复恢复成功。初次closeout-fault-001因新建对象元数据变化被安全阻断，未覆盖测试目标。旧legacy uploader命令入口已禁用。
+
+Gemini直接链接抽样通过；生产正式文件复验仍待执行。此记录不提前宣称v1.5已封板。迁移说明见MASTER_MIGRATION_NOTE.md，完整运行边界见OPERATIONS_V1_5.md。

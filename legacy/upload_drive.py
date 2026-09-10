@@ -296,4 +296,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit("Legacy uploader is disabled. Use cba-kb plan/publish/verify with the approved release policy.")
