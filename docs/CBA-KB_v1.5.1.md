@@ -1,6 +1,7 @@
 # CBA-KB v1.5.1 — 注册事实扩展（实施记录）
 
-> 状态：IN_PROGRESS / CANDIDATE_NOT_PRODUCTION。生产仍为 v1.5.0（tag `v1.5.0`，提交 c4bebec，release_status COMPLETE）。
+> 状态：RELEASE_COMPLETE_NOT_STABLE。生产 release_status 为 COMPLETE，`current_release_id = v1.5.1-1`（提交 de9a6b4，100 个产出物，独立回读 100/100）。
+> 未封板原因：两季外籍球员 PNG 尚未完成 OCR 验收，且尚未做 v1.5.1 的两 AI 消费验收与 tag。
 > 方案依据：[CBA-KB v1.5.1 方案](https://drive.google.com/file/d/1vQYwGHaqoWhjNQQBTofYityzKAd6X1uJ/view)；范围与纠错见 docs/V1_5_CLOSEOUT_REVIEW.md。
 > 本文件记录代码实现、真实来源验收证据和仍未完成的门禁；未完成项一律不得写成 IMPLEMENTED。
 
@@ -58,16 +59,38 @@
 make extract ARGS="--source <staged source> --season 2024-2025 --output workspace/staging/<run> --source-id <drive id>"
 make accept  ARGS="--staging workspace/staging --master workspace/inputs/<run>/MASTER.xlsx --report workspace/reports/v1.5.1-source-acceptance.json"
 make registry ARGS="--sources workspace/staging/inbox/sources.json --staging workspace/staging --output workspace/staging/registry-proposal"
-make facts   ARGS="--staging workspace/staging/bayi-2020-2021 --staging workspace/staging/foreign-2024-2025 --master workspace/inputs/<run>/MASTER.xlsx --output workspace/candidates/v1.5.1-<id> --release-id v1.5.1-<id>"
+.venv/bin/python scripts/prepare_v1_5_1.py reserve --release <release id>   # 预留新对象与冻结输入副本，写 config/production.json
+git commit -am "Freeze the v1.5.1 production allowlist"                      # freeze 要求干净工作树
+.venv/bin/python scripts/prepare_v1_5_1.py freeze  --release <release id>   # 构建三类产品并冻结 entries.json
+make plan    ARGS="--entries workspace/production/<release id>/entries.json --release-id <release id> --status-id 1FQmbZIJxCkTkpr6ovKh5-CoBbpT0YMwV --archive-id 1GjDMkAYs7JpIrI9_kQduxlqygZmxeb9M --dependencies workspace/production/<release id>/dependencies.json --environment production"
+make publish ARGS="--release workspace/outbox/<release id> --single-writer"
+make verify  ARGS="--release workspace/outbox/<release id>"
 ```
 
 发布仍走 v1.5 的 `plan --environment production` → `publish --single-writer` → `verify`，不得绕过白名单、依赖冻结、journal、回读与回退。
 
+## 生产发布记录：v1.5.1-1（2026-09-10）
+
+| 项 | 值 |
+| --- | --- |
+| release_status | COMPLETE；`current_release_id = v1.5.1-1`；`previous_release_id = v1.5.0` |
+| 代码提交 | `de9a6b48cdc89d793e896ed03de262438d546442`（分支 `v1.5.1`） |
+| 产出物 | 100 个目标全部写入并独立回读通过（`verify: {"verified": 100}`） |
+| 事实产品 | MASTER 3,465 条；SNAPSHOTS 73 条；EVENTS 73 条（59 外援取消 + 14 八一中转） |
+| 国产 MASTER 完整性 | 前 3,451 行与冻结基线逐字段相同；新增行 `notice_deadline` 为空，`sequence` 按赛季+俱乐部续编（如 beijing_shougang 20/21） |
+| registry | 89 → 93 行，四个新来源登记为 DISCOVERED（PNG 两个标 pending_ocr） |
+| 入口 | [发布状态](https://drive.google.com/file/d/1FQmbZIJxCkTkpr6ovKh5-CoBbpT0YMwV/view)、[INDEX](https://docs.google.com/document/d/1VqnFtMRSlOV9K7eVCAJKQ5HngWMl60MibbopNclxN9c/edit)、[SNAPSHOTS](https://drive.google.com/file/d/1avAxhNUTgm14MIdkgkHhia6_adSDGwLD/view)、[EVENTS](https://drive.google.com/file/d/1WtE63GIQxYPUBsfcRlhKCH8lJgyTZeGF/view) |
+| 归档 | `90_archive/v1.5.1-1/`（100 个 before 快照、candidate 副本、原生 Docs 备份、plan.json） |
+
+结构性变更（相对 v1.5.0 冻结策略）：`config/production.json` 的 `dependency_ids` 由 live MASTER/registry 改为**冻结输入副本**（`1iehJ6BPHZeYqvhdk0606gIO0E0EkXnUX`、`1jYtukHUR4HnCoclny3oSDltCdHTpglMY`），因为本发布必须合法修改 MASTER 与 registry；否则 `check_dependencies` 会在写入后自阻断。新增目标为两个事实产品对象与 22 个代码镜像文件，全部通过 `scripts/prepare_v1_5_1.py reserve` 预留 ID。
+
+故障记录：首次 `publish` 在归档快照阶段遇到网络超时并正确 fail-closed（journal 保持 PREPARED、release_status 保持 COMPLETE/v1.5.0、无目标被改写）；另有一次因新建空对象的 Drive `version` 在 plan 与 publish 之间自增而被 preflight 安全阻断。两者都通过重新 `plan` + 重跑 `publish` 幂等恢复，未使用回退。
+
 ## 未完成 / 下一步
 
 1. **两季 PNG OCR QA（阻塞 DoD）**：本机没有 PaddleOCR 访问令牌与 CLI，`foreign_image` 适配器已就绪但尚未有真实 OCR 表。需要设置 `PADDLEOCR_ACCESS_TOKEN` 并安装 `paddleocr` 后，对 `workspace/staging/inbox` 的两张 PNG 执行 doc parsing，产出 OCR/版面报告、低置信度复核清单、roster/事件分段报告与来源级计数，再登记该赛季赞助商别名。
-2. **来源登记落库**：把提案写入 `60_config_配置与词表/source_registry.csv`，状态从 `DISCOVERED` 走到 `EXTRACTED`；导入后再到 `IMPORTED`。
-3. **候选构建与发布**：在部署根 `/Users/skychengneo/Agent/CBA_kb` 用已提交代码执行 `make facts`，冻结候选，走 v1.5 发布路径进行生产写入；未获批准前不得写入生产 `20_data`。
-4. **验收与封板**：生产发布后做两 AI 消费验收、发布报告归档到 `90_archive`、创建 GitHub tag `v1.5.1`、同步 README/AI Context/INDEX/Notion。
+2. **来源状态推进**：已登记来源从 `DISCOVERED` 走到 `EXTRACTED`（2024-2025 XLSX、八一 MD 已达 `table_extracted` / `markdown_extracted`），PNG 完成后补事件计数与别名。
+3. **两 AI 消费验收**：按正式 ID 复验三类产品（尤其 EVENTS 的 `date_year_inferred`、快照与事件不得混用、非 COMPLETE 时的读取策略）。
+4. **封板**：验收通过后创建 GitHub tag `v1.5.1`、把发布报告归档到 `90_archive`、同步 README/AI Context/INDEX/Notion。
 
-在以上完成前，v1.5.1 只能是 `PLANNED / IN_PROGRESS / CANDIDATE`。
+在以上完成前，v1.5.1 只能是 `PLANNED / IN_PROGRESS / CANDIDATE / RELEASE_COMPLETE`，不得写成 `STABLE`。
