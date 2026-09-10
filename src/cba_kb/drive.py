@@ -12,7 +12,7 @@ FIELDS = 'id,name,mimeType,parents,version,modifiedTime,headRevisionId,md5Checks
 def credentials(root, interactive=False):
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
-    from google_auth_oauthlib.flow import InstalledAppFlow
+    from .oauth import authorize
     directory = Path(root)/'.credentials'
     client, token = directory/'credentials.json', directory/'token.json'
     creds = Credentials.from_authorized_user_file(str(token)) if token.exists() else None
@@ -25,7 +25,7 @@ def credentials(root, interactive=False):
             raise RuntimeError('Desktop OAuth client JSON missing: .credentials/credentials.json')
         if 'installed' not in json.loads(client.read_text()):
             raise ValueError('Expected Desktop OAuth client (installed)')
-        creds = InstalledAppFlow.from_client_secrets_file(str(client), SCOPES).run_local_server(port=0)
+        creds = authorize(client, SCOPES)
     directory.mkdir(parents=True,exist_ok=True)
     os.chmod(directory,0o700)
     atomic(token,creds.to_json().encode()); os.chmod(token,0o600)
