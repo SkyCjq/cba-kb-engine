@@ -88,11 +88,15 @@ def reserve(root, release):
                             'allowed_parents': [SCRIPTS, staging], 'staging_parent': staging,
                             'publish_parent': SCRIPTS, 'source': relative})
     for name in PRODUCTS:
+        if any(item['logical_key'] == 'facts/' + name for item in definitions):
+            continue
         file_id = drive.ensure(staging, 'facts/' + name, name, XLSX, b'')
         definitions.append({'logical_key': 'facts/' + name, 'name': name, 'id': file_id,
                             'mime': XLSX, 'mode': 'binary', 'allowed_parents': [DATA, staging],
                             'staging_parent': staging, 'publish_parent': DATA})
     for extra in EXTRAS.get(release, []):
+        if any(item['logical_key'] == extra['logical_key'] for item in definitions):
+            continue
         file_id = drive.ensure(staging, extra['logical_key'], extra['name'], extra['mime'], b'')
         definitions.append({'logical_key': extra['logical_key'], 'name': extra['name'], 'id': file_id,
                             'mime': extra['mime'], 'mode': 'binary',
