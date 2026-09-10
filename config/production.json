@@ -1,8 +1,8 @@
 {
   "archive_id": "1GjDMkAYs7JpIrI9_kQduxlqygZmxeb9M",
   "dependency_ids": [
-    "1iehJ6BPHZeYqvhdk0606gIO0E0EkXnUX",
-    "1jYtukHUR4HnCoclny3oSDltCdHTpglMY"
+    "1xhXwCdUF3CQ91pHwIG9YAzzrXE9mV4hs",
+    "1jJJUtRm7FvY6zM17iuK5sTugqUVwX2UP"
   ],
   "enabled": true,
   "status_id": "1FQmbZIJxCkTkpr6ovKh5-CoBbpT0YMwV",
@@ -282,6 +282,16 @@
       "mode": "binary",
       "publish_parent": "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC",
       "staging_parent": "1FFf25BBDr9HCnkD9qnkBpZ5GG6FAs6q3"
+    },
+    "1K3TkYFKKe8-0BugGzOpplFaY_PutwG5O": {
+      "allowed_parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp",
+        "1Hux80Zj3nX49yX5nXLfB026sz556FcOB"
+      ],
+      "mime": "text/markdown",
+      "mode": "binary",
+      "publish_parent": "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp",
+      "staging_parent": "1Hux80Zj3nX49yX5nXLfB026sz556FcOB"
     },
     "1K5Ypi7aK2RQmOjcatKK9oFigIrCe_8iO": {
       "allowed_parents": [
@@ -564,6 +574,16 @@
       "mode": "binary",
       "publish_parent": "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp",
       "staging_parent": "1FFf25BBDr9HCnkD9qnkBpZ5GG6FAs6q3"
+    },
+    "1aefDZ5WNQiLoGR1p-bO-sJR9Y5Iuous9": {
+      "allowed_parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC",
+        "1Hux80Zj3nX49yX5nXLfB026sz556FcOB"
+      ],
+      "mime": "text/plain",
+      "mode": "binary",
+      "publish_parent": "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC",
+      "staging_parent": "1Hux80Zj3nX49yX5nXLfB026sz556FcOB"
     },
     "1avAxhNUTgm14MIdkgkHhia6_adSDGwLD": {
       "allowed_parents": [
@@ -910,6 +930,16 @@
       "mode": "binary",
       "publish_parent": "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC",
       "staging_parent": "1FFf25BBDr9HCnkD9qnkBpZ5GG6FAs6q3"
+    },
+    "1xscpYM6eJ2v6TFcNMwFMVLZvJxdyGJF0": {
+      "allowed_parents": [
+        "1GjDMkAYs7JpIrI9_kQduxlqygZmxeb9M",
+        "1Hux80Zj3nX49yX5nXLfB026sz556FcOB"
+      ],
+      "mime": "text/markdown",
+      "mode": "binary",
+      "publish_parent": "1GjDMkAYs7JpIrI9_kQduxlqygZmxeb9M",
+      "staging_parent": "1Hux80Zj3nX49yX5nXLfB026sz556FcOB"
     },
     "1yWHhBUl2d20-2CQ7fvMGdM2elO9TjUoI": {
       "allowed_parents": [
