@@ -300,6 +300,8 @@ def freeze(root, release, staging_runs):
             data = DOMAIN_ACCEPTANCE.read_bytes()
         elif key.startswith('report/'):
             data = (root / base.REPORT_DIR / item['name']).read_bytes()
+        elif key.startswith('ai/'):
+            data = (root / base.REPORT_DIR / item['name']).read_bytes()
         elif key == 'control/drive_map.yaml':
             data = base.yaml.safe_dump(mapping, allow_unicode=True, sort_keys=False).encode()
         elif key == 'entry/code':
