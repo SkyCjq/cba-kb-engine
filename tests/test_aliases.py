@@ -54,3 +54,13 @@ def test_bayi_is_defunct_history_not_a_free_alias():
     with pytest.raises(UnresolvedClub, match='defunct'):
         clubs.resolve('八一', '2020-2021')
     assert clubs.resolve('八一', '2020-2021', role='event') == 'bayi'
+
+
+def test_source_typo_is_explicit_and_season_scoped():
+    clubs = Clubs(ROOT)
+    assert clubs.resolve('广州朗钛海本', '2024-2025') == 'guangzhou_longshi'
+    config = clubs.clubs['guangzhou_longshi']
+    assert '广州朗钛海本' not in config['official_foreign_sponsor_by_season']['2024-2025']
+    assert config['source_typo_variant']['2024-2025'] == ['广州朗钛海本']
+    with pytest.raises(UnresolvedClub):
+        clubs.resolve('广州朗钛海本', '2025-2026')

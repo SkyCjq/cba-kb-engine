@@ -96,3 +96,25 @@ def test_infer_year_boundaries():
     assert foreign.infer_year('2024-2025', 4) == (2025, True, True)
     with pytest.raises(ValueError):
         foreign.infer_year('2024-2025', 13)
+
+
+def test_source_literal_text_is_not_reconstructed_from_normalized_values(tmp_path):
+    rows = [row[:] for row in TABLE]
+    rows[3] = ['宁波町渥', 'GEORGE KELL Ⅲ', '乔治·凯尔三世', '美国', 'C', '00']
+    result = extract(tmp_path, rows)
+    assert result['snapshots'][0]['jersey_number'] == '00'
+    assert result['snapshots'][0]['raw_row_text'].endswith('C | 00')
+
+
+def test_numeric_jersey_with_zero_padding_format(tmp_path):
+    from openpyxl import load_workbook
+    path = workbook(tmp_path, TABLE)
+    book = load_workbook(path)
+    book.active['F4'] = 0
+    book.active['F4'].number_format = '00'
+    book.save(path)
+    book.close()
+    result = foreign_xlsx.extract(path, SEASON, SOURCE, clubs=Clubs(ROOT))
+    assert result['snapshots'][0]['jersey_number'] == '00'
+    assert result['snapshots'][0]['raw_row_text'].endswith('PF | 00')
+    assert result['snapshots'][2]['jersey_number'] == '0'

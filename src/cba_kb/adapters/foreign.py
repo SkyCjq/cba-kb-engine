@@ -20,6 +20,18 @@ def text(value):
     return str(value).strip() if value is not None else ''
 
 
+def literal(value):
+    """Return the source cell representation without rebuilding it from parsed fields."""
+    if value is None:
+        return ''
+    if isinstance(value, bool):
+        return 'TRUE' if value else 'FALSE'
+    # Keep source strings verbatim, including NBSP, leading zeroes and suffixes.
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
 def header_index(rows):
     for index, row in enumerate(rows):
         cells = [text(c) for c in row]
@@ -75,7 +87,9 @@ def build(rows, season, source, clubs=None, strict=True, title=None, source_page
             unresolved.append(item)
     for number, row in enumerate(rows[index + 2:], index + 3):
         first = text(cell(row, mapping['球队']))
-        joined = ' | '.join(text(c) for c in row)
+        # Provenance is assembled from source cells before normalization.  Do not
+        # reconstruct raw text from the normalized record values.
+        joined = ' | '.join(literal(c) for c in row)
         cancel = CANCEL.match(first)
         if cancel:
             month, day, club_text, name_en, name_zh = cancel.groups()

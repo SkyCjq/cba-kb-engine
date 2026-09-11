@@ -11,7 +11,9 @@ clubs:
   beijing_konggu:
     status: active
     official_domestic: [北京控股]
+    historical_domestic: [北京紫禁勇士]
     official_foreign_sponsor_by_season:
+      2020-2021: [北京紫禁勇士]
       2024-2025: [北京控股]
   beijing_shougang:
     status: active
@@ -22,41 +24,63 @@ clubs:
   fujian_xunxing:
     status: active
     official_domestic: [福建浔兴]
-    historical_domestic: [福建豹发力]
+    historical_domestic: [福建豹发力, 福建]
     official_foreign_sponsor_by_season:
+      2021-2022: [福建浔兴股份]
       2024-2025: [福建晋江文旅]
   guangdong_hongyuan:
     status: active
     official_domestic: [广东宏远]
     official_foreign_sponsor_by_season:
+      2020-2021: [广东东莞大益, 广东]
+      2021-2022: [广东东莞大益]
+      2022-2023: [广东]
       2024-2025: [广东东阳光]
   guangzhou_longshi:
     status: active
     official_domestic: [广州龙狮]
     media: [龙狮]
     official_foreign_sponsor_by_season:
-      2024-2025: [广州朗肽海本]
+      2020-2021: [时代中国广州, 广州]
+      2021-2022: [时代中国广州]
+      2024-2025: [广州朗肽海本, 广州]
+    # Literal spelling in foreign_merged.md; not an official sponsor rename.
+    source_typo_variant:
+      2024-2025: [广州朗钛海本]
   jiangsu_kendiya:
     status: active
     official_domestic: [江苏肯帝亚]
     official_foreign_sponsor_by_season:
+      2020-2021: [苏州肯帝亚]
+      2021-2022: [苏州肯帝亚]
+      2022-2023: [江苏]
       2024-2025: [江苏肯帝亚]
   jilin_jiutai:
     status: active
     official_domestic: [吉林九台农商行]
     historical_domestic: [吉林东北虎, 吉林九台农商银行]
     official_foreign_sponsor_by_season:
-      2024-2025: [九台农商银行]
+      2020-2021: [九台农商银行]
+      2021-2022: [九台农商银行]
+      2024-2025: [九台农商银行, 吉林]
+      2025-2026: [吉林]
+      2022-2023: [吉林]
   liaoning_shenyang_sansheng:
     status: active
     official_domestic: [辽宁沈阳三生]
     historical_domestic: [辽宁衡润]
     official_foreign_sponsor_by_season:
+      2020-2021: [辽宁本钢]
+      2021-2022: [辽宁本钢]
+      2022-2023: [辽宁]
+      2023-2024: [辽宁]
       2024-2025: [辽宁本钢]
   nanjing_tongxi:
     status: active
     official_domestic: [南京同曦]
     official_foreign_sponsor_by_season:
+      2020-2021: [南京同曦宙光]
+      2021-2022: [南京同曦宙光]
       2024-2025: [南京头排苏酒]
   ningbo_fubang:
     status: active
@@ -68,54 +92,78 @@ clubs:
     official_domestic: [青岛国信海天]
     historical_domestic: [青岛国信双星]
     official_foreign_sponsor_by_season:
+      2020-2021: [青岛每日优鲜]
+      2021-2022: [青岛每日优鲜]
       2024-2025: [青岛国信制药]
   shandong_gaosu:
     status: active
     official_domestic: [山东高速]
-    historical_domestic: [山东山高, 山东西王]
+    historical_domestic: [山东山高, 山东西王, 山东男篮, 山东]
     official_foreign_sponsor_by_season:
+      2020-2021: [山东西王]
       2024-2025: [山东高速]
   shanghai_jiushi:
     status: active
     official_domestic: [上海久事]
     official_foreign_sponsor_by_season:
+      2022-2023: [上海]
+      2020-2021: [上海]
       2024-2025: [上海久事]
   shanxi_fenjiu:
     status: active
     official_domestic: [山西汾酒]
     historical_domestic: [山西国投]
     official_foreign_sponsor_by_season:
-      2024-2025: [山西汾酒]
+      2020-2021: [山西汾酒股份, 山西]
+      2021-2022: [山西汾酒股份, 山西]
+      2022-2023: [山西]
+      2023-2024: [山西]
+      2024-2025: [山西汾酒, 山西]
   shenzhen_xinshiji:
     status: active
     official_domestic: [深圳新世纪]
     official_foreign_sponsor_by_season:
+      2020-2021: [深圳马可波罗]
+      2021-2022: [深圳马可波罗]
+      2022-2023: [深圳]
+      2023-2024: [深圳]
       2024-2025: [深圳马可波罗]
   sichuan_jincheng:
     status: active
     official_domestic: [四川锦城]
     historical_domestic: [四川, 四川金强]
     official_foreign_sponsor_by_season:
+      2020-2021: [四川五粮金樽]
+      2021-2022: [四川金荣实业]
       2024-2025: [四川丰谷酒业]
   tianjin_ronggang:
     status: active
     official_domestic: [天津荣钢]
     official_foreign_sponsor_by_season:
+      2020-2021: [天津先行者]
       2024-2025: [天津先行者]
   xinjiang_guanghui:
     status: active
     official_domestic: [新疆广汇]
     official_foreign_sponsor_by_season:
+      2020-2021: [新疆伊力特, 新疆]
+      2021-2022: [新疆伊力王酒]
+      2022-2023: [新疆]
       2024-2025: [新疆伊力特]
   zhejiang_chouzhou:
     status: active
     official_domestic: [浙江稠州]
     official_foreign_sponsor_by_season:
+      2020-2021: [浙江稠州金租]
+      2021-2022: [浙江稠州金租]
+      2022-2023: [浙江稠州]
       2024-2025: [浙江稠州金租]
   zhejiang_guangsha:
     status: active
     official_domestic: [浙江广厦]
     official_foreign_sponsor_by_season:
+      2020-2021: [浙江广厦控股]
+      2021-2022: [浙江广厦控股]
       2024-2025: [浙江方兴渡]
   bayi:
     status: defunct

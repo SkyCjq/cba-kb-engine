@@ -1,0 +1,91 @@
+{
+  "status": "PASS_IMPLEMENTED_TABLE_SCOPE",
+  "production_eligible": false,
+  "version": "1.5.2.dev0",
+  "counts": {
+    "domestic_registrations": 46,
+    "domestic_transaction_windows": 4,
+    "registration_status_events": 72,
+    "foreign_registration_snapshots": 244,
+    "foreign_priority_right_snapshots": 227,
+    "foreign_priority_right_transactions": 7
+  },
+  "summary": {
+    "domestic_registrations": {
+      "rows": 46,
+      "unique": 46
+    },
+    "domestic_transaction_windows": {
+      "rows": 4,
+      "unique": 4
+    },
+    "registration_status_events": {
+      "rows": 72,
+      "unique": 72
+    },
+    "foreign_registration_snapshots": {
+      "rows": 244,
+      "unique": 244
+    },
+    "foreign_priority_right_snapshots": {
+      "rows": 227,
+      "unique": 227
+    },
+    "foreign_priority_right_transactions": {
+      "rows": 7,
+      "unique": 7
+    }
+  },
+  "registration_snapshots_by_season": {
+    "2020-2021": [
+      45,
+      "2021-04-11"
+    ],
+    "2022-2023": [
+      52,
+      "2023-04-05"
+    ],
+    "2024-2025": [
+      73,
+      "2025-03-31"
+    ],
+    "2025-2026": [
+      74,
+      "2026-04-24"
+    ]
+  },
+  "annual_rights_by_target_season": {
+    "2019-2020": 12,
+    "2020-2021": 23,
+    "2021-2022": 27,
+    "2022-2023": 17,
+    "2023-2024": 15,
+    "2024-2025": 18,
+    "2025-2026": 27,
+    "2026-2027": 27
+  },
+  "source_hashes": {
+    "domestic": "11fda375f3e41c29a02918d924bd026e78c62b44635a6b8b37209f7da3846476",
+    "foreign": "fe2d47a0cdcb16777eabe5838ad3e8b19eb0657224434b941bb003af00f889ae"
+  },
+  "legacy_foreign_xlsx_sha256": "3e0a0751c12b11578cc477e7612ffaff91c9f9e738457bfcb78645395e2b67f0",
+  "legacy_foreign_counts": {
+    "teams": 20,
+    "snapshots": 73,
+    "events": 59,
+    "observed_registrations": 132
+  },
+  "workbook_sha256": "4124c4e6f8e3f62d7353180a5bbd4baca51e3196e2b7fac6b06148042fce2849",
+  "unresolved_clubs": [],
+  "checks": [
+    "strict aliases",
+    "source row locators and literal evidence",
+    "season counts and dates",
+    "name separation",
+    "announcement/date precision",
+    "legacy XLSX compatibility",
+    "six-tab complete cell round-trip",
+    "deterministic XLSX"
+  ],
+  "scope_note": "Table-scope verification only. See docs/CBA-KB_v1.5.2.md for all unfinished requirements."
+}

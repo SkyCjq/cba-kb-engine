@@ -37,6 +37,9 @@ class Clubs:
             for season, names in (item.get('official_foreign_sponsor_by_season') or {}).items():
                 for name in names or []:
                     self._index.setdefault((normalize(name), str(season)), club_id)
+            for season, names in (item.get('source_typo_variant') or {}).items():
+                for name in names or []:
+                    self._index.setdefault((normalize(name), str(season)), club_id)
 
     def resolve(self, name, season=None, role='roster'):
         text = normalize(name)

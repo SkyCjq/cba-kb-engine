@@ -36,6 +36,13 @@ def main():
     q.add_argument('--output',type=Path,required=True)
     q.add_argument('--release-id',required=True)
     q.add_argument('--generated-at',default=None)
+    q=sub.add_parser('domain')
+    q.add_argument('--domestic-source',type=Path,required=True)
+    q.add_argument('--rights-source',type=Path,required=True)
+    q.add_argument('--output',type=Path,required=True)
+    q.add_argument('--domestic-source-id',required=True)
+    q.add_argument('--rights-source-id',required=True)
+    q.add_argument('--lenient-clubs',action='store_true')
     q=sub.add_parser('catalog');q.add_argument('--candidate',type=Path,required=True);q.add_argument('--output',type=Path,required=True)
     q=sub.add_parser('plan'); q.add_argument('--entries',type=Path,required=True); q.add_argument('--release-id',required=True)
     q.add_argument('--status-id',required=True); q.add_argument('--archive-id',required=True)
@@ -116,6 +123,38 @@ def main():
             baseline_rows,baseline_summary=inspect(a.master)
             result=build_products(collect(a.staging),baseline_rows,baseline_summary,a.output,a.release_id,
                 commit,a.generated_at or datetime.now(timezone.utc).isoformat())
+        elif a.command=='domain':
+            from .aliases import Clubs
+            from .domain_xlsx import write as write_domain
+            from .registration_domain import parse_domestic_movement, parse_foreign_rights, validate_domain
+            if a.output.exists() or a.output.with_suffix('.validation.json').exists():
+                raise ValueError('Choose a new candidate workbook path')
+            clubs=Clubs(root, strict=not a.lenient_clubs)
+            domestic_source={'id':a.domestic_source_id,
+                             'url':f'https://drive.google.com/file/d/{a.domestic_source_id}/view',
+                             'type':'gdrive'}
+            rights_source={'id':a.rights_source_id,
+                           'url':f'https://drive.google.com/file/d/{a.rights_source_id}/view',
+                           'type':'gdrive'}
+            records={}
+            records.update(parse_domestic_movement(a.domestic_source.read_text(),domestic_source,clubs))
+            foreign_records=parse_foreign_rights(a.rights_source.read_text(),rights_source,clubs)
+            for key,value in foreign_records.items():
+                if key == 'report':
+                    continue
+                records.setdefault(key,[]).extend(value)
+            summary=validate_domain(records)
+            write_domain(a.output,records)
+            result={'candidate_workbook':str(a.output),'summary':summary,
+                    'status':'CANDIDATE_PARTIAL','production_eligible':False,
+                    'unresolved_clubs':clubs.report()['unresolved'],
+                    'pending_sources':['2020-2021 foreign PNG','2022-2023 foreign PNG'],
+                    'remaining_scope':['Complete window coverage and domestic correction lifecycle',
+                                       'Bayi detail enrichment and baseline domestic MASTER merge',
+                                       '2023-2024 media snapshot; foreign usage activation and cancellation integration',
+                                       'Native Sheet authoritative read/build/publish integration'],
+                    'parser_reports':{'domestic':records.get('report'), 'foreign':foreign_records.get('report')}}
+            save(a.output.with_suffix('.validation.json'),result)
         elif a.command=='plan':
             entries=read(a.entries)
             dependencies=read(a.dependencies) if a.dependencies else []
