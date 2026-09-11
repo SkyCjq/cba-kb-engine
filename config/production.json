@@ -529,7 +529,7 @@
         "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC",
         "1TE3W7xrkf3dw8gEjwihC7OkSNfedPXZn"
       ],
-      "mime": "text/plain",
+      "mime": "text/x-python-script",
       "mode": "binary",
       "publish_parent": "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC",
       "staging_parent": "1TE3W7xrkf3dw8gEjwihC7OkSNfedPXZn"
@@ -569,7 +569,7 @@
         "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC",
         "1y3zrIHNyu5QRVxCRUuN1s9ou9Y2J1uDQ"
       ],
-      "mime": "text/plain",
+      "mime": "application/json",
       "mode": "binary",
       "publish_parent": "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC",
       "staging_parent": "1y3zrIHNyu5QRVxCRUuN1s9ou9Y2J1uDQ"
@@ -850,7 +850,7 @@
         "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC",
         "1Hux80Zj3nX49yX5nXLfB026sz556FcOB"
       ],
-      "mime": "text/plain",
+      "mime": "text/x-python-script",
       "mode": "binary",
       "publish_parent": "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC",
       "staging_parent": "1Hux80Zj3nX49yX5nXLfB026sz556FcOB"
@@ -1366,7 +1366,7 @@
         "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC",
         "1y3zrIHNyu5QRVxCRUuN1s9ou9Y2J1uDQ"
       ],
-      "mime": "text/plain",
+      "mime": "text/x-python-script",
       "mode": "binary",
       "publish_parent": "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC",
       "staging_parent": "1y3zrIHNyu5QRVxCRUuN1s9ou9Y2J1uDQ"

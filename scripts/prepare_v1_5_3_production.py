@@ -73,6 +73,12 @@ AI_ARTIFACTS = {
     'v1.5.3-event-schema.json',
     'v1.5.3-phase0-freeze.json',
 }
+MIME_OVERRIDES = {
+    '1OwjOa26nrMqmyzA5ZUoVURN2buBhdIOE': 'text/x-python-script',
+    '1Qhga1BIcF_H1Ra4HCx0OX87GT7Z7qPwX': 'application/json',
+    '1aefDZ5WNQiLoGR1p-bO-sJR9Y5Iuous9': 'text/x-python-script',
+    '1xIcqerya95H5KzXxbLWYYkWMYf3CyrY-': 'text/x-python-script',
+}
 
 base.PRODUCTS = base.PRODUCTS + (DOMAIN_PRODUCT,)
 base.EXTRAS = {
@@ -394,9 +400,16 @@ def freeze(root, staging_runs):
     area = root / 'workspace/production' / RELEASE
     allocation = read(area / 'allocation.json')
     definitions = allocation['definitions']
+    for item in definitions:
+        if item['id'] in MIME_OVERRIDES:
+            item['mime'] = MIME_OVERRIDES[item['id']]
+    save(area / 'allocation.json', allocation)
     policy = read(root / 'config/production.json')
     if {item['id'] for item in definitions} != set(policy['targets']):
         raise RuntimeError('Production policy does not match the allocation target set')
+    for item in definitions:
+        if item['mime'] != policy['targets'][item['id']]['mime']:
+            raise RuntimeError(f'Production MIME mismatch for {item["logical_key"]}')
 
     inputs = area / 'inputs'
     inputs.mkdir(exist_ok=True)
