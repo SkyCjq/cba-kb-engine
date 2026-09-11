@@ -427,16 +427,16 @@ def freeze(root, staging_runs):
     registry, applied = base.apply_status(
         registry, root / 'config/v1.5.2_registry_status.json'
     )
-    _, baseline = prior.inspect(inputs / 'MASTER.xlsx')
+    _, baseline = base.inspect(inputs / 'MASTER.xlsx')
     candidate = area / 'candidate'
     result = base.build_products(
         base.collect([Path(root) / run for run in staging_runs]),
-        prior.inspect(inputs / 'MASTER.xlsx')[0],
+        base.inspect(inputs / 'MASTER.xlsx')[0],
         baseline,
         candidate,
         RELEASE,
         commit,
-        prior.datetime.now(prior.timezone.utc).isoformat(),
+        base.datetime.now(base.timezone.utc).isoformat(),
     )
     domain_copy = candidate / DOMAIN_PRODUCT
     atomic(domain_copy, DOMAIN_WORKBOOK.read_bytes())
@@ -494,11 +494,11 @@ def freeze(root, staging_runs):
                 f"{urls[item['logical_key']]}"
             )
 
-    manifest = list(prior.csv.DictReader(
-        prior.io.StringIO(raw['manifest.csv'].decode('utf-8-sig'))
+    manifest = list(base.csv.DictReader(
+        base.io.StringIO(raw['manifest.csv'].decode('utf-8-sig'))
     ))
     columns = list(manifest[0])
-    mapping = prior.yaml.safe_load(drive.get(DRIVE_MAP_ID))
+    mapping = base.yaml.safe_load(drive.get(DRIVE_MAP_ID))
     mapping['v1_5_release'] = {
         'release_id': RELEASE,
         'status_id': allocation['status_id'],
@@ -549,7 +549,7 @@ def freeze(root, staging_runs):
         elif key.startswith('ai/'):
             data = (root / base.REPORT_DIR / item['name']).read_bytes()
         elif key == 'control/drive_map.yaml':
-            data = prior.yaml.safe_dump(
+            data = base.yaml.safe_dump(
                 mapping, allow_unicode=True, sort_keys=False
             ).encode()
         elif key == 'entry/code':
@@ -590,7 +590,7 @@ def freeze(root, staging_runs):
         else:
             data = (root / item['source']).read_bytes()
         if item['mode'] == 'managed_doc':
-            data = prior.wrap(data.decode()).encode()
+            data = base.wrap(data.decode()).encode()
         path = frozen / str(index_number)
         atomic(path, data)
         entry = {
@@ -614,7 +614,7 @@ def freeze(root, staging_runs):
             local_path=entry['logical_key'],
             drive_file_id=entry['id'],
             status='published',
-            synced_at=prior.datetime.now(prior.timezone.utc).isoformat(),
+            synced_at=base.datetime.now(base.timezone.utc).isoformat(),
             content_hash=(
                 ''
                 if entry['logical_key'] == 'input/manifest.csv'
@@ -625,8 +625,8 @@ def freeze(root, staging_runs):
         row['hash_scope'] = (
             'managed_prefix' if entry['mode'] == 'managed_doc' else 'bytes'
         )
-    stream = prior.io.StringIO(newline='')
-    writer = prior.csv.DictWriter(
+    stream = base.io.StringIO(newline='')
+    writer = base.csv.DictWriter(
         stream,
         fieldnames=columns + ['published_release', 'hash_scope'],
         lineterminator='\n',
