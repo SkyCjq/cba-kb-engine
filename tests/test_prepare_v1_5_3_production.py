@@ -69,5 +69,5 @@ Drive **尚未处于 v1.5.3 production**。
     assert 'Drive **尚未处于 v1.5.3 production**' not in result
     assert '当前不得把 v1.5.3 表述为 production release' not in result
     assert 'current_release_id         = v1.5.3-2' in result
-    assert '131 passed / 0 skipped' in result
+    assert '全部通过，`0 skipped`' in result
     assert '`' + 'b' * 40 + '`' in result
