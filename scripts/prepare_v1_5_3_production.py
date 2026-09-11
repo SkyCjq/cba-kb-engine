@@ -285,7 +285,7 @@ def corrected_execution_state(commit, release_id):
 - PR #3 已合并，合并提交为 `a49993c873d7de2e33b2c3987cd64f0e2479ff6f`。
 - v1.5.3-1 发布代码提交为 `{RELEASE_COMMIT}`，其 tree 与合并提交一致。
 - v1.5.3-2 文档修正代码提交为 `{commit}`。
-- 完整测试在真实 `bayi.md` 来源在场时为 `131 passed / 0 skipped`。
+- 全量测试在真实 `bayi.md` 来源在场时全部通过，`0 skipped`。
 
 ## L2. 六表与事件收口
 
