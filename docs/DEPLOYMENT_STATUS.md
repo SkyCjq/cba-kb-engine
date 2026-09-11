@@ -2,6 +2,8 @@
 
 ## v1.5.2 DRAFT-2 实际部署（2026-09-11）
 
+维护状态：`CODE_FROZEN_BY_USER`。用户确认 PNG OCR 不需要，收尾后不再调整代码；其余未实施范围和 Gemini 未复验结论保留为已知限制。最终审计、范围决定和消费规则见 [最终收尾说明](v1.5.2-final-closeout-20260911.md)。`COMPLETE` 仅指已实现范围的发布事务完成。
+
 - 生产发布：`v1.5.2-1 / COMPLETE`，发布代码提交 `0d28fb8`，125 个产出物独立回读通过；上一发布为 `v1.5.1-2`。
 - 实际部署：`/Users/skychengneo/Agent/CBA_kb`，分支 `codex/v1.5.2-deploy`，运行版本 `1.5.2.dev0`。
 - 部署验证：发布前完整测试 **91 passed, 1 skipped**；真实来源重新生成六表工作簿，工作簿 SHA-256 为 `4124c4e6f8e3f62d7353180a5bbd4baca51e3196e2b7fac6b06148042fce2849`。

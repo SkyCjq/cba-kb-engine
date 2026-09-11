@@ -1,5 +1,7 @@
 # CBA-KB Engine v1.5.2 (implemented-scope production release)
 
+2026-09-11 用户确认收尾后冻结代码，PNG OCR 不再需要。当前版本按已实现范围使用，未实现功能和 Gemini 未复验结论保留；[最终收尾说明与数据读取规则](docs/v1.5.2-final-closeout-20260911.md) 为本轮收尾入口。该决定不提升为完整 DRAFT-2 或 STABLE。
+
 本地执行，GitHub 管理代码，Drive 保存已发布知识库。实际部署目录为 `/Users/skychengneo/Agent/CBA_kb`，分支 `codex/v1.5.2-deploy`。生产事实现为 **v1.5.2-1**（`release_status` COMPLETE，125 个产出物逐项回读通过），上一版本为 `v1.5.1-2`。
 
 本发布增加了 [CBA_注册领域_六表.xlsx](https://docs.google.com/spreadsheets/d/1_dgbWXOkJeEjGRtEeZ0oOC9e-lqbXZeW/edit)（600 条，SHA-256 `4124c4e6f8e3f62d7353180a5bbd4baca51e3196e2b7fac6b06148042fce2849`），并保留 MASTER、SNAPSHOTS、EVENTS。两张 PNG 按用户决定不在本轮纳入，保持 `DISCOVERED / ocr_deferred`。这是已实现六表范围的正式发布，不是完整 DRAFT-2 或 STABLE；未完成边界见 [实施记录](docs/CBA-KB_v1.5.2.md)。

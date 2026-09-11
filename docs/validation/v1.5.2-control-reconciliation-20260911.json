@@ -1,0 +1,81 @@
+{
+  "operation": "control_hash_reconciliation_only",
+  "release_id": "v1.5.2-1",
+  "changed_manifest_rows": [
+    {
+      "id": "1VqnFtMRSlOV9K7eVCAJKQ5HngWMl60MibbopNclxN9c",
+      "name": "INDEX",
+      "before": "5015aeb5d7223476ec1547bd55a7ef2f106e849afab0bd149727b0318d084319",
+      "after": "400613fe6825c7a2cb145e5e9f07af03833a0d9f4b34051e4117c36cbb9f4519"
+    },
+    {
+      "id": "1AqCZwlSKlZdfR9F0ftG_Dc36gffmz_NLs8v1FS99uu0",
+      "name": "00_README_先读这个",
+      "before": "fe9d6ab2e09e39cd75caaeda6b125a0b0eb5413ab33ceebc3e57b356bff32304",
+      "after": "1237cd5a6d0a535ef0ddaa1fc479b9bba6c406667618e62426541dd0c3c129e1"
+    },
+    {
+      "id": "1vXjEfH8M8aXlLXJqw4pjUec9ejUIZko2",
+      "name": "v1.5.2-release-report.md",
+      "before": "2dbaf8efcfaf5d7d61c7abd7c61b0721f00ebeae5ef9dfb0de02f2947e64159e",
+      "after": "1df53f53227be0540913ca05b3946d4d8c21cefe1f334fdb96c945a380119552"
+    }
+  ],
+  "manifest_before": "7c042016f6f328f21c201607095a6eb2bc13031bd5a3661149f3b30e1580bbfc",
+  "manifest_after": "88593d5d316d813d1423a8119c33f867cc7e5e9675fd2579987ced8b039b995e",
+  "live_status_matches_before": 121,
+  "expected_live_status_matches_after": 125,
+  "original_plan_untouched": true,
+  "fact_bytes_unchanged": true,
+  "code_unchanged": true,
+  "status": "COMPLETE",
+  "verified_at": "2026-09-11T05:00:20.329272+00:00",
+  "release_state": {
+    "state": "COMPLETE",
+    "current_release_id": "v1.5.2-1",
+    "pending_release_id": null,
+    "previous_release_id": "v1.5.1-2"
+  },
+  "live_status_matches_after": 125,
+  "status_after_sha256": "eb56dc9e9cbaad050f138f7b58e11cded9a12b4f9527a4efa082cd7ca5589a09",
+  "archive_folder_id": "1EGw45wUbftpdn2XGNV88FsoBW2MtZiiD",
+  "documents": [
+    {
+      "path": "docs/v1.5.2-final-closeout-20260911.md",
+      "id": "1CcL4S6J-TgjoPDTUoo2mn-rwdlV8LVhN",
+      "url": "https://drive.google.com/file/d/1CcL4S6J-TgjoPDTUoo2mn-rwdlV8LVhN/view?usp=drivesdk",
+      "sha256": "3092dd7c0624c4ce55eacf9f4e096d6e9cc12bacafcb2875efec4df086778b82"
+    },
+    {
+      "path": "docs/CBA-KB_v1.5.2.md",
+      "id": "1uH9UyeyKom-D1mtSfLoGjZE5IzqdxdoJ",
+      "url": "https://drive.google.com/file/d/1uH9UyeyKom-D1mtSfLoGjZE5IzqdxdoJ/view?usp=drivesdk",
+      "sha256": "96796e5539c0e8f1c2860b7f64438bd8355cf5f660e897b6f2db988558fa3aca"
+    },
+    {
+      "path": "docs/v1.5.2-deployment-20260911.md",
+      "id": "13Jo2SaIfRlyj9Vv5WX-clBtdx-HFy-pd",
+      "url": "https://drive.google.com/file/d/13Jo2SaIfRlyj9Vv5WX-clBtdx-HFy-pd/view?usp=drivesdk",
+      "sha256": "d76804eb5fb0b78046be76b158b5a30ca21f6e255b3f9bbe698d6fc2965316b7"
+    },
+    {
+      "path": "docs/DEPLOYMENT_STATUS.md",
+      "id": "1L3GEs4Xej--ZnsIB_GbVphXIHRdpL0KY",
+      "url": "https://drive.google.com/file/d/1L3GEs4Xej--ZnsIB_GbVphXIHRdpL0KY/view?usp=drivesdk",
+      "sha256": "7c404f962bdb29121f3faff160a933b033dd1ac950cdd00b6b215f8d5cd1f07d"
+    },
+    {
+      "path": "README.md",
+      "id": "1t7o7CjYyFizhCpskqNvYm-k-z_R5ii3B",
+      "url": "https://drive.google.com/file/d/1t7o7CjYyFizhCpskqNvYm-k-z_R5ii3B/view?usp=drivesdk",
+      "sha256": "0541f42ed3b819aad0cf466b9b3c7f728e4cc96c8b20bc61fa495f14acc81750"
+    },
+    {
+      "path": "docs/validation/v1.5.2-source-discrepancies-20260911.json",
+      "id": "1svbVtiViujQIbK7eZfw-lz7eB3Ai1rat",
+      "url": "https://drive.google.com/file/d/1svbVtiViujQIbK7eZfw-lz7eB3Ai1rat/view?usp=drivesdk",
+      "sha256": "554849dabfd139b7913b05ff74ac5591667ca06a74c3333d8fc68019dc7cb05d"
+    }
+  ],
+  "verification_method": "125-object inventory/payload audit plus guarded re-read of changed controls; untouched binary objects use Drive MD5 against frozen bytes; all four fact workbooks freshly downloaded."
+}
