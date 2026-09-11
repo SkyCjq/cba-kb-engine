@@ -1,6 +1,6 @@
 PYTHON ?= .venv/bin/python
 export PYTHONPATH := src:legacy
-.PHONY: doctor auth test validate build pull extract facts domain verify-v1.5.2 sync-v1.5.2 accept registry plan publish verify restore sync
+.PHONY: doctor auth test validate build pull extract facts domain verify-v1.5.2 sync-v1.5.2 prepare-v1.5.2 accept registry plan publish verify restore sync
 doctor:
 	$(PYTHON) -m cba_kb.cli doctor
 auth:
@@ -23,6 +23,8 @@ verify-v1.5.2:
 	$(PYTHON) scripts/verify_v1_5_2_sources.py $(ARGS)
 sync-v1.5.2:
 	$(PYTHON) scripts/sync_v1_5_2_candidate.py $(ARGS)
+prepare-v1.5.2:
+	$(PYTHON) scripts/prepare_v1_5_2.py $(ARGS)
 accept:
 	$(PYTHON) scripts/verify_v1_5_1_sources.py $(ARGS)
 registry:
