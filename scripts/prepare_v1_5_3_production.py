@@ -424,7 +424,7 @@ def freeze(root, staging_runs):
                 'meta': fingerprint(frozen_meta),
             })
     registry, added = prior.merged_registry(root, raw['source_registry.csv'])
-    registry, applied = prior.apply_status(
+    registry, applied = base.apply_status(
         registry, root / 'config/v1.5.2_registry_status.json'
     )
     _, baseline = prior.inspect(inputs / 'MASTER.xlsx')
