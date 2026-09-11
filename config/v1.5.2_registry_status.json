@@ -1,5 +1,5 @@
 {
-  "_说明": "v1.5.2-1 发布时登记两份合并核验来源并推进到 EXTRACTED；两张 PNG 明确不在本轮发布范围实施 OCR，保持 DISCOVERED/ocr_deferred，不得计为已抽取。",
+  "_说明": "v1.5.2-1 发布来源状态配置；两张 PNG 按用户决定永久排除，不进入当前 processing registry 或 backlog，旧状态仅保留于历史审计。",
   "_registered_at": "2026-09-11T00:00:00Z",
   "drive:1dOvVJBVahuyq0L2fI4WRhRy7QJOxdOUR": {
     "business_status": "EXTRACTED",
@@ -24,15 +24,5 @@
     "extraction_status": "markdown_extracted",
     "processed_at": "2026-09-10T13:15:00Z",
     "notes": "14 parsed records, 14 events, 0 record_key collisions against the frozen 3,451-row baseline; registration_window_deadline kept separate from notice_deadline."
-  },
-  "drive:1D72_i0dzR9TmeV_XH8KeBr_BTxxwFPIM": {
-    "business_status": "DISCOVERED",
-    "extraction_status": "ocr_deferred",
-    "notes": "PNG OCR deferred by explicit user decision for v1.5.2; no rows were extracted and this source must not be counted as extracted."
-  },
-  "drive:1WYVqi94bqVGOLsD7t1nmMXyTMTU4TOlr": {
-    "business_status": "DISCOVERED",
-    "extraction_status": "ocr_deferred",
-    "notes": "PNG OCR deferred by explicit user decision for v1.5.2; no rows were extracted and this source must not be counted as extracted."
   }
 }

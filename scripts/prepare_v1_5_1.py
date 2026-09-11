@@ -124,15 +124,19 @@ def reserve(root, release):
 
 
 def merged_registry(root, raw):
-    rows = list(csv.DictReader(io.StringIO(raw.decode('utf-8-sig'))))
-    columns = list(rows[0])
+    from cba_kb.source_policy import excluded_from_current
+
+    reader = csv.DictReader(io.StringIO(raw.decode('utf-8-sig')))
+    columns = reader.fieldnames
+    rows = [row for row in reader if not excluded_from_current(row)]
     known = {row['source_id'] for row in rows}
     proposal = json.loads((root/'workspace/staging/registry-proposal/registry-proposal.json').read_text())
     added = []
     for row in proposal:
-        if row['source_id'] in known:
+        if excluded_from_current(row) or row['source_id'] in known:
             continue
         rows.append({key: row.get(key, '') for key in columns})
+        known.add(row['source_id'])
         added.append(row['source_id'])
     stream = io.StringIO(newline='')
     writer = csv.DictWriter(stream, fieldnames=columns, lineterminator='\n')

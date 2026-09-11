@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
 
 from cba_kb.common import atomic, digest, save
 from cba_kb.drive import Drive
+from cba_kb.source_policy import excluded_from_current
 
 INBOX = '1wKERXv7u_BcxSAdPXZpKL_zrv7IcVpPf'
 WANTED = ('八一球员_2021赛季中期转会核验', '外籍球员注册信息')
@@ -29,6 +30,8 @@ def main():
            'size': f.get('size'), 'modifiedTime': f.get('modifiedTime')} for f in files])
     saved = []
     for item in files:
+        if excluded_from_current(item):
+            continue
         name = item['name']
         if not arguments.all and not any(key in name for key in WANTED):
             continue

@@ -19,6 +19,7 @@ from cba_kb.common import atomic, digest, read, save
 from cba_kb.drive import Drive
 from cba_kb.master import inspect
 from cba_kb.release import fingerprint, snapshot
+from cba_kb.source_policy import excluded_from_current
 from scripts import prepare_v1_5_1 as base
 
 
@@ -88,16 +89,17 @@ def validate_domain_candidate():
 
 def merged_registry(root, raw):
     """Merge every committed registry proposal without duplicating source IDs."""
-    rows = list(base.csv.DictReader(base.io.StringIO(raw.decode('utf-8-sig'))))
+    reader = base.csv.DictReader(base.io.StringIO(raw.decode('utf-8-sig')))
+    columns = reader.fieldnames
+    rows = [row for row in reader if not excluded_from_current(row)]
     added = []
     proposals = [
         root / 'config/v1.5.2_registry_proposal.json',
     ]
     proposal_rows = [row for path in proposals for row in read(path)]
-    columns = list(rows[0]) if rows else list(proposal_rows[0])
     known = {row['source_id'] for row in rows}
     for row in proposal_rows:
-        if row['source_id'] in known:
+        if excluded_from_current(row) or row['source_id'] in known:
             continue
         rows.append({key: row.get(key, '') for key in columns})
         known.add(row['source_id'])
@@ -141,8 +143,8 @@ shaped records and must not be added together as a count of people.
 - Strict six-table acceptance passed with 600/600 rows, source locators,
   literal evidence, deterministic workbook generation, and complete cell
   round-trip checks.
-- The two PNG sources remain `DISCOVERED / ocr_deferred` and are excluded from
-  this release by explicit user decision.
+- The two user-excluded PNG source IDs are permanently omitted from current
+  processing registry and backlog; historical audit records remain available.
 - The acceptance object is intentionally
   `production_eligible=false`: it verifies the implemented table scope only.
 
@@ -221,7 +223,7 @@ def freeze(root, release, staging_runs):
     status_url = drive.meta(allocation['status_id'])['webViewLink']
     scope = (
         '本发布是已实现的六表注册域范围，不是完整 DRAFT-2，也不等同于 STABLE。'
-        '两张 PNG 来源按用户决定不纳入本轮，保持 DISCOVERED/ocr_deferred。'
+        '两张 PNG 来源按用户决定永久排除，不进入当前 processing registry 或 backlog。'
         '国内窗口覆盖、纠错生命周期、八一/MASTER 合并、2023-2024 媒体快照、'
         '旧取消记录整合和原生 Sheet 权威源集成仍未完成。'
     )

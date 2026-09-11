@@ -14,6 +14,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
 
 from cba_kb.build_facts import collect
+from cba_kb.source_policy import excluded_from_current
 
 COLUMNS = ['source_id', 'drive_file_id', 'source_title', 'source_url', 'current_parent_id',
            'original_discovery_path', 'source_type', 'source_role', 'season', 'club_id',
@@ -32,16 +33,6 @@ PLAN = {
         'adapter': 'foreign_xlsx', 'status': 'table_extracted',
         'method': 'xlsx merge-header segmentation + season-aware cancellation parsing',
         'validation': 'auto_validated', 'record_types': ('snapshots', 'events')},
-    '2020-2021赛季CBA联赛外籍球员注册信息.png': {
-        'season': '2020-2021', 'role': 'foreign_registration_snapshot_primary',
-        'adapter': 'foreign_image', 'status': 'pending_ocr',
-        'method': 'paddleocr doc parsing + targeted recognition',
-        'validation': '', 'record_types': ('snapshots', 'events')},
-    '2022-2023赛季CBA联赛外籍球员注册信息': {
-        'season': '2022-2023', 'role': 'foreign_registration_snapshot_primary',
-        'adapter': 'foreign_image', 'status': 'pending_ocr',
-        'method': 'paddleocr doc parsing + targeted recognition',
-        'validation': '', 'record_types': ('snapshots', 'events')},
 }
 
 
@@ -75,9 +66,10 @@ def main():
     records = collect(sorted(path.parent for path in arguments.staging.glob('*/records.json')))
     rows = []
     for source in sources:
+        if excluded_from_current(source):
+            continue
         plan = plan_for(source['name'])
-        counts = [] if plan['status'] == 'pending_ocr' else \
-            counts_for(records, plan['season'], plan['record_types'])
+        counts = counts_for(records, plan['season'], plan['record_types'])
         rows.append({
             'source_id': f"drive:{source['id']}", 'drive_file_id': source['id'],
             'source_title': source['name'],
@@ -92,9 +84,7 @@ def main():
             'records_generated': '; '.join(counts), 'records_imported': '',
             'discovered_at': source.get('modifiedTime', ''), 'registered_at': '',
             'processed_at': '', 'verified_at': '',
-            'notes': 'Registered by the v1.5.1 source proposal; not yet imported to production. '
-                     + ('OCR QA pending: run the paddleocr doc parsing step, then targeted review.'
-                        if plan['status'] == 'pending_ocr' else '')})
+            'notes': 'Registered by the v1.5.1 source proposal; not yet imported to production.'})
     arguments.output.mkdir(parents=True, exist_ok=True)
     (arguments.output/'registry-proposal.json').write_text(
         json.dumps(rows, ensure_ascii=False, indent=2))
