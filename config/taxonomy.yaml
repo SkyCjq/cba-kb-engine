@@ -1,5 +1,5 @@
 _说明: 受控词表（controlled vocabulary）。自动打标签时只允许从这里选，选不出的一律写 待归类，由人工定期审阅后决定是否扩表。不设这道闸门，三个月后标签体系必然腐化成几百个近义词。
-_版本: '2026-09-10'
+_版本: '2026-09-11'
 season:
 - 2018-2019
 - 2019-2020
@@ -103,10 +103,24 @@ event_domain:
 event_status:
 - confirmed
 - pending
-- not_completed
+- uncompleted
 - corrected
-- retracted
+- withdrawn
+- cancelled
 - system_error
+event_date_precision:
+- day
+- month
+- season
+- range
+- approx
+- unknown
+research_movement_label:
+- free_agent_claim
+- player_swap
+- release_then_claim
+- status_change_only
+- rumor_not_completed
 date_status:
 - known
 - pending_evidence

@@ -1,5 +1,13 @@
 # v1.5 实施与部署记录
 
+## v1.5.3 开发状态（2026-09-11）
+
+当前生产仍为 `v1.5.2-2 / COMPLETE`，未执行 v1.5.3 production publish。
+`codex/v1.5.3-event-closure` 已建立只读候选链路：六表候选为
+`46 / 10 / 131 / 244 / 227 / 7`，legacy EVENTS 73 行对账为 87 edges，
+未映射 0、未解释冲突 0，罗汉琛 relationship signal 存在。候选明确
+`production_eligible=false`；详细边界见 [v1.5.3 实施记录](CBA-KB_v1.5.3.md)。
+
 ## v1.5.2 DRAFT-2 实际部署（2026-09-11）
 
 维护状态：`CODE_FROZEN_BY_USER`。用户确认 PNG OCR 不需要，收尾后不再调整代码；其余未实施范围和 Gemini 未复验结论保留为已知限制。最终审计、范围决定和消费规则见 [最终收尾说明](v1.5.2-final-closeout-20260911.md)。`COMPLETE` 仅指已实现范围的发布事务完成。

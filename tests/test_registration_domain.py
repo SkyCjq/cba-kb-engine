@@ -29,7 +29,7 @@ def test_domestic_parser_separates_window_relation_and_event():
     result = parse_domestic_movement(text, SOURCE, clubs)
     assert len(result['domestic_registrations']) == 1
     assert len(result['registration_status_events']) == 2
-    assert result['registration_status_events'][1]['event_status'] == 'not_completed'
+    assert result['registration_status_events'][1]['event_status'] == 'uncompleted'
     assert result['domestic_registrations'][0]['movement_type'] == 'free_agent_claim'
     validate_domain(result)
 
@@ -101,3 +101,55 @@ def test_domain_workbook_has_six_tabs(tmp_path):
         'domestic_registrations', 'domestic_transaction_windows', 'registration_status_events',
         'foreign_registration_snapshots', 'foreign_right_snapshots',
         'foreign_right_transactions']
+
+
+def test_window_entities_exist_even_when_dates_are_pending():
+    text = '''# 8. 2024-2025 赛季
+- Window 1：注册期结束后至季前赛开赛前择期
+- Window 2：常规赛第15轮最后一个比赛日（含当日）前7天
+- Window 3：常规赛倒数第15轮第一个比赛日（不含当日）前7天
+
+Window 3（2025-01-10至01-16）由CBA官网窗口总结确认。
+
+# 9. 2025-2026 赛季
+- Window 1: 2025-11-16至11-22
+- Window 2: 2026-01-10至01-16
+- Window 3: 2026-03-24至03-30
+'''
+    result = parse_domestic_movement(text, SOURCE, Clubs(ROOT, strict=False))
+    windows = {(row['season'], row['window_no']): row
+               for row in result['domestic_transaction_windows']}
+    assert set(windows) == {
+        ('2024-2025', 1), ('2024-2025', 2), ('2024-2025', 3),
+        ('2025-2026', 1), ('2025-2026', 2), ('2025-2026', 3),
+    }
+    assert windows[('2024-2025', 1)]['window_start'] is None
+    assert windows[('2024-2025', 1)]['completeness_status'] == 'dates_pending'
+    assert windows[('2024-2025', 3)]['window_start'] == '2025-01-10'
+    assert windows[('2024-2025', 3)]['window_end'] == '2025-01-16'
+    assert windows[('2025-2026', 2)]['window_start'] == '2026-01-10'
+    assert windows[('2025-2026', 2)]['window_end'] == '2026-01-16'
+
+
+def test_research_labels_are_controlled_and_not_official_by_default():
+    text = '''# 9. 2025-2026 赛季
+## 9.2 当前已确认/较高置信度流动
+| 窗口 | 球员 | 前一状态 | 新俱乐部 | 研究标签 | 关键节点 |
+|---|---|---|---|---|---|
+| Window 1 | 黄荣奇 | 自由球员 | 南京同曦 | 自由球员认领 | 2025-11-24官宣 |
+| Window 2 | 罗汉琛 | 自由球员 | 北京控股 | release_then_claim | 2026-01-16 |
+'''
+    records = parse_domestic_movement(text, SOURCE, Clubs(ROOT))
+    first, second = records['registration_status_events']
+    assert first['research_movement_label'] == 'free_agent_claim'
+    assert first['registration_method_official'] is None
+    assert second['research_movement_label'] == 'release_then_claim'
+    assert second['registration_method_official'] is None
+
+    legacy = parse_domestic_movement(
+        text, SOURCE, Clubs(ROOT), legacy_research_defaults=True,
+    )
+    assert [row['registration_method_official']
+            for row in legacy['registration_status_events']] == [
+        '自由球员认领', '自由球员认领',
+    ]

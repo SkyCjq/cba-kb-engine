@@ -100,10 +100,10 @@ def test_announcement_not_registration_date():
 def test_window_label_does_not_hide_date_and_research_label_is_separate():
     text = '''# 9. 2025-2026 赛季
 ## 9.2 当前已确认/较高置信度流动
-| 窗口 | 球员 | 前一状态 | 新俱乐部 | 研究标签 | 关键节点 |
-|---|---|---|---|---|---|
-| Window 1 | 黄荣奇 | 自由球员 | 南京同曦 | 自由球员认领 | 2025-11-24官宣 |
-| Window 2 | 罗汉琛 | 自由球员 | 北京控股 | release_then_claim | 2026-01-16 |
+| 窗口 | 球员 | 前一状态 | 新俱乐部 | 方式 | 研究标签 | 关键节点 |
+|---|---|---|---|---|---|---|
+| Window 1 | 黄荣奇 | 自由球员 | 南京同曦 | 自由球员认领 |  | 2025-11-24官宣 |
+| Window 2 | 罗汉琛 | 自由球员 | 北京控股 | 认领 | release_then_claim | 2026-01-16 |
 '''
     records = parse_domestic_movement(text, SOURCE, Clubs(ROOT))
     first, second = records['registration_status_events']
@@ -111,9 +111,10 @@ def test_window_label_does_not_hide_date_and_research_label_is_separate():
     assert first['event_date'] is None
     assert second['event_date'] == '2026-01-16'
     assert second['event_type'] == 'release_then_claim'
-    assert second['registration_method'] == '自由球员认领'
+    assert second['registration_method_official'] == '认领'
+    assert second['research_movement_label'] == 'release_then_claim'
     assert second['verification_status'] == 'auto_validated'
-    assert records['domestic_registrations'][1]['registration_method_official'] == '自由球员认领'
+    assert records['domestic_registrations'][1]['registration_method_official'] == '认领'
     validate_domain(records)
 
 

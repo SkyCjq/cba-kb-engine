@@ -35,10 +35,12 @@ STATUS_EVENTS = (
     'season','player_type','club_id','club_source_name','player_name_zh',
     'player_name_en_raw','player_name_en_normalized','from_club_id',
     'from_club_source_name','to_club_id','to_club_source_name','event_date',
-    'event_date_status','date_year_inferred','registration_submission_date',
-    'registration_submission_date_status','registration_completed_date',
-    'registration_completed_date_status','club_announcement_date',
-    'registration_window_deadline','registration_method','contract_category',
+    'event_date_status','event_date_precision','date_year_inferred',
+    'club_announcement_date','club_announcement_date_status',
+    'registration_submission_date','registration_submission_date_status',
+    'registration_completed_date','registration_completed_date_status',
+    'registration_window_deadline','registration_window_deadline_status',
+    'registration_method_official','research_movement_label','contract_category',
     'contract_term_official','notes','supersedes_event_key','correction_reason',
     'source_file_id','source_url_primary','source_url_secondary','source_page_or_row',
     'source_type','extraction_method','verification_status','source_authority',
@@ -85,8 +87,15 @@ EVENT_TYPES = (
     'rumor_not_completed','registration_change','registration_cancelled',
     'usage_suspended','usage_activated','status_correction',
 )
-EVENT_STATUSES = ('confirmed','pending','not_completed','corrected','retracted','system_error')
+EVENT_STATUSES = (
+    'confirmed','pending','uncompleted','corrected','withdrawn','cancelled','system_error',
+)
 DATE_STATUSES = ('known','pending_evidence','unknown','not_applicable')
+DATE_PRECISIONS = ('day','month','season','range','approx','unknown')
+RESEARCH_MOVEMENT_LABELS = (
+    'free_agent_claim','player_swap','release_then_claim','status_change_only',
+    'rumor_not_completed',
+)
 SOURCE_AUTHORITIES = (
     'A1_official_direct','A2_official_mirror','B1_authoritative_media_reproduction',
     'B2_secondary_cross_check','C_unverified',
@@ -95,7 +104,11 @@ RIGHT_STATUSES = ('exercised','continued','renewal_completed')
 
 ISO_RE = re.compile(r'(?<!\d)(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)')
 CN_DATE_RE = re.compile(r'(20\d{2})年(\d{1,2})月(\d{1,2})日?')
+ISO_RANGE_RE = re.compile(
+    r'(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\s*(?:至|~|—|-)\s*(\d{1,2})[-/.](\d{1,2})'
+)
 SEASON_HEADING_RE = re.compile(r'(20\d{2})[-–](20\d{2})')
+WINDOW_LABEL_RE = re.compile(r'Window\s+(\d+)\s*[:：]')
 
 
 def _cell(value):
@@ -170,6 +183,16 @@ def _date_field(value):
     return parsed, 'known' if parsed else ('pending_evidence' if _cell(value) else 'unknown')
 
 
+def _date_range(value):
+    raw = _cell(value)
+    match = ISO_RANGE_RE.search(raw)
+    if match:
+        year, start_month, start_day, end_month, end_day = match.groups()
+        return (date(int(year), int(start_month), int(start_day)).isoformat(),
+                date(int(year), int(end_month), int(end_day)).isoformat())
+    return None, None
+
+
 def _authority(raw):
     # These adapters read secondary merged audits, not the cited official pages.
     # Keep the source's A/B labels separate instead of promoting their authority.
@@ -189,6 +212,16 @@ def _movement_type(raw):
     if '传闻' in raw:
         return 'rumor_not_completed'
     return 'registration_change'
+
+
+def _research_movement_label(value):
+    raw = _cell(value)
+    if not raw:
+        return ''
+    normalized = _movement_type(raw)
+    if normalized == 'registration_change':
+        raise ValueError(f'Uncontrolled research_movement_label: {raw}')
+    return normalized
 
 
 def _split_name(value):
@@ -216,7 +249,8 @@ def _base_source(source, page):
             'extraction_method': source.get('method', 'markdown table parser')}
 
 
-def parse_domestic_movement(text, source, clubs):
+def parse_domestic_movement(text, source, clubs, include_window_entities=True,
+                            legacy_research_defaults=False):
     """Parse the merged domestic movement source into windows, relations and events."""
     windows, relations, events, reports = [], [], [], []
     selected = {'4.2','4.5','5.','6.','7.1','7.2','8.2','9.2'}
@@ -237,7 +271,8 @@ def parse_domestic_movement(text, source, clubs):
         if not player_key or (not to_key and not status_key):
             continue
         from_key = next((k for k in headers if '前一' in k or '原俱乐部' in k or '最近/原' in k), None)
-        method_key = next((k for k in headers if k in {'方式','研究标签'}), None)
+        method_key = next((k for k in headers if k == '方式'), None)
+        research_key = next((k for k in headers if k == '研究标签'), None)
         # A Window 1 label must not hide a separate announcement/date column.
         date_key = next((k for k in ('日期','日期/节点','完成节点','日期/工作口径','关键节点','窗口') if k in headers), None)
         evidence_key = next((k for k in headers if k == '证据等级'), None)
@@ -248,11 +283,28 @@ def parse_domestic_movement(text, source, clubs):
             to_name = _cell(row.get(to_key)) if to_key else ''
             from_name = _cell(row.get(from_key)) if from_key else ''
             raw_method = _cell(row.get(method_key)) if method_key else ''
-            official_method = '自由球员认领' if raw_method == 'release_then_claim' else raw_method
+            official_method = raw_method
+            research_label = _research_movement_label(
+                row.get(research_key) if research_key else None
+            )
+            if not official_method and research_label in RESEARCH_MOVEMENT_LABELS:
+                if legacy_research_defaults:
+                    official_method = {
+                        'free_agent_claim': '自由球员认领',
+                        'release_then_claim': '自由球员认领',
+                        'player_swap': '球员互换',
+                    }.get(research_label, '')
+                else:
+                    official_method = ''
             status_raw = _cell(row.get(status_key)) if status_key else ''
-            movement = _movement_type(raw_method + ' ' + status_raw + ' ' + heading)
-            status = 'not_completed' if ('未完成' in heading or '未完成' in status_raw) else 'confirmed'
+            movement = _movement_type(
+                ' '.join((official_method, research_label, status_raw, heading))
+            )
+            status = 'uncompleted' if ('未完成' in heading or '未完成' in status_raw) else 'confirmed'
             event_date, event_date_status = _date_field(row.get(date_key)) if date_key else (None, 'unknown')
+            club_announcement_date = (
+                _date(row.get(date_key)) if '官宣' in _cell(row.get(date_key)) else None
+            )
             from_id = _resolve(clubs, from_name, season, 'event')
             to_id = _resolve(clubs, to_name, season, 'event')
             raw = text.splitlines()[number - 1]
@@ -272,12 +324,17 @@ def parse_domestic_movement(text, source, clubs):
                           'from_club_id': from_id, 'from_club_source_name': from_name,
                           'to_club_id': to_id, 'to_club_source_name': to_name,
                           'event_date': event_date, 'event_date_status': event_date_status,
+                          'event_date_precision': 'day' if event_date else 'unknown',
                           'date_year_inferred': False,
+                          'club_announcement_date': club_announcement_date,
+                          'club_announcement_date_status':
+                              'known' if club_announcement_date else 'unknown',
                           'registration_submission_date_status': 'pending_evidence',
                           'registration_completed_date_status': 'pending_evidence',
-                          'club_announcement_date': _date(row.get(date_key)) if '官宣' in _cell(row.get(date_key)) else None,
+                          'registration_window_deadline_status': 'unknown',
                           'notes': row.get('备注'),
-                          'registration_method': official_method or None,
+                          'registration_method_official': official_method or None,
+                          'research_movement_label': research_label or None,
                           'verification_status': 'auto_validated',
                           'source_authority': authority, 'verification_raw': authority_raw,
                           'source_authority_raw': authority_raw, 'raw_event_text': raw})
@@ -303,20 +360,81 @@ def parse_domestic_movement(text, source, clubs):
                 relations.append(relation)
         reports.append({'heading': heading, 'season': season, 'rows': len(rows)})
     # Parse explicit window declarations even if no movement table exists.
+    lines = text.splitlines()
     current = None
     pending_window = None
-    for line_no, line in enumerate(text.splitlines(), 1):
+
+    def window_for(season, number):
+        return next((window for window in windows
+                     if window['season'] == season and window['window_no'] == number), None)
+
+    def add_window(season, number, line_number, raw):
+        window = window_for(season, number)
+        if window is None:
+            window = dict.fromkeys(TRANSACTION_WINDOWS)
+            window.update(_base_source(source, f'Markdown line {line_number}'))
+            window.update({
+                'season': season, 'window_no': number, 'window_key': f'{season}|{number}',
+                'allowed_methods': None, 'ordinary_transfer_allowed': None,
+                'loan_allowed': None, 'rule_source_id': source.get('id'),
+                'rule_source_url': source.get('url'), 'verification_status': 'pending',
+                'source_authority': 'B2_secondary_cross_check',
+                'source_authority_raw': 'merged source rule',
+                'completeness_status': 'dates_pending', 'raw_window_text': raw,
+            })
+            windows.append(window)
+        else:
+            window['raw_window_text'] += '\n' + raw
+        return window
+
+    for line_no, line in enumerate(lines, 1):
         heading = _season(line) if line.startswith('#') else None
         if heading:
             current = heading
             pending_window = None
-        if not current or ('window_start:' not in line and 'window_end:' not in line):
+        if not current:
+            continue
+
+        label = WINDOW_LABEL_RE.search(line)
+        if label:
+            if not include_window_entities:
+                continue
+            number = int(label.group(1))
+            start, end = _date_range(line)
+            raw_lines = [line]
+            if not start and not end:
+                for following in lines[line_no:line_no + 40]:
+                    if following.startswith('# ') and _season(following):
+                        break
+                    if (f'Window {number}' in following
+                            and not following.lstrip().startswith('|')
+                            and ('CBA官网' in following or '官方' in following)):
+                        candidate = re.search(
+                            rf'Window\s+{number}\s*[（(：:=]\s*([^）)\n]+)',
+                            following,
+                        )
+                        if not candidate:
+                            continue
+                        start, end = _date_range(candidate.group(1))
+                        if start or end:
+                            raw_lines.append(following)
+                            break
+            window = add_window(current, number, line_no, '\n'.join(raw_lines))
+            if start:
+                window['window_start'] = start
+            if end:
+                window['window_end'] = end
+            if start or end:
+                window['completeness_status'] = 'working_date_range'
+            continue
+
+        if 'window_start:' not in line and 'window_end:' not in line:
             continue
         if 'window_start:' in line:
             start = _date(line)
             if not start:
                 continue
-            window_no = len([w for w in windows if w['season'] == current]) + 1
+            window_no = len([window for window in windows if window['season'] == current]) + 1
             pending_window = dict.fromkeys(TRANSACTION_WINDOWS)
             pending_window.update(_base_source(source, f'Markdown line {line_no}'))
             pending_window.update({'season': current, 'window_no': window_no, 'window_start': start,
@@ -327,28 +445,36 @@ def parse_domestic_movement(text, source, clubs):
                                    'verification_status': 'pending', 'source_authority': 'C_unverified',
                                    'completeness_status': 'pending', 'raw_window_text': line})
             windows.append(pending_window)
-            for rule_line in text.splitlines()[line_no:]:
+            for rule_line in lines[line_no:]:
                 if rule_line.startswith('#') or rule_line.startswith('|'):
                     break
                 if 'allowed_methods:' in rule_line:
-                    pending_window['allowed_methods'] = [_movement_type(x) for x in rule_line.split(':', 1)[1].split('、')]
-                for rule in ('ordinary_transfer_allowed','loan_allowed'):
+                    pending_window['allowed_methods'] = [
+                        _movement_type(item)
+                        for item in rule_line.split(':', 1)[1].split('、')
+                    ]
+                for rule in ('ordinary_transfer_allowed', 'loan_allowed'):
                     if rule + ':' in rule_line:
-                        val = rule_line.split(':', 1)[1].strip()
-                        if val not in {'true','false'}:
+                        value = rule_line.split(':', 1)[1].strip()
+                        if value not in {'true', 'false'}:
                             raise ValueError('Invalid boolean window rule')
-                        pending_window[rule] = val == 'true'
-                if any(label in rule_line for label in ('allowed_methods:', 'ordinary_transfer_allowed:', 'loan_allowed:')):
+                        pending_window[rule] = value == 'true'
+                if any(label in rule_line for label in (
+                        'allowed_methods:', 'ordinary_transfer_allowed:', 'loan_allowed:')):
                     pending_window['raw_window_text'] += '\n' + rule_line
         elif pending_window is not None and 'window_end:' in line:
             end = _date(line)
             if end:
                 pending_window['window_end'] = end
                 pending_window['raw_window_text'] += '\n' + line
+    windows.sort(key=lambda row: (row['season'], row['window_no']))
     for event in events:
         matches = [w for w in windows if w['season'] == event['season']]
         if len(matches) == 1:
             event['registration_window_deadline'] = matches[0]['window_end']
+            event['registration_window_deadline_status'] = (
+                'known' if matches[0]['window_end'] else 'unknown'
+            )
     return {'domestic_registrations': relations, 'domestic_transaction_windows': windows,
             'registration_status_events': events,
             'report': {'relations': len(relations), 'events': len(events), 'windows': len(windows),
@@ -466,8 +592,13 @@ def parse_foreign_rights(text, source, clubs):
                     'club_id': _resolve(clubs, club_name, season), 'club_source_name': club_name,
                     'player_name_zh': zh, 'player_name_en_raw': en, 'player_name_en_normalized': name_key(en) if en else None,
                     'event_date': as_of, 'event_date_status': 'known' if as_of else 'unknown',
-                    'date_year_inferred': False, 'registration_submission_date_status': 'not_applicable',
-                    'registration_completed_date_status': 'not_applicable', 'notes': row.get('类别'),
+                    'event_date_precision': 'day' if as_of else 'unknown',
+                    'date_year_inferred': False,
+                    'club_announcement_date_status': 'not_applicable',
+                    'registration_submission_date_status': 'not_applicable',
+                    'registration_completed_date_status': 'not_applicable',
+                    'registration_window_deadline_status': 'not_applicable',
+                    'notes': row.get('类别'),
                 })
                 events.append(event)
             reports.append({'season': season, 'kind': 'foreign_usage_suspend', 'rows': len(rows)})
@@ -591,7 +722,15 @@ def validate_domain(records):
             raise ValueError('Uncontrolled event domain/type')
         if row.get('event_status') not in EVENT_STATUSES:
             raise ValueError('Uncontrolled event status')
-        for field in ('event_date_status','registration_submission_date_status','registration_completed_date_status'):
+        if row.get('event_date_precision') not in DATE_PRECISIONS:
+            raise ValueError('Uncontrolled event date precision')
+        for field in (
+            'event_date_status',
+            'club_announcement_date_status',
+            'registration_submission_date_status',
+            'registration_completed_date_status',
+            'registration_window_deadline_status',
+        ):
             if row.get(field) not in DATE_STATUSES:
                 raise ValueError('Uncontrolled date status')
     for row in records.get('foreign_priority_right_snapshots') or []:
@@ -604,4 +743,6 @@ def validate_domain(records):
     for row in records.get('foreign_priority_right_transactions') or []:
         if _cell(row.get('to_club_source_name')).replace('**', '') in {'/', '', '无'}:
             raise ValueError('Transaction requires destination')
+    from .event_closure import validate_event_closure
+    checks['registration_status_events']['closure'] = validate_event_closure(records)
     return checks
