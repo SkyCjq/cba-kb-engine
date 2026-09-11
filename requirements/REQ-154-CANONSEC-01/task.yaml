@@ -1,0 +1,113 @@
+req_id: REQ-154-CANONSEC-01
+requirement_md_url: https://drive.google.com/file/d/1E-keiN92cubFQNcuhO5jhPEosp9ypPfK/view?usp=drivesdk
+requirement_revision_or_hash: REQ-154-CANONSEC-01/v1.1-refreeze-2026-09-12
+original_requirement_sha256: bd35ad61abc0a6fdd1d4503b10e93a59f648cea62da4951ab23562cadf0cfa0e
+baseline_release_id: v1.5.3-2
+baseline_code_commit: f9038fd9cc03e552abee0ca08ae51d047efd65af
+base_branch: codex/v1.5.2-draft2
+feature_branch: codex/req-154-canonsec-01
+refrozen_at: '2026-09-12'
+refreeze_authority: explicit_user_approval
+original_base_branch: main
+lane: CODE_CONFIG
+allowed_paths:
+  - config/canonical_products.yaml
+  - src/cba_kb/canonical_registry.py
+  - src/cba_kb/current_state.py
+  - src/cba_kb/release.py
+  - scripts/generate_context_card.py
+  - scripts/audit_current_history.py
+  - scripts/check_secrets.py
+  - tests/test_canonical_registry.py
+  - tests/test_current_state_consistency.py
+  - tests/test_context_card.py
+  - tests/test_current_history_separation.py
+  - tests/test_security_guards.py
+  - tests/test_compatibility_lineage.py
+  - tests/test_release.py
+  - requirements/REQ-154-CANONSEC-01/task.yaml
+focused_tests:
+  - tests/test_canonical_registry.py
+  - tests/test_current_state_consistency.py
+  - tests/test_context_card.py
+  - tests/test_current_history_separation.py
+  - tests/test_security_guards.py
+  - tests/test_compatibility_lineage.py
+  - tests/test_release.py
+must_not_change:
+  - business_fact_semantics
+  - production_credentials
+  - drive_code_truth_direction
+  - source_registry_responsibility
+  - manifest_responsibility
+acceptance_ids:
+  - A01
+  - A02
+  - A03
+  - A04
+  - A05
+  - A06
+  - A07
+  - A08
+  - A09
+  - A10
+  - A11
+  - A12
+  - A13
+  - A14
+  - A15
+  - A16
+  - A17
+  - A18
+external_fixtures:
+  - frozen_release_status_json
+  - frozen_readme_current_release_block
+  - frozen_index_current_release_block
+  - frozen_v1_5_3_ledger
+  - frozen_business_fact_baseline
+full_regression_owner: github_actions
+max_ci_repair_cycles: 3
+context_policy: allowlist_only
+log_policy: summary_or_failure_only
+production_access: forbidden
+model_tier: high
+agent_harness: codex
+api_provider: openai
+
+# Execution record. No production or consumer acceptance is inferred from unit tests.
+implementation_status: CORE_IMPLEMENTED_PENDING_CONTEXT_EXPANSION
+focused_test_result: PASS_168
+ci_result: NOT_RUN
+local_production_acceptance: NOT_RUN
+production_sync: NOT_RUN
+requirement_drive_sync: FAILED_CONNECTOR_UPLOAD
+context_expansion_request:
+  status: AWAITING_USER_APPROVAL
+  reason: Credential loading precedes release guards; CLI closure input and CI blob scan need explicit wiring.
+  paths:
+    - src/cba_kb/drive.py
+    - src/cba_kb/cli.py
+    - .github/workflows/offline-tests.yml
+release_handoff:
+  candidate_generator: scripts/generate_context_card.py
+  history_audit: scripts/audit_current_history.py
+  closure_entrypoint: cba_kb.release.prepare(closure=contract)
+  closure_required_fields:
+    - code_commit
+    - previous_code_commit
+    - baseline_release_id
+    - registry_key
+    - manifest_key
+    - documents
+    - zones
+    - protected
+  documents: [readme, index, context_card, version]
+  protected_kinds: [master, six_table, source_registry, evidence]
+  protected_item_fields: [id, name, sha256, kind]
+  zone_fields: [current, history, staging, evidence]
+  notes:
+    - Local Trusted Runtime must freeze actual manifest IDs, evidence coverage and hashes before production GO.
+    - Bind registry_release_id to the target release; UNRELEASED is never a published release.
+    - Legacy workbook projection mappings are unresolved and intentionally block publication until frozen from real evidence.
+    - Production mirror checks require a clean checkout of the merged commit on the frozen base.
+    - New control files use staged stable IDs; rollback returns them to non-current staging and retains before/candidate evidence.
