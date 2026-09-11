@@ -544,6 +544,10 @@ def freeze(root, staging_runs):
             data = (CANDIDATE_DIR / item['name']).read_bytes()
         elif key == VERSION_DOC_LOGICAL_KEY:
             data = version_after
+        elif key == 'report/v1.5.2-source-acceptance.json':
+            data = (
+                root / 'docs/validation/v1.5.2-source-acceptance-20260911.json'
+            ).read_bytes()
         elif key.startswith('report/'):
             data = (root / base.REPORT_DIR / item['name']).read_bytes()
         elif key.startswith('ai/'):
