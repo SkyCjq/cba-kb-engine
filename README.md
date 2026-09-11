@@ -1,10 +1,10 @@
-# CBA-KB Engine v1.5.2 DRAFT-2 (deployed candidate)
+# CBA-KB Engine v1.5.2 (implemented-scope production release)
 
-本地执行，GitHub 管理代码，Drive 保存已发布知识库。实际部署目录已切到分支 `codex/v1.5.2-deploy`，集成提交 `2afc268`，运行版本 `1.5.2.dev0`。生产事实仍为 **v1.5.1-2**（release_status COMPLETE）；本候选不会改写生产 `20_data`、`release_status` 或 INDEX。
+本地执行，GitHub 管理代码，Drive 保存已发布知识库。实际部署目录为 `/Users/skychengneo/Agent/CBA_kb`，分支 `codex/v1.5.2-deploy`。生产事实现为 **v1.5.2-1**（`release_status` COMPLETE，125 个产出物逐项回读通过），上一版本为 `v1.5.1-2`。
 
-本轮 600 条六标签页候选中继已验证候选：`domain.xlsx` SHA-256 `4124c4e6f8e3f62d7353180a5bbd4baca51e3196e2b7fac6b06148042fce2849`，已同步到 [Drive r3](https://docs.google.com/spreadsheets/d/1PxOd9NJAwdYb-ay9aKR1zoKGyGucxHKBsHMfa0CAHXs/edit) 并逐格回读。部署记录见 [docs/v1.5.2-deployment-20260911.md](docs/v1.5.2-deployment-20260911.md)，范围边界见 [docs/CBA-KB_v1.5.2.md](docs/CBA-KB_v1.5.2.md)。
+本发布增加了 [CBA_注册领域_六表.xlsx](https://docs.google.com/spreadsheets/d/1_dgbWXOkJeEjGRtEeZ0oOC9e-lqbXZeW/edit)（600 条，SHA-256 `4124c4e6f8e3f62d7353180a5bbd4baca51e3196e2b7fac6b06148042fce2849`），并保留 MASTER、SNAPSHOTS、EVENTS。两张 PNG 按用户决定不在本轮纳入，保持 `DISCOVERED / ocr_deferred`。这是已实现六表范围的正式发布，不是完整 DRAFT-2 或 STABLE；未完成边界见 [实施记录](docs/CBA-KB_v1.5.2.md)。
 
-v1.5.0 已封板并发布（Git tag `v1.5.0`，提交 c4bebec，release_status COMPLETE，76 个产出物回读通过）。v1.5.1 的注册事实扩展继续保留；v1.5.2 DRAFT-2 新增六类注册域候选表，来源解析和同步均与生产发布通道隔离。状态与证据见 docs/CBA-KB_v1.5.2.md。
+v1.5.0 已封板并发布（Git tag `v1.5.0`，提交 c4bebec，release_status COMPLETE，76 个产出物回读通过）。v1.5.1 的注册事实扩展继续保留；v1.5.2 已按明确的部分范围完成生产切换。发布记录见 [docs/v1.5.2-deployment-20260911.md](docs/v1.5.2-deployment-20260911.md)。
 
 ## v1.5.1 新增
 
@@ -20,7 +20,8 @@ v1.5.0 已封板并发布（Git tag `v1.5.0`，提交 c4bebec，release_status C
 - `CBA_2017-2027_国内球员注册_MASTER.xlsx`：3,465 条 = 3,451 基线 + 14 条八一中转关系。
 - [CBA_外籍球员注册_SNAPSHOTS.xlsx](https://drive.google.com/file/d/1avAxhNUTgm14MIdkgkHhia6_adSDGwLD/view)：73 条快照（2024-2025）。
 - [CBA_球员注册_EVENTS.xlsx](https://drive.google.com/file/d/1WtE63GIQxYPUBsfcRlhKCH8lJgyTZeGF/view)：73 条事件（59 条外援取消注册 + 14 条八一中转）。
-- 发布状态：https://drive.google.com/file/d/1FQmbZIJxCkTkpr6ovKh5-CoBbpT0YMwV/view ；生产 INDEX 已带 v1.5.1 事实产品与来源覆盖说明。
+- [CBA_注册领域_六表.xlsx](https://docs.google.com/spreadsheets/d/1_dgbWXOkJeEjGRtEeZ0oOC9e-lqbXZeW/edit)：600 条，六标签页，覆盖已实现注册域范围。
+- 发布状态：https://drive.google.com/file/d/1FQmbZIJxCkTkpr6ovKh5-CoBbpT0YMwV/view ；当前为 `v1.5.2-1 / COMPLETE`。
 
 ## 已实现
 
@@ -52,7 +53,7 @@ build 要求代码已提交且工作树干净，输出目录必须是新目录�
 
 ## 部署门禁
 
-生产写入目前禁用：尚需真实 OAuth 沙盒演练、完整发布清单与两 AI 验收。
+生产写入只能通过 `config/production.json` 的完整白名单、冻结依赖、`plan --environment production`、`publish --single-writer` 和独立 `verify` 执行。
 低层普通文件发布器不接受 native Docs/Sheets。CLI 只允许 runtime.json 中配置的沙盒直接子对象，不能靠填写生产 ID 绕过。
 不要直接运行 legacy/upload_drive.py；旧按名上传流程不是 v1.5 发布通道。
 

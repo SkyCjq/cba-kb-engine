@@ -1,0 +1,78 @@
+{
+  "status": "PRODUCTION_RELEASE_COMPLETE_SCOPED",
+  "release_id": "v1.5.2-1",
+  "code_commit": "0d28fb8ad9a9a8a7112b04a4742c6020e4e56408",
+  "release_status": {
+    "state": "COMPLETE",
+    "current_release_id": "v1.5.2-1",
+    "pending_release_id": null,
+    "previous_release_id": "v1.5.1-2",
+    "artifacts": 125
+  },
+  "product": {
+    "id": "1_dgbWXOkJeEjGRtEeZ0oOC9e-lqbXZeW",
+    "name": "CBA_注册领域_六表.xlsx",
+    "parents": [
+      "1nL4xomHNQInbskeYdqa45hHfleHhExW-"
+    ],
+    "sha256": "4124c4e6f8e3f62d7353180a5bbd4baca51e3196e2b7fac6b06148042fce2849",
+    "sheet_order": [
+      "domestic_registrations",
+      "domestic_transaction_windows",
+      "registration_status_events",
+      "foreign_registration_snapshots",
+      "foreign_right_snapshots",
+      "foreign_right_transactions"
+    ],
+    "counts": {
+      "domestic_registrations": 46,
+      "domestic_transaction_windows": 4,
+      "registration_status_events": 72,
+      "foreign_registration_snapshots": 244,
+      "foreign_right_snapshots": 227,
+      "foreign_right_transactions": 7
+    },
+    "rows_total": 600
+  },
+  "registry": {
+    "domestic": {
+      "source_id": "drive:1dOvVJBVahuyq0L2fI4WRhRy7QJOxdOUR",
+      "business_status": "EXTRACTED",
+      "extraction_status": "markdown_extracted",
+      "records_generated": "46 domestic_registrations; 4 domestic_transaction_windows; 53 registration_status_events"
+    },
+    "foreign": {
+      "source_id": "drive:1eGrMDep9YMfPNy66M6-6Jwm9iYaF_gQj",
+      "business_status": "EXTRACTED",
+      "extraction_status": "markdown_extracted",
+      "records_generated": "19 registration_status_events; 244 foreign_registration_snapshots; 227 foreign_priority_right_snapshots; 7 foreign_priority_right_transactions"
+    },
+    "png_2020_2021": {
+      "source_id": "drive:1D72_i0dzR9TmeV_XH8KeBr_BTxxwFPIM",
+      "business_status": "DISCOVERED",
+      "extraction_status": "ocr_deferred",
+      "records_generated": ""
+    },
+    "png_2022_2023": {
+      "source_id": "drive:1WYVqi94bqVGOLsD7t1nmMXyTMTU4TOlr",
+      "business_status": "DISCOVERED",
+      "extraction_status": "ocr_deferred",
+      "records_generated": ""
+    }
+  },
+  "evidence": {
+    "release_report": "https://drive.google.com/file/d/1vXjEfH8M8aXlLXJqw4pjUec9ejUIZko2/view",
+    "source_acceptance": "https://drive.google.com/file/d/1qJS-Tr1r5XEYbNIwrfiYOMNVqcf8Km-4/view",
+    "release_status": "https://drive.google.com/file/d/1FQmbZIJxCkTkpr6ovKh5-CoBbpT0YMwV/view"
+  },
+  "checks": {
+    "release_complete": true,
+    "artifact_count_125": true,
+    "product_sha_matches": true,
+    "product_counts_match": true,
+    "product_in_20_data": true,
+    "domestic_extracted": true,
+    "foreign_extracted": true,
+    "png_ignored": true
+  }
+}

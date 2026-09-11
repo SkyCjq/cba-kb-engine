@@ -2,12 +2,15 @@
 
 ## v1.5.2 DRAFT-2 实际部署（2026-09-11）
 
-- 实际部署：`/Users/skychengneo/Agent/CBA_kb`，分支 `codex/v1.5.2-deploy`，集成提交 `2afc268`，`doctor` 版本 `1.5.2.dev0`。
-- 部署验证：完整测试 **89 passed, 1 skipped**；真实来源在部署目录重新生成六表候选，工作簿 SHA-256 与该切分前的已验证文件一致。
+- 生产发布：`v1.5.2-1 / COMPLETE`，发布代码提交 `0d28fb8`，125 个产出物独立回读通过；上一发布为 `v1.5.1-2`。
+- 实际部署：`/Users/skychengneo/Agent/CBA_kb`，分支 `codex/v1.5.2-deploy`，运行版本 `1.5.2.dev0`。
+- 部署验证：发布前完整测试 **91 passed, 1 skipped**；真实来源重新生成六表工作簿，工作簿 SHA-256 为 `4124c4e6f8e3f62d7353180a5bbd4baca51e3196e2b7fac6b06148042fce2849`。
 - Drive 同步：600 条候选已同步为 [r3 Sheet](https://docs.google.com/spreadsheets/d/1PxOd9NJAwdYb-ay9aKR1zoKGyGucxHKBsHMfa0CAHXs/edit)，官方 XLSX 导出逐格回读一致；实施记录与验收 JSON 已保存到 `40_ai_投喂与索引`。
-- 生产边界：这是本地候选部署切换，不是生产事实发布。Drive `release_status` 当前仍为 `v1.5.1-2 / COMPLETE`，v1.5.2 保持 `production_eligible=false`。
+- 生产产物：[CBA_注册领域_六表.xlsx](https://docs.google.com/spreadsheets/d/1_dgbWXOkJeEjGRtEeZ0oOC9e-lqbXZeW/edit) 已进入 `20_data`，六表 600 条；MASTER、SNAPSHOTS、EVENTS 原 ID 保留。
+- 生产边界：验收对象仍明确 `production_eligible=false`，表示只接受已实现六表范围，不代表完整 DRAFT-2。PNG、窗口生命周期、八一/MASTER 合并、媒体快照、旧取消事件合并和原生 Sheet 权威源集成仍未完成。
+- 发布证据：[发布报告](https://drive.google.com/file/d/1vXjEfH8M8aXlLXJqw4pjUec9ejUIZko2/view)、[验收 JSON](https://drive.google.com/file/d/1qJS-Tr1r5XEYbNIwrfiYOMNVqcf8Km-4/view)、[release_status](https://drive.google.com/file/d/1FQmbZIJxCkTkpr6ovKh5-CoBbpT0YMwV/view)。
 
-日期：2026-09-10。状态：IN_PROGRESS，未上线。
+以下为 v1.5.0 建设阶段的历史记录，不代表当前生产状态。
 
 已核对 live MASTER：3,451 行、20 列、单 MASTER tab、3,451 唯一键；source_registry 89 来源。详细哈希和赛季数见 baseline_2026-09-10.json。
 数据内容保持原字节不变，1,019 条官方 API 行以官网 URL 追溯，未补造 source_file_id。

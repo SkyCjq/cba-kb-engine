@@ -1,7 +1,7 @@
 # CBA-KB v1.5.2 — DRAFT-2 实施记录
 
 > **代码版本**：1.5.2.dev0
-> **状态**：CANDIDATE_PARTIAL；production_eligible = false
+> **状态**：PRODUCTION_RELEASE_COMPLETE_SCOPED；production_eligible = false
 > **验证日期**：2026-09-11
 > **代码分支**：`codex/v1.5.2-draft2`
 > **前置版本**：v1.5.1（DRAFT-1 发布历史保留）
@@ -32,6 +32,12 @@
 
 合计 600 条不同类型记录，不能相加解释为独立球员人数。严格模式下无未解析俱乐部。`/` 在动态权利表中保留为“该快照未显示权利转移”，不会生成交易记录，也不据此推断已续约。未知名称在严格模式直接失败；宽松模式只用于审查。
 
+## 生产发布
+
+`v1.5.2-1` 已把上述六表工作簿作为二进制 XLSX 发布到 `20_data`，同时保留 MASTER、SNAPSHOTS、EVENTS 的对象 ID。生产计划共 125 个目标，发布后独立回读 125/125；六表 SHA-256 仍为 `4124c4e6f8e3f62d7353180a5bbd4baca51e3196e2b7fac6b06148042fce2849`。`release_status` 当前为 `COMPLETE / current_release_id=v1.5.2-1 / previous=v1.5.1-2`。
+
+这次发布是明确标记的已实现表范围发布，不是完整 DRAFT-2，也不是 STABLE。详情和链接见 `docs/v1.5.2-deployment-20260911.md`，独立验收见 `docs/validation/v1.5.2-production-verification-20260911.json`。
+
 ## 验证与保真
 
 - 全量回归：**88 passed, 2 skipped**；完整来源验证：**PASS_IMPLEMENTED_TABLE_SCOPE**。两项跳过是缺少固定路径的 v1.5 初始 MASTER 和旧八一专项来源，不计为通过。当前两份 DRAFT-2 合并资料和原始外援 XLSX 已单独执行真实来源验证。
@@ -53,11 +59,11 @@
 4. 2023-2024 媒体注册快照、两条外援启用事件尚未解析；旧适配器的 59 条取消记录尚未并入本次六表输出。
 5. 原生 Google Sheet 作为权威事实源的读取、构建、兼容导出和发布校验尚待集成。
 6. 最新修复已同步到 Drive r3 候选 Sheet，验收 JSON 已进入 Drive AI 目录；Gemini 消费复验仍待执行。
-7. 本次开发工作树验证不会切换实际部署目录的生产版本。生产仍以已发布的 v1.5.1-2 和其 release_status 为准。
+7. `v1.5.2-1` 已发布已实现六表范围；完整 DRAFT-2 消费验收和上述未完成项仍不随 release_status 的 COMPLETE 状态自动完成。
 
 ## 下一步
 
-当前可提交已验证的候选开发代码。以上未完成项补齐后，仍需更新候选、完成消费验收和正式发布验证，才可宣称 DRAFT-2 完整交付。本轮没有重新核验外部官网。
+以上未完成项补齐后，仍需更新候选、完成消费验收并以新的发布 ID 完成发布验证，才可宣称 DRAFT-2 完整交付。本轮没有重新核验外部官网。
 
 ## 复现验证
 
