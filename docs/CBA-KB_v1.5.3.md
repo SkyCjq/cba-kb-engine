@@ -1,10 +1,13 @@
 # CBA-KB v1.5.3 — Registration Event Domain Closure
 
 > **代码版本**：`1.5.3.dev0`
-> **状态**：CANDIDATE_IMPLEMENTED / NOT_PRODUCTION
-> **开发分支**：`codex/v1.5.3-event-closure`
-> **前置生产**：`v1.5.2-2 / COMPLETE`
+> **状态**：PRODUCTION_RELEASE_COMPLETE / v1.5.3-2
+> **部署分支**：`codex/v1.5.3-deploy`
+> **生产版本**：`v1.5.3-2 / COMPLETE`
+> **发布代码提交**：`f9038fd9cc03e552abee0ca08ae51d047efd65af`
 > **冻结日期**：2026-09-11
+
+> **生产发布状态（2026-09-11）**：`v1.5.3-2 / COMPLETE`。149 个目标物独立回读通过；六表为 `46 / 10 / 131 / 244 / 227 / 7`，workbook SHA-256 `0c9812e5e49f0824b74966f3f3941d8eee3711fdafc19d88774084a83742e66c`。发布仅覆盖注册事件域收口，不表示完整 DRAFT-2 或 STABLE。
 
 ## 目标
 
@@ -13,8 +16,8 @@ event product，并将 Snapshot、Event、日期语义、官方 registration met
 永久分离。历史 `CBA_球员注册_EVENTS.xlsx` 保留为兼容与审计对象，不再是另一套独立
 生产真相源。
 
-本轮只完成代码、离线回归、来源冻结与只读候选。未执行 production publish、Drive
-readback 或 release status 切换。
+本轮已完成代码合并、生产发布与独立回读。生产版本为 `v1.5.3-2 / COMPLETE`；
+其中 `v1.5.3-1` 发布事实与代码，`v1.5.3-2` 只修正版本文档中的历史执行状态。
 
 ## Phase 0 冻结
 
@@ -32,9 +35,9 @@ Phase 0 实测：六表 `46 / 4 / 131 / 244 / 227 / 7`；legacy EVENTS 73 行；
 
 ## 候选结果
 
-只读候选由 `scripts/prepare_v1_5_3.py` 生成：
+候选由 `scripts/prepare_v1_5_3.py` 生成，现已成为生产发布内容：
 
-| 实体 | v1.5.2-2 | v1.5.3 candidate |
+| 实体 | v1.5.2-2 | v1.5.3 production |
 |---|---:|---:|
 | domestic_registrations | 46 | 46 |
 | domestic_transaction_windows | 4 | 10 |
@@ -86,6 +89,6 @@ make prepare-v1.5.3 ARGS="--domain <six.xlsx> --legacy <events.xlsx> \
 
 ## 发布边界
 
-本候选只有在 GitHub CI、独立来源验收、candidate semantic readback、production
-GO-NO-GO 与 rollback snapshot 全部通过后才允许进入发布。当前状态不得表述为
-v1.5.3 released、完整 DRAFT-2 或 STABLE。
+GitHub CI、独立来源验收、candidate semantic readback、production GO-NO-GO 与
+rollback snapshot 均已通过，生产已切换到 `v1.5.3-2 / COMPLETE`。该切换只覆盖
+注册事件域收口与回归保护，不得表述为完整 DRAFT-2 或 STABLE。
