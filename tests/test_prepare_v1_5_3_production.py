@@ -1,4 +1,7 @@
-from scripts.prepare_v1_5_3_production import update_version_doc
+from scripts.prepare_v1_5_3_production import (
+    correct_version_doc_after_release,
+    update_version_doc,
+)
 
 
 def test_update_version_doc_preserves_body_and_marks_release():
@@ -42,3 +45,29 @@ def test_update_version_doc_preserves_body_and_marks_release():
     assert '生产版本：v1.5.3-1' in result
     assert '# 正文保持' in result
     assert '`' + 'a' * 40 + '`' in result
+
+
+def test_correct_version_doc_replaces_stale_drive_state():
+    text = """# CBA-KB v1.5.3 — Registration Event Domain Closure
+
+> **生产发布状态（2026-09-11）**：`v1.5.3-1 / COMPLETE`。发布代码提交 `""" + 'a' * 40 + """`。
+
+## 0. 文档元数据
+
+- **文档状态**：PRODUCTION_RELEASE_COMPLETE / v1.5.3-1
+- **发布代码提交**：`""" + 'a' * 40 + """`
+- **本次写入范围**：production publish 与 release_status 已由 v1.5.3-1 发布事务切换
+
+# PART L — 当前执行状态
+
+Drive **尚未处于 v1.5.3 production**。
+当前不得把 v1.5.3 表述为 production release。
+"""
+    result = correct_version_doc_after_release(text, 'b' * 40, 'v1.5.3-2')
+    assert 'PRODUCTION_RELEASE_COMPLETE / v1.5.3-2' in result
+    assert '`v1.5.3-2 / COMPLETE`' in result
+    assert 'Drive **尚未处于 v1.5.3 production**' not in result
+    assert '当前不得把 v1.5.3 表述为 production release' not in result
+    assert 'current_release_id         = v1.5.3-2' in result
+    assert '131 passed / 0 skipped' in result
+    assert '`' + 'b' * 40 + '`' in result

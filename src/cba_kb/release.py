@@ -34,7 +34,16 @@ def snapshot(drive, file_id, mode='binary'):
     return data, after
 
 
-def prepare(drive, root, release_id, entries, archive_id, status_id, dependencies=None):
+def prepare(
+    drive,
+    root,
+    release_id,
+    entries,
+    archive_id,
+    status_id,
+    dependencies=None,
+    carry_forward_artifacts=False,
+):
     root=Path(root)
     if root.exists(): raise ValueError('Release already exists; resume it instead')
     if not entries: raise ValueError('Empty release')
@@ -54,6 +63,17 @@ def prepare(drive, root, release_id, entries, archive_id, status_id, dependencie
         plan['status_before_hash']=digest(status_data)
         plan['status_before_meta']=fingerprint(status_meta)
         plan['previous_release_id']=status.get('current_release_id')
+        if carry_forward_artifacts:
+            carried=status.get('artifacts')
+            if not isinstance(carried,list) or not carried:
+                raise RuntimeError('Previous status has no artifacts to carry forward')
+            ids=[item.get('id') for item in carried]
+            if any(not item_id for item_id in ids) or len(ids)!=len(set(ids)):
+                raise RuntimeError('Previous status artifact list is invalid')
+            plan['carry_forward_artifacts']=[
+                {'id':item['id'],'name':item['name'],'sha256':item['sha256']}
+                for item in carried
+            ]
         for i, entry in enumerate(entries):
             name=entry['name']
             if Path(name).name!=name: raise ValueError('Unsafe artifact name')
@@ -109,11 +129,19 @@ def verified_local(root, entry, key):
 
 def set_status(drive, plan, state, previous_snapshot):
     import json
+    artifacts={
+        item['id']:dict(item)
+        for item in plan.get('carry_forward_artifacts',[])
+    }
+    artifacts.update({
+        e['id']:{'id':e['id'],'name':e['name'],'sha256':e['after_hash']}
+        for e in plan['entries']
+    })
     status={'state':state,'current_release_id':plan['release_id'] if state=='COMPLETE' else plan['previous_release_id'],
             'pending_release_id':plan['release_id'] if state not in ('COMPLETE','ROLLED_BACK') else None,
             'previous_release_id':plan['previous_release_id'],
             'previous_snapshot':previous_snapshot,
-            'artifacts':[{'id':e['id'],'name':e['name'],'sha256':e['after_hash']} for e in plan['entries']]}
+            'artifacts':list(artifacts.values())}
     content=json.dumps(status,ensure_ascii=False,sort_keys=True).encode()
     drive.put(plan['status_id'],content,'application/json')
     if drive.get(plan['status_id'])!=content: raise RuntimeError('Status readback failed')

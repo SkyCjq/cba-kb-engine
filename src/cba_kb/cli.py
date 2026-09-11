@@ -47,6 +47,7 @@ def main():
     q=sub.add_parser('plan'); q.add_argument('--entries',type=Path,required=True); q.add_argument('--release-id',required=True)
     q.add_argument('--status-id',required=True); q.add_argument('--archive-id',required=True)
     q.add_argument('--dependencies',type=Path);q.add_argument('--environment',choices=['sandbox','production'],default='sandbox')
+    q.add_argument('--carry-forward-artifacts',action='store_true')
     for cmd in ('publish','verify','restore'):
         q=sub.add_parser(cmd); q.add_argument('--release',type=Path,required=True)
         if cmd!='verify':q.add_argument('--single-writer',action='store_true')
@@ -162,7 +163,16 @@ def main():
             from .gates import authorize_plan
             request={'entries':entries,'status_id':a.status_id,'archive_id':a.archive_id,'dependencies':dependencies}
             authorize_plan(drive,root,request,a.environment)
-            result=prepare(drive,root/'workspace/outbox'/a.release_id,a.release_id,entries,a.archive_id,a.status_id,dependencies)
+            result=prepare(
+                drive,
+                root/'workspace/outbox'/a.release_id,
+                a.release_id,
+                entries,
+                a.archive_id,
+                a.status_id,
+                dependencies,
+                carry_forward_artifacts=a.carry_forward_artifacts,
+            )
             result['environment']=a.environment
             save(root/'workspace/outbox'/a.release_id/'plan.json',result)
         else:
