@@ -1,4 +1,11 @@
-# v1.5 实施记录
+# v1.5 实施与部署记录
+
+## v1.5.2 DRAFT-2 实际部署（2026-09-11）
+
+- 实际部署：`/Users/skychengneo/Agent/CBA_kb`，分支 `codex/v1.5.2-deploy`，集成提交 `2afc268`，`doctor` 版本 `1.5.2.dev0`。
+- 部署验证：完整测试 **89 passed, 1 skipped**；真实来源在部署目录重新生成六表候选，工作簿 SHA-256 与该切分前的已验证文件一致。
+- Drive 同步：600 条候选已同步为 [r3 Sheet](https://docs.google.com/spreadsheets/d/1PxOd9NJAwdYb-ay9aKR1zoKGyGucxHKBsHMfa0CAHXs/edit)，官方 XLSX 导出逐格回读一致；实施记录与验收 JSON 已保存到 `40_ai_投喂与索引`。
+- 生产边界：这是本地候选部署切换，不是生产事实发布。Drive `release_status` 当前仍为 `v1.5.1-2 / COMPLETE`，v1.5.2 保持 `production_eligible=false`。
 
 日期：2026-09-10。状态：IN_PROGRESS，未上线。
 
