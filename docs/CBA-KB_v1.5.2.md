@@ -19,7 +19,7 @@
 
 本次实际来源验证生成 `workspace/candidates/v1.5.2-verified-20260911/domain.xlsx`。其输入 SHA-256、工作簿 SHA-256、逐赛季控制量和验证结果见 [验证文件](validation/v1.5.2-source-acceptance-20260911.json)。
 
-旧候选 `domain-v1.5.2-final.xlsx` 和 [Drive r2 Sheet](https://docs.google.com/spreadsheets/d/1y5Vx2UvBAoUvMGwbXRP1SrUlI_4-fY9j4wTVLYoiLzA/edit) 保留历史记录，但含本轮修复前的数据，不能作为本提交的验收依据。本轮新候选尚未更新到 Drive。Excel 31 字符限制下，`foreign_right_snapshots` 与 `foreign_right_transactions` 分别映射到完整实体名。
+旧候选 `domain-v1.5.2-final.xlsx` 和 [Drive r2 Sheet](https://docs.google.com/spreadsheets/d/1y5Vx2UvBAoUvMGwbXRP1SrUlI_4-fY9j4wTVLYoiLzA/edit) 保留历史记录，但含本轮修复前的数据，不能作为本提交的验收依据。本轮已验证候选已同步为 [Drive r3 Sheet](https://docs.google.com/spreadsheets/d/1PxOd9NJAwdYb-ay9aKR1zoKGyGucxHKBsHMfa0CAHXs/edit)，验收 JSON 为 [Drive 副本](https://drive.google.com/file/d/1khF_OcCibJsAC82z6BEXGTRYHjvTxo8T/view)。Excel 31 字符限制下，`foreign_right_snapshots` 与 `foreign_right_transactions` 分别映射到完整实体名。
 
 | 实体 | 行数 | 说明 |
 |---|---:|---|
@@ -34,7 +34,8 @@
 
 ## 验证与保真
 
-- 全量回归：**86 passed, 2 skipped**；完整来源验证：**PASS_IMPLEMENTED_TABLE_SCOPE**。两项跳过是缺少固定路径的 v1.5 初始 MASTER 和旧八一专项来源，不计为通过。当前两份 DRAFT-2 合并资料和原始外援 XLSX 已单独执行真实来源验证。
+- 全量回归：**88 passed, 2 skipped**；完整来源验证：**PASS_IMPLEMENTED_TABLE_SCOPE**。两项跳过是缺少固定路径的 v1.5 初始 MASTER 和旧八一专项来源，不计为通过。当前两份 DRAFT-2 合并资料和原始外援 XLSX 已单独执行真实来源验证。
+- Drive r3 从原生 Sheet 官方导出 XLSX 后逐格回读，六标签页、600 条记录、15,210 个数据单元格与本地候选一致，`semantic_sha256 = 102d19d4dbd03231926e428df556f183b440765f4300bd7f0d74450c96a82669`；同步报告见 `docs/validation/v1.5.2-drive-sync-20260911.json`。
 - 六表主键无重复；来源行号和原始文本逐条核对；全部单元格回读一致；相同输入重复导出字节一致。旧版外援 XLSX 兼容验证仍为 20 家俱乐部、73 条注册快照、59 条取消注册事件、132 条观测记录。
 - 修复日期区间、约数、截止上界被当成精确日期的问题；日期列优先于 Window 标签。黄荣奇官宣日保留为 2025-11-24，注册提交/完成日期仍为空且待证据。
 - 合并的中英文姓名分别保存，保留罗马数字和原始译名；比较键不是永久球员身份。
@@ -51,7 +52,7 @@
 3. 八一专项表的合同、官宣和逐条证据补充，以及原 domestic MASTER 的正式合并尚未接入本六表命令。
 4. 2023-2024 媒体注册快照、两条外援启用事件尚未解析；旧适配器的 59 条取消记录尚未并入本次六表输出。
 5. 原生 Google Sheet 作为权威事实源的读取、构建、兼容导出和发布校验尚待集成。
-6. 最新修复尚未同步到 Drive 候选 Sheet，也未进行 Gemini 消费复验；实施记录和新验证文件的 Drive 同步仍待执行。
+6. 最新修复已同步到 Drive r3 候选 Sheet，验收 JSON 已进入 Drive AI 目录；Gemini 消费复验仍待执行。
 7. 本次开发工作树验证不会切换实际部署目录的生产版本。生产仍以已发布的 v1.5.1-2 和其 release_status 为准。
 
 ## 下一步
@@ -69,4 +70,12 @@ python scripts/verify_v1_5_2_sources.py \
   --rights-source workspace/inputs/draft2/foreign_merged.md \
   --foreign-xlsx workspace/inputs/live/foreign_original.xlsx \
   --output workspace/candidates/<new-verification-run>
+python scripts/sync_v1_5_2_candidate.py \
+  --candidate workspace/candidates/v1.5.2-verified-20260911/domain.xlsx \
+  --acceptance docs/validation/v1.5.2-source-acceptance-20260911.json \
+  --sheet-folder-id 1bQybVHV_RRtZvvFuFhLpM-rXbVsNT2Dq \
+  --sheet-name "CBA-KB v1.5.2 候选事实表（六标签页，600条，PNG待补，r3）" \
+  --sheet-key candidate/v1.5.2/draft2-r3 \
+  --report workspace/reports/v1.5.2-drive-sync.json \
+  --root /Users/skychengneo/Agent/CBA_kb --apply
 ```

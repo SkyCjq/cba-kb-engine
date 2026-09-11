@@ -1,0 +1,49 @@
+{
+  "status": "DRIVE_CANDIDATE_SYNCED",
+  "production_eligible": false,
+  "verified_at": "2026-09-11T00:56:52.215568+00:00",
+  "candidate": {
+    "sheet_id": "1PxOd9NJAwdYb-ay9aKR1zoKGyGucxHKBsHMfa0CAHXs",
+    "name": "CBA-KB v1.5.2 候选事实表（六标签页，600条，PNG待补，r3）",
+    "url": "https://docs.google.com/spreadsheets/d/1PxOd9NJAwdYb-ay9aKR1zoKGyGucxHKBsHMfa0CAHXs/edit?usp=drivesdk",
+    "version": "6",
+    "sheet_names": [
+      "domestic_registrations",
+      "domestic_transaction_windows",
+      "registration_status_events",
+      "foreign_registration_snapshots",
+      "foreign_right_snapshots",
+      "foreign_right_transactions"
+    ],
+    "rows_total": 600,
+    "workbook_sha256": "4124c4e6f8e3f62d7353180a5bbd4baca51e3196e2b7fac6b06148042fce2849",
+    "drive_export_sha256": "5ecb6708ac014b194f710952da689ce2d5a5f43e51f9b38667bb83cfc2e98b86",
+    "semantic_sha256": "102d19d4dbd03231926e428df556f183b440765f4300bd7f0d74450c96a82669",
+    "created": false
+  },
+  "attachments": [
+    {
+      "key": "v1.5.2/draft2/source-acceptance-20260911.json",
+      "id": "1khF_OcCibJsAC82z6BEXGTRYHjvTxo8T",
+      "name": "v1.5.2-source-acceptance-20260911.json",
+      "url": "https://drive.google.com/file/d/1khF_OcCibJsAC82z6BEXGTRYHjvTxo8T/view?usp=drivesdk",
+      "sha256": "a8a733643051588d4fb5e0a672162e70ffcb7dfe8aa03a4c533cf75d4aad6339",
+      "created": false
+    },
+    {
+      "key": "v1.5.2/draft2/CBA-KB_v1.5.2.md",
+      "id": "1Gce4vHZX4KVvT4VtDHqv3znK2w8Y3ZW9",
+      "name": "CBA-KB v1.5.2 实施记录（DRAFT-2）.md",
+      "url": "https://drive.google.com/file/d/1Gce4vHZX4KVvT4VtDHqv3znK2w8Y3ZW9/view?usp=drivesdk",
+      "sha256": "ad9eee52ca69423063232e309157427783cef765b0959842d11e5c0ba4292abf",
+      "created": true
+    }
+  ],
+  "checks": [
+    "local workbook matches acceptance report",
+    "acceptance report is production_eligible=false",
+    "six-tab order and row counts match",
+    "Drive six-tab values match every local cell",
+    "synced objects carry immutable cba_key app properties"
+  ]
+}
