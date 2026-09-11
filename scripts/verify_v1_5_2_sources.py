@@ -53,7 +53,10 @@ def main():
     sources = {name: {'id': id_, 'url': f'https://drive.google.com/file/d/{id_}/view'}
                for name, id_ in SOURCE_IDS.items()}
     clubs = Clubs(ROOT)
-    domestic = parse_domestic_movement(texts['domestic'], sources['domestic'], clubs)
+    domestic = parse_domestic_movement(
+        texts['domestic'], sources['domestic'], clubs, include_window_entities=False,
+        legacy_research_defaults=True,
+    )
     foreign = parse_foreign_rights(texts['foreign'], sources['foreign'], clubs)
     records = {name: domestic.get(name, []) + foreign.get(name, []) for name in TABLES}
     summary = validate_domain(records)
@@ -72,7 +75,8 @@ def main():
     check(by_player['黄荣奇']['club_announcement_date'] == '2025-11-24', 'Announcement date lost')
     check(by_player['黄荣奇']['event_date'] is None, 'Announcement promoted to event date')
     check(by_player['罗汉琛']['event_date'] == '2026-01-16', 'Window label hid event date')
-    check(by_player['罗汉琛']['registration_method'] == '自由球员认领', 'Research label used as official method')
+    check(by_player['罗汉琛']['registration_method_official'] == '自由球员认领',
+          'Research label used as official method')
     source_lines = {SOURCE_IDS[key]: text.splitlines() for key, text in texts.items()}
     for table, rows in records.items():
         for row in rows:

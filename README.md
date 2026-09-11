@@ -1,4 +1,22 @@
-# CBA-KB Engine v1.5.2 (implemented-scope production release)
+# CBA-KB Engine v1.5.3 development
+
+当前开发分支为 `codex/v1.5.3-event-closure`，版本 `1.5.3.dev0`。本轮把六表
+`registration_status_events` 收口为 canonical registration event product，补齐
+2024-2025 / 2025-2026 transaction windows，实现日期语义、生命周期、官方方式与
+研究标签分离、legacy multi-target reconciliation 及分域 cross-table QA。候选控制为
+`46 / 10 / 131 / 244 / 227 / 7`，legacy EVENTS 73 行映射为 87 edges。当前仍为
+`production_eligible=false`，未切换 production。实施记录与 AI 消费规则见
+[v1.5.3 文档](docs/CBA-KB_v1.5.3.md)。
+
+当前生产仍为 **v1.5.2-2 / COMPLETE**。读取事实时，赛季登记状态读 MASTER / Snapshot；
+“什么时候发生什么”读 canonical `registration_status_events`；证据追溯读
+`10_sources_原始证据`；人工判断读 `30_notes_人工知识`；AI 导航读
+`40_ai_投喂与索引`。旧 `CBA_球员注册_EVENTS.xlsx` 只用于兼容与历史审计，不是
+current truth。不同 event domain 不得直接相加。
+
+以下内容记录 v1.5.2 已实现范围的生产发布：
+
+## CBA-KB Engine v1.5.2 (implemented-scope production release)
 
 2026-09-11 用户确认收尾后冻结代码，PNG OCR 不再需要。当前版本按已实现范围使用，未实现功能和 Gemini 未复验结论保留；[最终收尾说明与数据读取规则](docs/v1.5.2-final-closeout-20260911.md) 为本轮收尾入口。该决定不提升为完整 DRAFT-2 或 STABLE。
 

@@ -25,6 +25,20 @@ from cba_kb.registration_domain import TABLES
 XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 SHEET = 'application/vnd.google-apps.spreadsheet'
 SHEET_ORDER = list(SHEET_NAMES.values())
+LEGACY_EVENT_HEADERS = (
+    'event_key','event_domain','event_type','event_status','transaction_group_id',
+    'season','player_type','club_id','club_source_name','player_name_zh',
+    'player_name_en_raw','player_name_en_normalized','from_club_id',
+    'from_club_source_name','to_club_id','to_club_source_name','event_date',
+    'event_date_status','date_year_inferred','registration_submission_date',
+    'registration_submission_date_status','registration_completed_date',
+    'registration_completed_date_status','club_announcement_date',
+    'registration_window_deadline','registration_method','contract_category',
+    'contract_term_official','notes','supersedes_event_key','correction_reason',
+    'source_file_id','source_url_primary','source_url_secondary','source_page_or_row',
+    'source_type','extraction_method','verification_status','source_authority',
+    'verification_raw','source_authority_raw','raw_event_text',
+)
 
 
 def digest(data):
@@ -97,6 +111,9 @@ def local_checks(candidate, acceptance):
     for table, sheet_name in SHEET_NAMES.items():
         rows = values[sheet_name]
         headers = list(TABLES[table])
+        if (report.get('version', '').startswith('1.5.2')
+                and table == 'registration_status_events'):
+            headers = list(LEGACY_EVENT_HEADERS)
         if rows[0] != headers:
             raise ValueError(f'Candidate headers mismatch: {sheet_name}')
         if len(rows) - 1 != expected_counts.get(table):
