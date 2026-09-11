@@ -77,6 +77,37 @@ def test_single_writer_required(tmp_path):
     assert not d.calls
 
 
+def test_patch_release_carries_forward_unchanged_artifacts(tmp_path):
+    d=FakeDrive()
+    d.put('status',json.dumps({
+        'state':'COMPLETE',
+        'current_release_id':'r1',
+        'pending_release_id':None,
+        'previous_release_id':'r0',
+        'artifacts':[
+            {'id':'a','name':'a','sha256':'old-a'},
+            {'id':'b','name':'b','sha256':'old-b'},
+        ],
+    }).encode(),'application/json')
+    candidate=tmp_path/'new-a';candidate.write_bytes(b'new-a')
+    entries=[{
+        'id':'a',
+        'name':'a',
+        'mime':'text/plain',
+        'path':str(candidate),
+    }]
+    root=tmp_path/'patch'
+    prepare(d,root,'r2',entries,'archive','status',carry_forward_artifacts=True)
+    publish(d,root,True)
+    status=json.loads(d.get('status'))
+    assert status['current_release_id']=='r2'
+    assert status['previous_release_id']=='r1'
+    assert status['artifacts']==[
+        {'id':'a','name':'a','sha256':digest(b'new-a')},
+        {'id':'b','name':'b','sha256':'old-b'},
+    ]
+
+
 def test_native_target_rejected(tmp_path):
     d=FakeDrive();d.files['a']['mimeType']='application/vnd.google-apps.spreadsheet'
     p=tmp_path/'payload';p.write_bytes(b'csv')

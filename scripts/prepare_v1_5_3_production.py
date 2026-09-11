@@ -22,6 +22,7 @@ from scripts import prepare_v1_5_2 as prior
 
 
 RELEASE = 'v1.5.3-1'
+RELEASE_COMMIT = 'f0fdf9304f057e81c61450b0297be0bf18a7dec2'
 DOMAIN_PRODUCT = 'CBA_注册领域_六表.xlsx'
 DOMAIN_WORKBOOK = (
     ROOT / 'workspace/candidates/v1.5.3-verified-20260911/domain.xlsx'
@@ -271,6 +272,73 @@ def update_version_doc(text, commit):
     if marker not in text:
         raise RuntimeError('v1.5.3 document metadata marker changed')
     return text.replace(marker, banner + marker, 1)
+
+
+def corrected_execution_state(commit, release_id):
+    return f"""# PART L — 当前执行状态
+
+> **当前生产发布**：`{release_id} / COMPLETE`。上一发布为 `v1.5.3-1`；
+> v1.5.3-2 仅修正版本文档中的历史执行状态，六表事实与 149 项目标清单保持不变。
+
+## L1. Git 与代码真相
+
+- PR #3 已合并，合并提交为 `a49993c873d7de2e33b2c3987cd64f0e2479ff6f`。
+- v1.5.3-1 发布代码提交为 `{RELEASE_COMMIT}`，其 tree 与合并提交一致。
+- v1.5.3-2 文档修正代码提交为 `{commit}`。
+- 完整测试在真实 `bayi.md` 来源在场时为 `131 passed / 0 skipped`。
+
+## L2. 六表与事件收口
+
+- 六表计数：`46 / 10 / 131 / 244 / 227 / 7`，共 665 条记录。
+- workbook SHA-256：`{DOMAIN_WORKBOOK_SHA256}`。
+- semantic SHA-256：`{DOMAIN_SEMANTIC_SHA256}`。
+- legacy EVENTS 73 行、87 edges、mapped 73、unmapped 0、conflicts 0。
+
+## L3. 真实来源验收
+
+`tests/test_midseason_md.py::test_real_source_records` 曾因仓库工作树未布置
+`.staging/review-0910/bayi.md` 而跳过。使用外部真实来源
+`/Users/skychengneo/Documents/ChatGPT/CBA_kb/.staging/review-0910/bayi.md`
+（SHA-256 `d7272639a8503f60c3608e7ad914c891e3bda455994968b305027fdbe3994781`）
+补跑后通过：14 条 domestic、14 条 event、9 个 club，窗口截止日
+`2021-02-27` 保持为 event 字段，domestic `notice_deadline` 为 `None`。
+
+## L4. Drive 当前状态
+
+```text
+release_status.state       = COMPLETE
+current_release_id         = {release_id}
+pending_release_id         = null
+previous_release_id        = v1.5.3-1
+artifacts                  = 149
+production workbook SHA    = {DOMAIN_WORKBOOK_SHA256}
+production table counts    = 46 / 10 / 131 / 244 / 227 / 7
+```
+
+Drive `50_scripts` 已包含本次实现的扁平代码镜像：
+`src__cba_kb__event_closure.py`、`scripts__prepare_v1_5_3.py`、
+`scripts__reconcile_v1_5_3.py`、`scripts__prepare_v1_5_3_production.py`，
+内容均与 Git 工作树逐字节一致。
+
+## L5. 发布边界
+
+v1.5.3 只完成注册事件域收口与回归保护，不代表完整 DRAFT-2 或 STABLE。
+后续历史维护不得把研究标签升级为官方 registration method，也不得把不同
+`event_domain` 直接相加。
+"""
+
+
+def correct_version_doc_after_release(text, commit, release_id):
+    """Replace stale execution-state prose after the v1.5.3 production switch."""
+    if not text.startswith('# CBA-KB v1.5.3'):
+        raise RuntimeError('Unexpected v1.5.3 version document')
+    text = text.replace('v1.5.3-1', release_id)
+    text = text.replace(RELEASE_COMMIT, commit)
+    marker = '# PART L — 当前执行状态'
+    index = text.find(marker)
+    if index < 0:
+        raise RuntimeError('v1.5.3 execution-state marker changed')
+    return text[:index] + corrected_execution_state(commit, release_id)
 
 
 def release_report(commit, products, added, applied, validation):
@@ -704,9 +772,62 @@ def refresh_dependencies(root):
     }, ensure_ascii=False, indent=2))
 
 
+def patch_document(root, output, release_id):
+    """Build a one-document correction release after the v1.5.3 switch."""
+    if release_id == RELEASE:
+        raise RuntimeError('Patch document requires a new release id')
+    drive = Drive(root)
+    allocation = read(root / 'workspace/production' / RELEASE / 'allocation.json')
+    status_id = allocation['status_id']
+    status = json.loads(drive.get(status_id))
+    if (
+        status.get('state') != 'COMPLETE'
+        or status.get('current_release_id') != RELEASE
+        or status.get('pending_release_id') is not None
+    ):
+        raise RuntimeError('Current production release is not the frozen v1.5.3 base')
+    artifacts = {item['id']: item for item in status.get('artifacts', [])}
+    before, meta = snapshot(drive, VERSION_DOC_ID)
+    if meta['mimeType'] != 'text/markdown':
+        raise RuntimeError('Version document MIME changed')
+    if artifacts.get(VERSION_DOC_ID, {}).get('sha256') != digest(before):
+        raise RuntimeError('Version document differs from release_status')
+    commit = git('rev-parse', 'HEAD')
+    corrected = correct_version_doc_after_release(
+        before.decode(), commit, release_id,
+    ).encode()
+    area = output.parent.parent
+    entry = {
+        'id': VERSION_DOC_ID,
+        'name': meta['name'],
+        'mime': meta['mimeType'],
+        'mode': 'binary',
+        'path': str(output),
+        'staging_parent': VERSION_DOC_PARENT,
+        'publish_parent': VERSION_DOC_PARENT,
+        'logical_key': VERSION_DOC_LOGICAL_KEY,
+    }
+    atomic(output, corrected)
+    save(area / 'entries.json', [entry])
+    print(json.dumps({
+        'base_release': RELEASE,
+        'patch_release': release_id,
+        'commit': commit,
+        'document': VERSION_DOC_ID,
+        'sha256_before': digest(before),
+        'sha256_after': digest(corrected),
+        'entries': str(area / 'entries.json'),
+    }, ensure_ascii=False, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('step', choices=['reserve', 'freeze', 'refresh-dependencies'])
+    parser.add_argument(
+        'step',
+        choices=['reserve', 'freeze', 'refresh-dependencies', 'patch-document'],
+    )
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--release-id', default='v1.5.3-2')
     parser.add_argument(
         '--staging',
         action='append',
@@ -721,6 +842,10 @@ def main():
         reserve(root)
     elif arguments.step == 'refresh-dependencies':
         refresh_dependencies(root)
+    elif arguments.step == 'patch-document':
+        if arguments.output is None:
+            parser.error('patch-document requires --output')
+        patch_document(root.resolve(), arguments.output.resolve(), arguments.release_id)
     else:
         freeze(root, arguments.staging)
 
