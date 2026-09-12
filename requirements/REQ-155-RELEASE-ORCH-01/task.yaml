@@ -1,5 +1,5 @@
 req_id: REQ-155-RELEASE-ORCH-01
-requirement_revision_or_hash: r4-20260912-dependency-binding-recovery
+requirement_revision_or_hash: r5-20260912-archive-snapshot-recovery
 requirement_artifact: requirements/REQ-155-RELEASE-ORCH-01/requirement-r1-20260912.md
 target_release_id: v1.5.5-1
 product_baseline_sha: c14a0f2579fcc86e2dc114f0b15d00dd54e9f55e
@@ -7,19 +7,17 @@ release_execution_sha: explicit_40_char_head
 previous_release_id: v1.5.4-1
 previous_production_code: e0dea09ccb020b2918cefa311365e8563348f293
 base_branch: codex/v1.5.2-draft2
-feature_branch: codex/req-155-release-orch-01
+baseline_code_commit: b618668b9ceb630c44397c91204052736139d303
+feature_branch: codex/req-155-release-orch-r5-archive-recovery
 lane: CODE_CONFIG
 allowed_paths:
 - requirements/REQ-155-RELEASE-ORCH-01/requirement-r1-20260912.md
 - requirements/REQ-155-RELEASE-ORCH-01/task.yaml
-- scripts/prepare_production.py
-- tests/test_release_orchestration.py
 - src/cba_kb/release.py
+- src/cba_kb/drive.py
 - tests/test_release.py
 focused_tests:
-- tests/test_release_orchestration.py
 - tests/test_release.py
-- tests/test_gates.py::test_production_requires_complete_explicit_policy
 must_not_change:
 - r5 watcher source contract
 - A22-A36 semantics
@@ -37,3 +35,31 @@ context_policy: allowlist_only
 full_regression_owner: github_actions
 dependency_authority: private_instance_production_json_dependency_ids
 runtime_input_ids_are_dependency_authority: false
+archive_write_during_implementation: forbidden
+reservation_during_implementation: forbidden
+restore_during_implementation: forbidden
+recovery1:
+  execution_sha: b618668b9ceb630c44397c91204052736139d303
+  plan_state: SUPERSEDED_ARCHIVE_TIMEOUT
+  result: ARCHIVE_TIMEOUT_PRE_CANONICAL_MUTATION
+  observed_partial_children: 320
+  canonical_mutation: false
+  direct_retry_old_plan: forbidden
+  partial_archive_mutation: forbidden
+recovery2:
+  execution_sha: new_merge_commit
+  fresh_local_recovery_root: required
+  reprepare: required
+  active_targets: 171
+  existing_reservations: 15
+  new_reservations: 0
+  expected_final_targets: 186
+  topology_verification: mechanical
+  publish_gate: RECOVERY2_WEB_GO
+archive_contract:
+  index: one_complete_child_listing_per_attempt
+  child_namespace: frozen_code_commit
+  initial_journal_state: ARCHIVING
+  resume_status_guard: frozen_bytes_and_metadata
+  previous_snapshot_coverage: exact_unique_target_and_protected_coverage
+  write_retries: 0

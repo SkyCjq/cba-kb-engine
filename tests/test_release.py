@@ -3,11 +3,13 @@ import json
 from pathlib import Path
 import pytest
 from cba_kb import release as release_module
+from cba_kb.drive import Drive
 from cba_kb.common import digest, read
 from cba_kb.release import prepare,publish,restore,verify,FOLDER
 
 
 class FakeDrive:
+    index_cba_keys = Drive.index_cba_keys
     def __init__(self):
         self.files={}; self.sequence=0; self.fail=None; self.calls=[]
         self.add('a',b'old-a');self.add('b',b'old-b')
@@ -21,10 +23,15 @@ class FakeDrive:
         self.calls.append(fid); self.files[fid]['data']=data
         self.files[fid]['version']=str(int(self.files[fid]['version'])+1)
         if self.fail==fid:self.fail=None;raise OSError('Lost response after accepted write')
-    def ensure(self,parent,key,name,mime,content=None):
+    def list(self, parent):
+        return [self.meta(fid) for fid in self.files if parent in self.files[fid]['parents']]
+    def ensure(self,parent,key,name,mime,content=None,*,index=None):
         fid=parent+'/'+key
-        if fid not in self.files:self.add(fid,content or b'',mime)
+        if fid not in self.files:
+            self.add(fid,content or b'',mime)
+            self.files[fid].update(name=name, parents=[parent], appProperties={'cba_key': key})
         elif content is not None:assert self.get(fid)==content
+        if index is not None:index[key]=self.meta(fid)
         return fid
 
 
@@ -214,8 +221,11 @@ def test_managed_native_doc_publish_and_rollback(tmp_path):
             self.docs = SimpleNamespace(document=lambda fid: {'body': self.files[fid]['data'].decode()})
         def get_managed_doc(self,fid):return self.files[fid]['data']
         def put_managed_doc(self,fid,data):return self.put(fid,data,DOC)
-        def ensure_copy(self,parent,key,fid,name):
-            self.native_copies.append(fid);return 'full-native-backup'
+        def ensure_copy(self,parent,key,fid,name,*,index=None):
+            if 'full-native-backup' not in self.files:
+                self.native_copies.append(fid)
+                self.add('full-native-backup', self.get(fid), DOC)
+            return 'full-native-backup'
     d=NativeDrive();p=tmp_path/'native.txt';p.write_text(wrap('Current facts'))
     r=tmp_path/'native-release'
     prepare(d,r,'nr',[{'id':'doc','name':'INDEX','mime':DOC,'mode':'managed_doc','path':str(p)}],'arc','status')
@@ -281,14 +291,8 @@ def closure_setup(tmp_path):
         def list(self, parent):
             return [self.meta(fid) for fid in self.files if parent in self.files[fid]['parents']]
 
-        def ensure(self, parent, key, name, mime, content=None):
-            fid = parent + '/' + key
-            if fid not in self.files:
-                self.add(fid, content or b'', mime)
-                self.files[fid].update(name=name, parents=[parent])
-            elif content is not None:
-                assert self.get(fid) == content
-            return fid
+        def ensure(self, parent, key, name, mime, content=None, *, index=None):
+            return super().ensure(parent, key, name, mime, content, index=index)
 
         def move(self, fid, destination, previous):
             self.calls.append('move:' + fid)
@@ -708,3 +712,376 @@ def test_plan_cli_rejects_bad_input_before_transport(tmp_path, monkeypatch, caps
         cli.main()
     assert error.value.code == 1
     assert value not in capsys.readouterr().err
+
+
+class IndexedArchiveDrive(FakeDrive):
+    """Exercise real Drive ensure/index code against in-memory files API writes."""
+    ensure = Drive.ensure
+    ensure_copy = Drive.ensure_copy
+
+    def __init__(self):
+        from collections import Counter
+        from types import SimpleNamespace
+        super().__init__()
+        self.listings = Counter()
+        self.created = []
+        self.downloads = []
+        self.fail_before_key = None
+        self.fail_after_key = None
+        self.on_create = None
+        self.on_put = None
+        self.api = SimpleNamespace(files=lambda: self)
+
+    def list(self, parent):
+        self.listings[parent] += 1
+        return super().list(parent)
+
+    def get(self, fid):
+        self.downloads.append(fid)
+        return super().get(fid)
+
+    def put(self, fid, data, mime):
+        if self.on_put:
+            self.on_put(fid, data)
+        return super().put(fid, data, mime)
+
+    def move(self, fid, destination, previous):
+        self.calls.append('move:' + fid)
+        self.files[fid]['parents'] = [destination]
+        self.files[fid]['version'] = str(int(self.files[fid]['version']) + 1)
+
+    def create(self, **kwargs):
+        from types import SimpleNamespace
+
+        def execute(num_retries):
+            assert num_retries == 0  # Writes are never blindly retried.
+            body = kwargs['body']
+            key = body['appProperties']['cba_key']
+            if self.on_create:
+                self.on_create(key)
+            if key == self.fail_before_key:
+                self.fail_before_key = None
+                raise TimeoutError('archive request timeout')
+            media = kwargs.get('media_body')
+            data = media.getbytes(0, media.size()) if media else b''
+            fid = 'created-' + str(len(self.created))
+            self.add(fid, data, body['mimeType'])
+            self.files[fid].update(copy.deepcopy(body))
+            self.created.append((fid, key))
+            if key == self.fail_after_key:
+                self.fail_after_key = None
+                raise TimeoutError('create committed; response lost')
+            return {'id': fid}
+
+        return SimpleNamespace(execute=execute)
+
+    def copy(self, **kwargs):
+        from types import SimpleNamespace
+
+        def execute(num_retries):
+            assert num_retries == 0
+            body = kwargs['body']
+            key = body['appProperties']['cba_key']
+            if self.on_create:
+                self.on_create(key)
+            fid = 'created-' + str(len(self.created))
+            source = self.files[kwargs['fileId']]
+            self.add(fid, source['data'], source['mimeType'])
+            self.files[fid].update(copy.deepcopy(body))
+            self.created.append((fid, key))
+            if key == self.fail_after_key:
+                self.fail_after_key = None
+                raise TimeoutError('copy committed; response lost')
+            return {'id': fid}
+
+        return SimpleNamespace(execute=execute)
+
+    def get_managed_doc(self, fid):
+        return self.get(fid)
+
+    def put_managed_doc(self, fid, data):
+        return self.put(fid, data, release_module.DOC)
+
+
+def archive_recovery_setup(tmp_path, monkeypatch, count=3, native=False):
+    from types import SimpleNamespace
+    d = IndexedArchiveDrive()
+    d.files['status']['data'] = json.dumps({
+        'state': 'COMPLETE', 'current_release_id': 'v1.5.4-1',
+        'code_commit': 'b' * 40,
+    }).encode()
+    entries = []
+    for i in range(count):
+        fid = f'target-{i}'
+        before, after, mime = b'before', b'after', 'text/plain'
+        if native:
+            from cba_kb.native import wrap
+            before, after, mime = wrap('before').encode(), wrap('after').encode(), release_module.DOC
+        d.add(fid, before, mime)
+        path = tmp_path / f'candidate-{i}'
+        path.write_bytes(after)
+        entries.append({'id': fid, 'name': fid, 'mime': mime, 'path': str(path),
+                        'mode': 'managed_doc' if native else 'binary'})
+    d.docs = SimpleNamespace(document=lambda fid: {'body': d.files[fid]['data'].decode()})
+    d.add('approved-dependency', b'policy-frozen')
+    d.add('runtime-input', b'not-the-dependency-authority')
+    dependency = {'id': 'approved-dependency', 'sha256': digest(b'policy-frozen'),
+                  'meta': release_module.fingerprint(d.meta('approved-dependency'))}
+    monkeypatch.setattr(release_module, 'verify_code_provenance', lambda *args: {'status': 'PASS'})
+    root = tmp_path / 'release'
+    prepare(d, root, 'v1.5.5-1', entries, 'archive', 'status', [dependency],
+            environment='production', code_commit='c' * 40)
+    return d, root, 'c' * 40
+
+
+def archive_folder(d):
+    return next(fid for fid, item in d.files.items()
+                if item.get('appProperties', {}).get('cba_key') == 'v1.5.5-1')
+
+
+@pytest.mark.parametrize('count', [2, 186])
+def test_archive_listing_is_constant_and_complete_before_canonical_write(tmp_path, monkeypatch, count):
+    d, root, namespace = archive_recovery_setup(tmp_path, monkeypatch, count)
+
+    def before_create(key):
+        journal = read(root / 'journal.json')
+        assert journal['state'] == 'ARCHIVING'
+        assert journal['uploaded'] == {} and journal['inflight'] is None
+        assert not d.calls
+
+    def before_put(fid, data):
+        journal = read(root / 'journal.json')
+        assert journal['state'] == 'PUBLISHING'
+        previous = journal['previous_snapshot']
+        assert len(previous) == count
+        assert {item['original_id'] for item in previous} == {f'target-{i}' for i in range(count)}
+        for item in previous:
+            assert digest(d.get(item['snapshot_id'])) == item['sha256']
+
+    d.on_create, d.on_put = before_create, before_put
+    publish(d, root, True)
+    assert d.listings['archive'] == 1
+    assert d.listings[archive_folder(d)] == 1
+    assert len(d.created) == 2 * count + 2  # release folder, before/candidate, plan
+    assert all(key == 'v1.5.5-1' or key.startswith(namespace + ':') for _, key in d.created)
+    assert read(root / 'journal.json')['state'] == 'COMPLETE'
+
+
+def test_archive_timeout_resumes_only_missing_snapshots(tmp_path, monkeypatch):
+    d, root, namespace = archive_recovery_setup(tmp_path, monkeypatch)
+    status, meta = d.get('status'), d.meta('status')
+    d.fail_before_key = namespace + ':candidate-1'
+    with pytest.raises(TimeoutError):
+        publish(d, root, True)
+    journal = read(root / 'journal.json')
+    assert journal == {'state': 'ARCHIVING', 'uploaded': {}, 'inflight': None}
+    assert d.get('status') == status and d.meta('status') == meta
+    assert not d.calls
+    assert all(d.get(f'target-{i}') == b'before' for i in range(3))
+    saved = {fid: copy.deepcopy(d.files[fid]) for fid, _ in d.created}
+    d.downloads.clear()
+    publish(d, root, True)
+    assert all(d.files[fid] == item for fid, item in saved.items())
+    assert len(d.created) == 8
+    assert len({key for _, key in d.created}) == 8
+    assert set(saved) - {archive_folder(d)} <= set(d.downloads)
+    assert d.listings[archive_folder(d)] == 2
+    assert json.loads(d.get('status'))['state'] == 'COMPLETE'
+
+
+@pytest.mark.parametrize('lost_key', ['folder', 'before-0', 'candidate-0', 'plan', 'native-before-0'])
+def test_archive_lost_response_discovered_without_duplicate(tmp_path, monkeypatch, lost_key):
+    native = lost_key == 'native-before-0'
+    d, root, namespace = archive_recovery_setup(tmp_path, monkeypatch, count=1, native=native)
+    key = 'v1.5.5-1' if lost_key == 'folder' else namespace + ':' + lost_key
+    d.fail_after_key = key
+    with pytest.raises(TimeoutError):
+        publish(d, root, True)
+    assert read(root / 'journal.json')['state'] == 'ARCHIVING'
+    assert not d.calls
+    assert [created_key for _, created_key in d.created].count(key) == 1
+    publish(d, root, True)
+    assert [created_key for _, created_key in d.created].count(key) == 1
+    assert len(d.created) == (5 if native else 4)
+    assert read(root / 'journal.json')['state'] == 'COMPLETE'
+
+
+@pytest.mark.parametrize('tamper', ['content', 'mime'])
+def test_archive_resume_validates_existing_snapshot(tmp_path, monkeypatch, tamper):
+    d, root, namespace = archive_recovery_setup(tmp_path, monkeypatch)
+    d.fail_before_key = namespace + ':candidate-0'
+    with pytest.raises(TimeoutError):
+        publish(d, root, True)
+    fid = next(fid for fid, key in d.created if key == namespace + ':before-0')
+    d.files[fid]['data' if tamper == 'content' else 'mimeType'] = b'tampered' if tamper == 'content' else 'text/csv'
+    count = len(d.created)
+    with pytest.raises((RuntimeError, ValueError), match='Immutable|MIME'):
+        publish(d, root, True)
+    assert len(d.created) == count and not d.calls
+    assert read(root / 'journal.json')['state'] == 'ARCHIVING'
+
+
+@pytest.mark.parametrize('tamper', ['bytes', 'metadata'])
+def test_archiving_resume_rejects_production_status_drift(tmp_path, monkeypatch, tamper):
+    d, root, namespace = archive_recovery_setup(tmp_path, monkeypatch)
+    d.fail_before_key = namespace + ':before-0'
+    with pytest.raises(TimeoutError):
+        publish(d, root, True)
+    if tamper == 'bytes':
+        d.files['status']['data'] += b' '
+    else:
+        d.files['status']['version'] = '2'
+    count = len(d.created)
+    with pytest.raises(RuntimeError, match='ARCHIVE_RESUME_PRODUCTION_DRIFT'):
+        publish(d, root, True)
+    assert len(d.created) == count and not d.calls
+    assert read(root / 'journal.json')['state'] == 'ARCHIVING'
+
+
+def test_status_drift_during_archive_keeps_archiving_without_canonical_write(tmp_path, monkeypatch):
+    d, root, namespace = archive_recovery_setup(tmp_path, monkeypatch)
+    def drift(key):
+        if key == namespace + ':plan':
+            d.files['status']['version'] = '2'
+    d.on_create = drift
+    with pytest.raises(RuntimeError, match='ARCHIVE_RESUME_PRODUCTION_DRIFT'):
+        publish(d, root, True)
+    assert not d.calls
+    assert read(root / 'journal.json')['state'] == 'ARCHIVING'
+
+
+def test_duplicate_archive_key_fails_closed_on_resume(tmp_path, monkeypatch):
+    d, root, namespace = archive_recovery_setup(tmp_path, monkeypatch)
+    d.fail_before_key = namespace + ':candidate-0'
+    with pytest.raises(TimeoutError):
+        publish(d, root, True)
+    fid = next(fid for fid, key in d.created if key == namespace + ':before-0')
+    d.files['duplicate'] = dict(copy.deepcopy(d.files[fid]), id='duplicate')
+    count = len(d.created)
+    with pytest.raises(RuntimeError, match='Duplicate release object key'):
+        publish(d, root, True)
+    assert len(d.created) == count and not d.calls
+
+
+def test_old_320_unnamespaced_objects_remain_untouched(tmp_path, monkeypatch):
+    d, root, namespace = archive_recovery_setup(tmp_path, monkeypatch)
+    folder = d.ensure('archive', 'v1.5.5-1', 'v1.5.5-1', FOLDER)
+    for i in range(320):
+        key = f'before-{i // 2}' if i % 2 == 0 else f'candidate-{i // 2}'
+        fid = f'recovery1-{i}'
+        d.add(fid, b'old incompatible attempt')
+        d.files[fid].update(parents=[folder], appProperties={'cba_key': key})
+    old = {fid: copy.deepcopy(item) for fid, item in d.files.items() if fid.startswith('recovery1-')}
+    d.listings.clear()
+    publish(d, root, True)
+    assert all(d.files[fid] == item for fid, item in old.items())
+    assert d.listings[folder] == 1
+    assert len(old) == 320
+
+
+def test_incomplete_previous_snapshot_never_enters_publishing(tmp_path, monkeypatch):
+    d, root, _ = archive_recovery_setup(tmp_path, monkeypatch)
+    archive = release_module.archive_snapshot
+    monkeypatch.setattr(release_module, 'archive_snapshot', lambda *args: archive(*args)[:-1])
+    with pytest.raises(RuntimeError, match='PREVIOUS_SNAPSHOT_INCOMPLETE'):
+        publish(d, root, True)
+    assert not d.calls
+    assert read(root / 'journal.json')['state'] == 'ARCHIVING'
+    with pytest.raises(RuntimeError, match='PREVIOUS_SNAPSHOT_INCOMPLETE'):
+        release_module.set_status(d, read(root / 'plan.json'), 'PUBLISHING', [])
+    assert not d.calls
+
+
+@pytest.mark.parametrize('change', ['approved', 'runtime', 'during_archive'])
+def test_archiving_preserves_frozen_production_dependency_binding(tmp_path, monkeypatch, change):
+    d, root, namespace = archive_recovery_setup(tmp_path, monkeypatch)
+    if change == 'during_archive':
+        def drift(key):
+            if key == namespace + ':plan':
+                d.files['approved-dependency']['data'] = b'changed'
+        d.on_create = drift
+    else:
+        d.files['runtime-input' if change == 'runtime' else 'approved-dependency']['data'] = b'changed'
+    if change == 'runtime':
+        publish(d, root, True)
+        assert read(root / 'journal.json')['state'] == 'COMPLETE'
+    else:
+        with pytest.raises(RuntimeError, match='Input dependency changed'):
+            publish(d, root, True)
+        assert not d.calls
+        assert read(root / 'journal.json')['state'] == ('ARCHIVING' if change == 'during_archive' else 'PREPARED')
+
+
+def test_closure_archives_protected_and_status_with_execution_namespace(tmp_path):
+    old, root = closure_setup(tmp_path)
+    d = IndexedArchiveDrive()
+    d.files = old.files
+    publish(d, root, True)
+    keys = [key for _, key in d.created]
+    namespace = 'a' * 40 + ':'
+    assert namespace + 'plan' in keys and namespace + 'status-before' in keys
+    assert any(key.startswith(namespace + 'protected-') for key in keys)
+    assert all(key == 'v1.5.4-test' or key.startswith(namespace) for key in keys)
+
+
+def test_drive_index_collects_all_pages_and_rejects_duplicate_across_pages():
+    from types import SimpleNamespace
+    pages = [
+        {'files': [{'id': 'one', 'appProperties': {'cba_key': 'first'}}], 'nextPageToken': 'page2'},
+        {'files': [{'id': 'two', 'appProperties': {'cba_key': 'second'}}]},
+    ]
+    calls = []
+    def listing(**kwargs):
+        calls.append(kwargs['pageToken'])
+        page = pages[0 if kwargs['pageToken'] is None else 1]
+        return SimpleNamespace(execute=lambda num_retries: page)
+    d = Drive.__new__(Drive)
+    d.api = SimpleNamespace(files=lambda: SimpleNamespace(list=listing))
+    assert set(d.index_cba_keys('folder')) == {'first', 'second'}
+    assert calls == [None, 'page2']
+    pages[1]['files'][0]['appProperties']['cba_key'] = 'first'
+    with pytest.raises(RuntimeError, match='Duplicate release object key'):
+        d.index_cba_keys('folder')
+
+
+def test_shared_index_updates_on_create_and_copy_without_relisting():
+    d = IndexedArchiveDrive()
+    d.add('doc', b'native', release_module.DOC)
+    index = d.index_cba_keys('folder')
+    one = d.ensure('folder', 'key', 'payload', 'text/plain', b'payload', index=index)
+    assert d.ensure('folder', 'key', 'payload', 'text/plain', b'payload', index=index) == one
+    two = d.ensure_copy('folder', 'native', 'doc', 'backup', index=index)
+    assert d.ensure_copy('folder', 'native', 'doc', 'backup', index=index) == two
+    assert d.listings['folder'] == 1 and len(d.created) == 2
+    assert set(index) == {'key', 'native'}
+
+
+def test_native_publish_response_loss_reuses_verified_archive_copy(tmp_path, monkeypatch):
+    d, root, namespace = archive_recovery_setup(tmp_path, monkeypatch, count=1, native=True)
+    d.fail = 'target-0'
+    with pytest.raises(OSError):
+        publish(d, root, True)
+    assert read(root / 'journal.json')['state'] == 'FAILED'
+    publish(d, root, True)
+    assert d.calls.count('target-0') == 1
+    assert [key for _, key in d.created].count(namespace + ':native-before-0') == 1
+    assert read(root / 'journal.json')['state'] == 'COMPLETE'
+
+
+def test_archiving_rejects_inconsistent_journal_without_remote_writes(tmp_path, monkeypatch):
+    from cba_kb.common import save
+    d, root, _ = archive_recovery_setup(tmp_path, monkeypatch)
+    save(root / 'journal.json', {'state': 'ARCHIVING', 'uploaded': {'target-0': True}, 'inflight': None})
+    with pytest.raises(RuntimeError, match='ARCHIVING_JOURNAL_INVALID'):
+        publish(d, root, True)
+    assert not d.created and not d.calls
+
+
+def test_previous_snapshot_duplicate_target_rejected(tmp_path, monkeypatch):
+    d, root, _ = archive_recovery_setup(tmp_path, monkeypatch)
+    plan = read(root / 'plan.json')
+    previous = [{'original_id': 'target-0', 'snapshot_id': 'snapshot',
+                 'sha256': plan['entries'][0]['before_hash'], 'hash_scope': 'bytes'}] * 3
+    with pytest.raises(RuntimeError, match='PREVIOUS_SNAPSHOT_INCOMPLETE'):
+        release_module.set_status(d, plan, 'PUBLISHING', previous)
+    assert not d.calls
