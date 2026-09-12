@@ -1,5 +1,5 @@
 .venv/
-.credentials/
+.credentials
 .env
 token.json
 credentials.json

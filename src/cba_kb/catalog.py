@@ -7,11 +7,30 @@ from .instance import require_mapping
 from .native import wrap
 
 DOC='application/vnd.google-apps.document'
+LEGACY_MANAGED_DOCS = frozenset({
+    'INDEX.md',
+    'CBA_注册_2024-2025.md',
+    'CBA_注册_2025-2026.md',
+    'CBA_注册_2026-2027.md',
+})
 
 
-def _private_catalog(instance):
+def _private_catalog(root, instance):
     if instance is None:
-        raise RuntimeError('PRIVATE_CATALOG_MAPPING_REQUIRED')
+        path = root/'docs/import_inventory.json'
+        if not path.is_file():
+            raise RuntimeError('PRIVATE_CATALOG_MAPPING_REQUIRED')
+        rows = read(path)
+        if not isinstance(rows, list):
+            raise RuntimeError('PRIVATE_CATALOG_MAPPING_REQUIRED')
+        inventory = {}
+        for entry in rows:
+            require_mapping(entry, ('name', 'id', 'mime'), label='import_inventory.artifact')
+            if entry['name'] in inventory:
+                raise RuntimeError('PRIVATE_CATALOG_DUPLICATE_NAME')
+            inventory[entry['name']] = entry
+        parents = {name: f'legacy-{name}' for name in ('ai', 'scripts', 'config', 'archive')}
+        return parents, {name: None for name in LEGACY_MANAGED_DOCS}, inventory
     config = instance.read_json('import_inventory.json')
     if not isinstance(config, dict) or any(
             field not in config for field in ('parents', 'existing_docs', 'artifacts')):
@@ -40,12 +59,12 @@ def catalog(root,candidate,output,instance=None):
     if subprocess.check_output(['git','status','--porcelain'],cwd=root,text=True).strip():
         raise ValueError('Commit working tree before freezing a catalog')
     commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
-    parents,existing_docs,inventory=_private_catalog(instance)
+    parents,existing_docs,inventory=_private_catalog(root,instance)
     tracked=subprocess.check_output(['git','ls-files','-z'],cwd=root).decode().split('\0')
     required = {
         Path(relative).name
         for relative in filter(None, tracked)
-        if relative.startswith('legacy/')
+        if relative.startswith('legacy/') and Path(relative).name!='Makefile'
     } | ({'Makefile'} if 'Makefile' in tracked else set())
     missing = sorted(required - inventory.keys())
     if missing:
@@ -75,7 +94,10 @@ def catalog(root,candidate,output,instance=None):
         frozen.write_bytes(data)
         existing=inventory.get(path.name) if relative.startswith('legacy/') and path.name!='Makefile' else None
         if relative=='Makefile':existing=inventory.get('Makefile')
-        if (relative.startswith('legacy/') or relative=='Makefile') and existing is None:
+        required_entry = relative=='Makefile' or (
+            relative.startswith('legacy/') and path.name!='Makefile'
+        )
+        if required_entry and existing is None:
             raise RuntimeError('PRIVATE_CATALOG_MAPPING_REQUIRED: '+relative)
         result.append({'logical_key':'code/'+relative,'name':existing['name'] if existing else relative.replace('/','__'),
             'id':existing['id'] if existing else None,'mode':'binary',
