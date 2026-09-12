@@ -83,7 +83,7 @@ reviewed_ci_run_id: 34664771854
 reviewed_ci_conclusion: success
 execution_state:
   implementation: IMPLEMENTED_CANDIDATE
-  pr: PR_OPEN
+  pr: READY_FOR_REVIEW
   production: NOT_PRODUCTION
 local_production_acceptance: NOT_RUN
 production_sync: NOT_RUN
