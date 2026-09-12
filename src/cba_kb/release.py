@@ -290,12 +290,26 @@ def publish(drive, root, single_writer=False):
 def security_preflight(root, plan):
     """Scan every frozen byte, including reports and retained rollback evidence."""
     import json
+    from .common import child
     clean(json.dumps(plan, sort_keys=True).encode(), 'plan.json')
+    labels = {}
+    for entry in plan.get('entries', []):
+        for field in ('before', 'candidate'):
+            if entry.get(field):
+                labels[child(root, entry[field]).resolve()] = (
+                    entry.get('logical_key') or entry.get('name') or field
+                )
+    for item in (plan.get('closure') or {}).get('protected', []):
+        if item.get('before'):
+            labels[child(root, item['before']).resolve()] = item['name']
     for path in sorted(Path(root).rglob('*')):
         if path.is_symlink():
             raise ValueError('RELEASE_SYMLINK_FORBIDDEN')
         if path.is_file():
-            clean(path.read_bytes(), str(path.relative_to(root)))
+            clean(
+                path.read_bytes(),
+                labels.get(path.resolve(), str(path.relative_to(root))),
+            )
     if plan['release_id'].startswith('v1.5.4') and not plan.get('closure'):
         raise ValueError('CANONICAL_CLOSURE_REQUIRED')
     if plan.get('environment') == 'production' and plan.get('closure'):
