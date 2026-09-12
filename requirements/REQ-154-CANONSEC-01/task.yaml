@@ -78,6 +78,13 @@ original_base_branch: main
 implementation_status: CORE_AND_CLI_CI_IMPLEMENTED_CI_PASS
 focused_test_result: PASS_175
 ci_result: PASS
+reviewed_head_sha: 25f8fac690afb87c8f5092b30590a1d43eddf0bd
+reviewed_ci_run_id: 34664771854
+reviewed_ci_conclusion: success
+execution_state:
+  implementation: IMPLEMENTED_CANDIDATE
+  pr: PR_OPEN
+  production: NOT_PRODUCTION
 local_production_acceptance: NOT_RUN
 production_sync: NOT_RUN
 requirement_drive_sync: VERIFIED_REFREEZE_2026_09_12
@@ -143,6 +150,34 @@ ci_summary:
   passed: 287
   skipped: 5
   failed: 0
+offline_regression:
+  command: python -m pytest -q -rs
+  passed: 287
+  skipped: 5
+  failed: 0
+determinism_checks:
+  focused_generated_artifacts: PASS
+  checks:
+    - tests/test_context_card.py::test_context_is_deterministic_bounded_and_routes_canonical_only
+    - tests/test_context_card.py::test_cli_generates_reviewable_candidates_without_changing_inputs
+    - tests/test_event_closure.py::test_event_closure_is_deterministic
+    - tests/test_build_facts.py::test_xlsx_writer_is_deterministic
+    - tests/test_release.py::test_canonical_release_happy_path_and_new_control_rollback
+secret_scan:
+  command: python scripts/check_secrets.py --tracked
+  result: PASS
+candidate_baseline:
+  status: FROZEN_BASELINE_REFERENCE
+  counts:
+    domestic_registrations: 46
+    domestic_transaction_windows: 10
+    registration_status_events: 131
+    foreign_registration_snapshots: 244
+    foreign_priority_right_snapshots: 227
+    foreign_priority_right_transactions: 7
+  workbook_sha256: 0c9812e5e49f0824b74966f3f3941d8eee3711fdafc19d88774084a83742e66c
+  semantic_sha256: 072f671553f86415f5462a74b0a83f5395b4a47ff2e1e124b33fd1bd944dacad
+  note: No new production candidate was generated; these are frozen v1.5.3-2 acceptance references.
 pr_url: https://github.com/SkyCjq/cba-kb-engine/pull/6
 release_critical_skips:
   - test: tests/test_master.py:10
