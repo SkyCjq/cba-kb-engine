@@ -55,6 +55,7 @@ def prepare(
     carry_forward_artifacts=False,
     closure=None,
     environment='sandbox',
+    code_commit=None,
 ):
     root=Path(root)
     if root.exists(): raise ValueError('Release already exists; resume it instead')
@@ -66,8 +67,14 @@ def prepare(
         raise ValueError('CANONICAL_CLOSURE_REQUIRED')
     if environment not in {'sandbox', 'production'}:
         raise ValueError('Unknown release environment')
+    if environment == 'production' and closure is None:
+        import re
+        if not isinstance(code_commit, str) or not re.fullmatch('[0-9a-f]{40}', code_commit):
+            raise ValueError('PRODUCTION_CODE_COMMIT_REQUIRED')
     plan={'release_id':release_id,'archive_id':archive_id,'status_id':status_id,'entries':[], 'dependencies':dependencies or []}
     plan['environment'] = environment
+    if code_commit is not None:
+        plan['code_commit'] = code_commit
     if closure is not None:
         plan['closure'] = closure
     clean(__import__('json').dumps(plan).encode(), 'plan.json')
@@ -87,6 +94,12 @@ def prepare(
         plan['status_before_hash']=digest(status_data)
         plan['status_before_meta']=fingerprint(status_meta)
         plan['previous_release_id']=status.get('current_release_id')
+        if environment == 'production' and closure is None:
+            previous_code_commit = status.get('code_commit')
+            import re
+            if not isinstance(previous_code_commit, str) or not re.fullmatch('[0-9a-f]{40}', previous_code_commit):
+                raise RuntimeError('PREVIOUS_CODE_COMMIT_REQUIRED')
+            plan['previous_code_commit'] = previous_code_commit
         if carry_forward_artifacts or closure is not None:
             carried=status.get('artifacts')
             if not isinstance(carried,list) or not carried:
@@ -178,6 +191,13 @@ def set_status(drive, plan, state, previous_snapshot):
             plan['closure']['code_commit'] if state == 'COMPLETE'
             else plan['closure'].get('previous_code_commit')
         )
+    elif plan.get('code_commit'):
+        status['code_commit'] = (
+            plan['code_commit'] if state == 'COMPLETE'
+            else plan.get('previous_code_commit')
+        )
+        if state == 'ROLLED_BACK':
+            status['code_commit'] = plan.get('previous_code_commit')
     content=json.dumps(status,ensure_ascii=False,sort_keys=True).encode()
     clean(content, 'release_status.json')
     drive.put(plan['status_id'],content,'application/json')
@@ -312,8 +332,15 @@ def security_preflight(root, plan):
             )
     if plan['release_id'].startswith('v1.5.4') and not plan.get('closure'):
         raise ValueError('CANONICAL_CLOSURE_REQUIRED')
-    if plan.get('environment') == 'production' and plan.get('closure'):
-        verify_code_provenance(Path(__file__).resolve().parents[2], plan['closure']['code_commit'])
+    if plan.get('environment') == 'production':
+        code_commit = (
+            plan.get('closure', {}).get('code_commit')
+            or plan.get('code_commit')
+        )
+        if code_commit:
+            verify_code_provenance(
+                Path(__file__).resolve().parents[2], code_commit,
+            )
 
 
 def verify_code_provenance(repo, code_commit):

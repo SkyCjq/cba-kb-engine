@@ -8,33 +8,77 @@ from scripts import prepare_production as orchestration
 
 
 RELEASE = "v1.5.5-1"
+ENGINE_SHA = "a" * 40
+DOC = "application/vnd.google-apps.document"
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def projection_inputs(*, tracked=None, hashes=None, manifest_rows=None):
-    status = {
-        "state": "COMPLETE",
-        "artifacts": [
-            {"id": "code-old", "name": "Makefile", "sha256": "old-code-sha"},
-            {"id": "index", "name": "INDEX", "sha256": "old-index-sha"},
-        ],
-    }
-    targets = {
+    base_targets = {
         "code-old": {
             "mime": "text/plain",
             "mode": "binary",
             "allowed_parents": ["scripts"],
             "publish_parent": "scripts",
         },
+        "drive-map": {
+            "mime": "text/yaml",
+            "mode": "binary",
+            "allowed_parents": ["config"],
+            "publish_parent": "config",
+        },
+        "entry-code": {
+            "mime": "text/plain",
+            "mode": "binary",
+            "allowed_parents": ["scripts"],
+            "publish_parent": "scripts",
+        },
+        "readme": {
+            "mime": DOC,
+            "mode": "managed_doc",
+            "allowed_parents": ["root"],
+            "publish_parent": "root",
+        },
+        "context": {
+            "mime": "text/markdown",
+            "mode": "binary",
+            "allowed_parents": ["root"],
+            "publish_parent": "root",
+        },
         "index": {
-            "mime": "application/vnd.google-apps.document",
+            "mime": DOC,
             "mode": "managed_doc",
             "allowed_parents": ["ai"],
             "publish_parent": "ai",
         },
+        "master": {
+            "mime": XLSX,
+            "mode": "binary",
+            "allowed_parents": ["data"],
+            "publish_parent": "data",
+        },
     }
+    status = {
+        "state": "COMPLETE",
+        "artifacts": [
+            {"id": "code-old", "name": "Makefile", "sha256": "old-code-sha"},
+            {"id": "drive-map", "name": "drive_map.yaml", "sha256": "old-map-sha"},
+            {"id": "entry-code", "name": "CODE_MANIFEST.md", "sha256": "old-code-doc"},
+            {"id": "readme", "name": "00_README", "sha256": "old-readme"},
+            {"id": "context", "name": "context.md", "sha256": "old-context"},
+            {"id": "index", "name": "INDEX", "sha256": "old-index-sha"},
+            {"id": "master", "name": "MASTER.xlsx", "sha256": "old-master"},
+        ],
+    }
+    targets = base_targets
     rows = manifest_rows or [
         {"drive_file_id": "code-old", "uid": "code/Makefile"},
+        {"drive_file_id": "drive-map", "uid": "control/drive_map.yaml"},
+        {"drive_file_id": "entry-code", "uid": "entry/code"},
+        {"drive_file_id": "readme", "uid": "entry/README"},
+        {"drive_file_id": "context", "uid": "entry/context"},
         {"drive_file_id": "index", "uid": "derived/INDEX.md"},
+        {"drive_file_id": "master", "uid": "input/MASTER.xlsx"},
     ]
     tracked = tracked or ["Makefile", "src/new.py"]
     hashes = hashes or {
@@ -43,7 +87,7 @@ def projection_inputs(*, tracked=None, hashes=None, manifest_rows=None):
     }
     return {
         "release_id": RELEASE,
-        "engine_sha": orchestration.ENGINE_MERGE_SHA,
+        "engine_sha": ENGINE_SHA,
         "status_id": "status",
         "archive_id": "archive",
         "previous_status": status,
@@ -63,12 +107,12 @@ def test_projection_is_read_only_deterministic_and_exact():
     first = orchestration.project_targets(**projection_inputs())
     second = orchestration.project_targets(**projection_inputs())
     assert first == second
-    assert first["previous_artifact_count"] == 2
-    assert first["reused_target_count"] == 2
+    assert first["previous_artifact_count"] == 7
+    assert first["reused_target_count"] == 7
     assert first["new_target_count"] == 1
     assert first["removed_target_count"] == 0
     assert first["carried_forward_count"] == 1
-    assert first["final_artifact_count"] == 3
+    assert first["final_artifact_count"] == 8
     assert first["new_targets"][0]["logical_key"] == "code/src/new.py"
     assert first["modified_content_targets"] == []
     assert first["unchanged_targets"] == ["code/Makefile"]
@@ -81,11 +125,50 @@ def test_projection_binds_exact_release_id_and_fails_closed():
         orchestration.project_targets(**inputs)
 
 
+def test_release_execution_sha_provenance_fails_closed(monkeypatch):
+    engine_sha = "b" * 40
+
+    def check_output(command, **kwargs):
+        if command[-1] == "HEAD":
+            return engine_sha + "\n"
+        if command[-2:] == ["--porcelain"]:
+            return ""
+        return ""
+
+    monkeypatch.setattr(orchestration.subprocess, "check_output", check_output)
+    monkeypatch.setattr(
+        orchestration.subprocess, "run",
+        lambda *args, **kwargs: type("Result", (), {"returncode": 0})(),
+    )
+    assert orchestration.verify_execution_sha(".", engine_sha)["head"] == engine_sha
+    with pytest.raises(orchestration.ProjectionError, match="CODE_PROVENANCE"):
+        orchestration.verify_execution_sha(".", "c" * 40)
+
+    monkeypatch.setattr(
+        orchestration.subprocess, "run",
+        lambda *args, **kwargs: type("Result", (), {"returncode": 1})(),
+    )
+    with pytest.raises(orchestration.ProjectionError, match="CODE_PROVENANCE"):
+        orchestration.verify_execution_sha(".", engine_sha)
+
+    def dirty(command, **kwargs):
+        if command[-1] == "HEAD":
+            return engine_sha + "\n"
+        return " M file\n"
+
+    monkeypatch.setattr(orchestration.subprocess, "check_output", dirty)
+    with pytest.raises(orchestration.ProjectionError, match="CODE_PROVENANCE"):
+        orchestration.verify_execution_sha(".", engine_sha)
+
+
 def test_duplicate_logical_key_and_removed_target_fail_closed():
-    duplicate = projection_inputs(manifest_rows=[
-        {"drive_file_id": "code-old", "uid": "code/duplicate"},
-        {"drive_file_id": "index", "uid": "code/duplicate"},
-    ])
+    rows = projection_inputs()["manifest_rows"]
+    rows = [dict(row) for row in rows]
+    code_row = next(row for row in rows if row["drive_file_id"] == "code-old")
+    index_row = next(row for row in rows if row["drive_file_id"] == "index")
+    code_row["uid"] = "code/duplicate"
+    index_row["uid"] = "code/duplicate"
+    duplicate = projection_inputs(manifest_rows=rows)
     with pytest.raises(orchestration.ProjectionError, match="LOGICAL_KEY_DUPLICATE"):
         orchestration.project_targets(**duplicate)
 
@@ -119,6 +202,7 @@ class ReservationDrive:
             },
         }
         self.calls = []
+        self.get_calls = []
         self.put_calls = []
         self.move_calls = []
 
@@ -149,6 +233,9 @@ class ReservationDrive:
         }
 
     def get(self, file_id):
+        self.get_calls.append(file_id)
+        if self.files[file_id]["mimeType"] == orchestration.FOLDER:
+            raise ValueError("native raw download rejected")
         return self.files[file_id]["data"]
 
     def put(self, *args):
@@ -165,20 +252,7 @@ class ReservationInstance:
         self.path = path
         self.policy = {
             "enabled": True,
-            "targets": {
-                "code-old": {
-                    "mime": "text/plain",
-                    "mode": "binary",
-                    "allowed_parents": ["scripts"],
-                    "publish_parent": "scripts",
-                },
-                "index": {
-                    "mime": "application/vnd.google-apps.document",
-                    "mode": "managed_doc",
-                    "allowed_parents": ["ai"],
-                    "publish_parent": "ai",
-                },
-            },
+            "targets": projection_inputs()["previous_targets"],
         }
 
     def read_json(self, name):
@@ -218,9 +292,17 @@ def test_reserve_only_creates_new_keys_under_staging_and_is_retry_safe(tmp_path)
     assert drive.move_calls == []
     assert drive.get("status") == before_status
     assert drive.get("code-old") == before_existing
+    assert second["allocation"]["staging_id"] not in drive.get_calls
     assert len(drive.files) == 4
     policy = json.loads(instance.path.read_text())
-    assert set(policy["targets"]) == {"code-old", "index", "reserved-2"}
+    assert set(policy["targets"]) == {
+        "code-old", "drive-map", "entry-code", "readme", "context",
+        "index", "master", "reserved-2",
+    }
+    assert second["allocation"]["active_production_targets"] == sorted(
+        item["id"] for item in value["existing_targets"]
+    )
+    assert second["allocation"]["reserved_staging_targets"] == ["reserved-2"]
 
 
 def test_reserve_requires_single_writer(tmp_path):
@@ -282,7 +364,12 @@ def test_freeze_uses_reserved_ids_and_does_not_mutate_remote(
         return {
             "master": b"master",
             "registry": b"registry",
-        }.get(file_id, b"old-index"), {
+            "drive-map": b"version: 1\nroot: {}\nfolders: {}\n",
+            "entry-code": b"old code manifest",
+            "readme": b"old readme",
+            "context": b"old context",
+            "index": b"old index",
+        }.get(file_id, b"old"), {
             "id": file_id, "version": "1", "modifiedTime": "t",
             "mimeType": "application/json", "parents": ["ai"],
         }
@@ -316,6 +403,10 @@ def test_freeze_uses_reserved_ids_and_does_not_mutate_remote(
 
     monkeypatch.setattr(orchestration, "snapshot", fake_snapshot)
     monkeypatch.setattr(orchestration, "prepare_release", fake_prepare)
+    monkeypatch.setattr(
+        orchestration, "verify_execution_sha",
+        lambda root, sha: {"head": sha, "clean": True},
+    )
     result = orchestration.freeze_plan(
         drive,
         instance=Instance(),
@@ -326,7 +417,7 @@ def test_freeze_uses_reserved_ids_and_does_not_mutate_remote(
         output=tmp_path / "freeze",
     )
 
-    assert result["entries"] == 3
+    assert result["entries"] == 8
     assert drive.calls == []
     assert drive.put_calls == []
     assert drive.move_calls == []
@@ -336,3 +427,25 @@ def test_freeze_uses_reserved_ids_and_does_not_mutate_remote(
     )
     assert new_entry["id"] == allocation["reservations"]["code/src/new.py"]
     assert new_entry["allowed_parents"] == ["scripts", allocation["staging_id"]]
+    assert captured["options"]["code_commit"] == ENGINE_SHA
+
+    candidates = {
+        entry["logical_key"]: Path(entry["path"]).read_bytes()
+        for entry in captured["entries"]
+    }
+    assert ENGINE_SHA.encode() in candidates["entry/code"]
+    drive_map = orchestration.yaml.safe_load(
+        candidates["control/drive_map.yaml"].decode()
+    )
+    assert drive_map["v1_5_release"]["release_id"] == RELEASE
+    assert drive_map["v1_5_release"]["code_commit"] == ENGINE_SHA
+    assert b"v1.5.4" not in candidates["entry/README"]
+    assert b"v1.5.4" not in candidates["entry/context"]
+    assert b"v1.5.4" not in candidates["derived/INDEX.md"]
+    assert candidates["input/MASTER.xlsx"] == b"master"
+    classification = json.loads(
+        (tmp_path / "freeze/target_classification.json").read_text()
+    )
+    assert classification["control/drive_map.yaml"] == "CONTROL_METADATA_UPDATE"
+    assert classification["input/MASTER.xlsx"] == "BUSINESS_FACT_CARRY_FORWARD"
+    assert classification["code/src/new.py"] == "NEW_CODE_MIRROR"

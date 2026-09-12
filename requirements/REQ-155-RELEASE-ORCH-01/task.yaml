@@ -1,8 +1,9 @@
 req_id: REQ-155-RELEASE-ORCH-01
-requirement_revision_or_hash: r1-20260912-v1.5.5-prepare
+requirement_revision_or_hash: r2-20260912-v1.5.5-prepare-fix
 requirement_artifact: requirements/REQ-155-RELEASE-ORCH-01/requirement-r1-20260912.md
 target_release_id: v1.5.5-1
-engine_merge_sha: c14a0f2579fcc86e2dc114f0b15d00dd54e9f55e
+product_baseline_sha: c14a0f2579fcc86e2dc114f0b15d00dd54e9f55e
+release_execution_sha: explicit_40_char_head
 previous_release_id: v1.5.4-1
 previous_production_code: e0dea09ccb020b2918cefa311365e8563348f293
 base_branch: codex/v1.5.2-draft2
@@ -13,9 +14,11 @@ allowed_paths:
 - requirements/REQ-155-RELEASE-ORCH-01/task.yaml
 - scripts/prepare_production.py
 - tests/test_release_orchestration.py
+- src/cba_kb/release.py
+- tests/test_release.py
 focused_tests:
 - tests/test_release_orchestration.py
-- tests/test_release.py::test_single_writer_required
+- tests/test_release.py
 - tests/test_gates.py::test_production_requires_complete_explicit_policy
 must_not_change:
 - r5 watcher source contract

@@ -1,9 +1,10 @@
 # CBA-KB Requirement - REQ-155-RELEASE-ORCH-01
 
-> Revision: `r1-20260912-v1.5.5-prepare`
+> Revision: `r2-20260912-v1.5.5-prepare-fix`
 > Status: `FROZEN_SPEC`
 > Target release: `v1.5.5-1`
-> Engine merge SHA: `c14a0f2579fcc86e2dc114f0b15d00dd54e9f55e`
+> Product baseline SHA: `c14a0f2579fcc86e2dc114f0b15d00dd54e9f55e`
+> Release execution SHA: explicit post-merge SHA supplied at runtime
 
 ## Goal
 
@@ -20,6 +21,21 @@ watcher source contract or any canonical business facts.
 
 The commands must hard-fail unless the release ID is exactly `v1.5.5-1`.
 It is not a reusable default.
+
+## R2 Web-review repairs
+
+1. Distinguish the REQ-155 product baseline from the exact release execution
+   SHA. `--engine-sha` is mandatory, must equal `git rev-parse HEAD`, and the
+   worktree must be clean with the product baseline as an ancestor.
+2. Staging-folder creation is metadata-only and must not pass media content.
+3. Regenerate release-control surfaces:
+   `control/drive_map.yaml`, `entry/code`, `entry/README`, `entry/context`, and
+   `derived/INDEX.md`.
+4. Add explicit generic release `code_commit` / `previous_code_commit`
+   provenance without changing the separate v1.5.4 closure contract.
+5. Reconciliation must distinguish active production targets from reserved
+   staging targets; `release_status` may remain on the previous release set
+   until publish.
 
 ## Project
 

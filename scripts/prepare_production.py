@@ -8,18 +8,29 @@ import csv
 import io
 import json
 from pathlib import Path
+import re
 import subprocess
+
+import yaml
 
 from cba_kb.common import atomic, digest, read, save
 from cba_kb.drive import Drive
 from cba_kb.instance import load_instance
+from cba_kb.native import wrap
 from cba_kb.release import fingerprint, prepare as prepare_release, snapshot
 
 
 RELEASE_ID = "v1.5.5-1"
-ENGINE_MERGE_SHA = "c14a0f2579fcc86e2dc114f0b15d00dd54e9f55e"
+PRODUCT_BASELINE_SHA = "c14a0f2579fcc86e2dc114f0b15d00dd54e9f55e"
 FOLDER = "application/vnd.google-apps.folder"
 FORBIDDEN_CODE_PREFIXES = ("workspace/", ".credentials/", ".venv/")
+CONTROL_KEYS = frozenset({
+    "control/drive_map.yaml",
+    "entry/code",
+    "entry/README",
+    "entry/context",
+    "derived/INDEX.md",
+})
 
 
 class ProjectionError(RuntimeError):
@@ -44,6 +55,39 @@ def _private_output(instance, output):
     except ValueError as exc:
         raise ProjectionError("OUTPUT_MUST_BE_PRIVATE_INSTANCE_DATA") from exc
     return output
+
+
+def verify_execution_sha(engine_root, engine_sha):
+    if not isinstance(engine_sha, str) or not re.fullmatch(
+        "[0-9a-f]{40}", engine_sha,
+    ):
+        raise ProjectionError("CODE_PROVENANCE_MISMATCH")
+    engine_root = Path(engine_root)
+    head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=engine_root, text=True,
+    ).strip()
+    if head != engine_sha:
+        raise ProjectionError("CODE_PROVENANCE_MISMATCH")
+    if subprocess.check_output(
+        ["git", "status", "--porcelain"], cwd=engine_root, text=True,
+    ).strip():
+        raise ProjectionError("CODE_PROVENANCE_MISMATCH")
+    if subprocess.run(
+        [
+            "git", "merge-base", "--is-ancestor",
+            PRODUCT_BASELINE_SHA, engine_sha,
+        ],
+        cwd=engine_root,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode:
+        raise ProjectionError("CODE_PROVENANCE_MISMATCH")
+    return {
+        "head": head,
+        "clean": True,
+        "product_baseline_sha": PRODUCT_BASELINE_SHA,
+        "baseline_is_ancestor": True,
+    }
 
 
 def _status_rows(status, targets):
@@ -140,6 +184,8 @@ def project_targets(
         key for key in existing if key.startswith("code/")
     }
     non_code_keys = set(existing) - existing_code_keys
+    control_keys = non_code_keys & CONTROL_KEYS
+    business_keys = non_code_keys - CONTROL_KEYS
     removed_code_keys = sorted(existing_code_keys - set(current_code))
     if removed_code_keys:
         raise ProjectionError(
@@ -180,6 +226,8 @@ def project_targets(
             item["disposition"] = (
                 "modified" if logical_key in modified else "unchanged"
             )
+        elif logical_key in control_keys:
+            item["disposition"] = "metadata_update"
         else:
             item["disposition"] = "carried_forward"
         existing_targets.append(item)
@@ -197,14 +245,14 @@ def project_targets(
         "reused_target_count": len(reused) + len(non_code_keys),
         "new_target_count": len(new_targets),
         "removed_target_count": len(removed_code_keys),
-        "carried_forward_count": len(non_code_keys),
+        "carried_forward_count": len(business_keys),
         "final_artifact_count": len(final_keys),
         "existing_targets": existing_targets,
         "new_targets": new_targets,
         "removed_targets": removed_code_keys,
         "modified_content_targets": modified,
         "unchanged_targets": unchanged,
-        "carried_forward_artifacts": sorted(non_code_keys),
+        "carried_forward_artifacts": sorted(business_keys),
     }
     projection["semantic_delta_signature"] = _json_hash({
         "keys": final_keys,
@@ -239,6 +287,33 @@ def validate_reservation(projection, allocation):
     return True
 
 
+def validate_policy_reconciliation(projection, allocation, policy):
+    active_ids = {
+        item["id"] for item in projection["existing_targets"]
+    }
+    reserved_ids = set(allocation["reservations"].values())
+    actual_ids = set((policy.get("targets") or {}).keys())
+    if actual_ids not in (active_ids, active_ids | reserved_ids):
+        raise ProjectionError("PRIVATE_PRODUCTION_TARGET_DRIFT")
+    for item in projection["existing_targets"]:
+        current = (policy.get("targets") or {})[item["id"]]
+        expected = {
+            "mime": item["mime"],
+            "mode": item["mode"],
+            "allowed_parents": item["allowed_parents"],
+        }
+        if item.get("publish_parent") is not None:
+            expected["publish_parent"] = item["publish_parent"]
+        if item.get("staging_parent") is not None:
+            expected["staging_parent"] = item["staging_parent"]
+        if any(current.get(key) != value for key, value in expected.items()):
+            raise ProjectionError("ACTIVE_PRODUCTION_TARGET_CHANGED")
+    return {
+        "active_production_targets": sorted(active_ids),
+        "reserved_staging_targets": sorted(reserved_ids),
+    }
+
+
 def reserve_staging(
     drive,
     instance,
@@ -269,7 +344,6 @@ def reserve_staging(
             f"{release_id}-staging",
             f"{release_id}_staging",
             FOLDER,
-            b"",
         )
     for item in sorted(
         projection["new_targets"], key=lambda value: value["logical_key"],
@@ -301,15 +375,15 @@ def reserve_staging(
         "archive_id": projection["archive_id"],
         "staging_id": staging_id,
         "semantic_delta_signature": projection["semantic_delta_signature"],
+        "active_production_targets": sorted(
+            item["id"] for item in projection["existing_targets"]
+        ),
+        "reserved_staging_targets": sorted(reservations.values()),
         "reservations": reservations,
     }
     validated = validate_reservation(projection, allocation)
     policy = instance.read_json("production.json")
-    existing_ids = {item["id"] for item in projection["existing_targets"]}
-    expected_policy_ids = existing_ids | set(allocation["reservations"].values())
-    actual_policy_ids = set(policy.get("targets") or {})
-    if actual_policy_ids not in (existing_ids, expected_policy_ids):
-        raise ProjectionError("PRIVATE_PRODUCTION_TARGET_DRIFT")
+    validate_policy_reconciliation(projection, allocation, policy)
     for item in projection["new_targets"]:
         file_id = allocation["reservations"][item["logical_key"]]
         policy["targets"][file_id] = {
@@ -337,16 +411,50 @@ def _candidate_inputs(drive, engine_root, projection, allocation, output):
     new_by_key = {
         item["logical_key"]: item for item in projection["new_targets"]
     }
+    id_by_key = {
+        item["logical_key"]: item["id"]
+        for item in projection["existing_targets"]
+    }
+    id_by_key.update({
+        key: file_id for key, file_id in allocation["reservations"].items()
+    })
+    code_hashes = {
+        item["logical_key"]: item.get("current_sha256") or item["sha256"]
+        for item in projection["existing_targets"]
+        if item["logical_key"].startswith("code/")
+    }
+    code_hashes.update({
+        item["logical_key"]: item["sha256"]
+        for item in projection["new_targets"]
+    })
     ordered = sorted(set(existing_by_key) | set(new_by_key))
     for index, logical_key in enumerate(ordered):
         item = existing_by_key.get(logical_key) or new_by_key[logical_key]
         candidate = candidates / str(index)
+        generated = None
         if logical_key.startswith("code/"):
             relative = logical_key.removeprefix("code/")
             data = (Path(engine_root) / relative).read_bytes()
         else:
-            data, _ = snapshot(drive, item["id"], item.get("mode", "binary"))
+            previous, _ = snapshot(
+                drive, item["id"], item.get("mode", "binary"),
+            )
+            generated = _control_candidate(
+                logical_key, previous, projection, allocation, id_by_key,
+                code_hashes,
+            )
+            data = generated if generated is not None else previous
+        if generated is not None and item.get("mode") == "managed_doc":
+            data = _managed_candidate(data)
         atomic(candidate, data)
+        if logical_key in new_by_key:
+            change_class = "NEW_CODE_MIRROR"
+        elif logical_key in CONTROL_KEYS:
+            change_class = "CONTROL_METADATA_UPDATE"
+        elif logical_key.startswith("code/"):
+            change_class = "CODE_MIRROR_UPDATE"
+        else:
+            change_class = "BUSINESS_FACT_CARRY_FORWARD"
         entry = {
             "logical_key": logical_key,
             "id": item.get("id") or allocation["reservations"][logical_key],
@@ -354,6 +462,7 @@ def _candidate_inputs(drive, engine_root, projection, allocation, output):
             "mime": item["mime"],
             "mode": item.get("mode", "binary"),
             "path": str(candidate),
+            "change_class": change_class,
         }
         if logical_key in new_by_key:
             entry.update({
@@ -374,6 +483,54 @@ def _candidate_inputs(drive, engine_root, projection, allocation, output):
     return entries
 
 
+def _managed_candidate(data):
+    return wrap(data.decode()).encode()
+
+
+def _control_candidate(logical_key, previous, projection, allocation,
+                       id_by_key, code_hashes):
+    release_id = projection["release_id"]
+    engine_sha = projection["engine_sha"]
+    status_id = allocation["status_id"]
+    if logical_key == "control/drive_map.yaml":
+        mapping = yaml.safe_load(previous.decode())
+        mapping["v1_5_release"] = {
+            "release_id": release_id,
+            "status_id": status_id,
+            "code_commit": engine_sha,
+            "targets": id_by_key,
+        }
+        return yaml.safe_dump(
+            mapping, allow_unicode=True, sort_keys=False,
+        ).encode()
+    if logical_key == "entry/code":
+        lines = [
+            "# 当前代码镜像",
+            f"GitHub: https://github.com/SkyCjq/cba-kb-engine/tree/{engine_sha}",
+            f"commit: {engine_sha}",
+            "legacy/ 是历史脚本，禁止用旧 uploader/wechat/sync 向生产写入。",
+        ]
+        lines.extend(
+            f"- {key} | SHA256 {code_hashes[key]}"
+            for key in sorted(code_hashes)
+        )
+        return ("\n".join(lines) + "\n").encode()
+    if logical_key in {"entry/README", "entry/context", "derived/INDEX.md"}:
+        title = {
+            "entry/README": "CBA-KB 发布入口",
+            "entry/context": "CBA-KB 当前状态",
+            "derived/INDEX.md": "CBA-KB INDEX",
+        }[logical_key]
+        return (
+            f"# {title}\n\n"
+            f"当前发布：{release_id}\n\n"
+            f"代码提交：{engine_sha}\n\n"
+            "读取前请校验 release_status；"
+            "PUBLISHING/FAILED/ROLLING_BACK 时使用上一快照。\n"
+        ).encode()
+    return None
+
+
 def freeze_plan(
     drive,
     *,
@@ -386,6 +543,7 @@ def freeze_plan(
 ):
     """Freeze all candidate bytes and a remote-read-only release plan."""
     _require_release(release_id)
+    verify_execution_sha(engine_root, projection["engine_sha"])
     validate_reservation(projection, allocation)
     output = Path(output)
     if output.exists():
@@ -414,9 +572,13 @@ def freeze_plan(
         dependencies,
         carry_forward_artifacts=True,
         environment="production",
+        code_commit=projection["engine_sha"],
     )
     save(output / "allocation.json", allocation)
     save(output / "entries.json", plan["entries"])
+    save(output / "target_classification.json", {
+        entry["logical_key"]: entry["change_class"] for entry in entries
+    })
     save(output / "dependencies.json", dependencies)
     rollback = {
         "release_id": release_id,
@@ -466,6 +628,7 @@ def _load_manifest(raw):
 
 
 def _project_command(args, instance):
+    verify_execution_sha(Path.cwd(), args.engine_sha)
     production = instance.read_json("production.json")
     runtime = instance.read_json("runtime.json")
     drive = Drive(Path.cwd(), instance)
@@ -509,9 +672,11 @@ def main(argv=None):
     parser.add_argument("--projection", type=Path)
     parser.add_argument("--allocation", type=Path)
     parser.add_argument("--single-writer", action="store_true")
-    parser.add_argument("--engine-sha", default=ENGINE_MERGE_SHA)
+    parser.add_argument("--engine-sha")
     args = parser.parse_args(argv)
     _require_release(args.release)
+    if args.step == "project" and not args.engine_sha:
+        parser.error("--engine-sha is required for project")
     root = Path.cwd()
     instance = load_instance(root, args.instance_root)
     output = _private_output(instance, args.output)
