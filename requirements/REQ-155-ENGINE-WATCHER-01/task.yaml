@@ -1,0 +1,142 @@
+req_id: REQ-155-ENGINE-WATCHER-01
+requirement_md_url: https://drive.google.com/file/d/1mxMEhd4zhhHr0tDnVXYcbWngz8KYBLlK/view?usp=drivesdk
+requirement_revision_or_hash: r3-FROZEN-20260912
+baseline_release_id: v1.5.4-1
+baseline_production_code_commit: e0dea09ccb020b2918cefa311365e8563348f293
+baseline_code_commit: 0f68792a1817a13abedd501a32ea656b0f828f3c
+base_branch: codex/v1.5.2-draft2
+lane: CODE_CONFIG
+feature_branch: feat/REQ-155-ENGINE-WATCHER-01
+allowed_paths:
+- .github/workflows/offline-tests.yml
+- .gitignore
+- Makefile
+- README.md
+- docs/SETUP_AUTH.md
+- docs/OPERATIONS_V1_5.md
+- config/runtime.json
+- config/production.json
+- config/drive_map.yaml
+- config/sandbox.json
+- config/v1.5.2_registry_proposal.json
+- config/v1.5.2_registry_status.json
+- src/cba_kb/cli.py
+- src/cba_kb/drive.py
+- src/cba_kb/gates.py
+- src/cba_kb/release.py
+- src/cba_kb/source_policy.py
+- src/cba_kb/adapters/__init__.py
+- src/cba_kb/adapters/cba_registration.py
+- src/cba_kb/instance.py
+- src/cba_kb/ingestion.py
+- src/cba_kb/source_watcher.py
+- scripts/check_secrets.py
+- scripts/prepare_production.py
+- scripts/prepare_v1_5_3_production.py
+- tests/test_engine_instance_boundary.py
+- tests/test_ingestion_kernel.py
+- tests/test_source_watcher.py
+- tests/test_cli_instance_config.py
+- tests/test_security_guards.py
+- tests/test_release.py
+- tests/test_gates.py
+- tests/test_source_exclusions.py
+- tests/test_current_state_consistency.py
+- tests/test_draft2_regressions.py
+- tests/test_registration_domain.py
+- tests/test_canonical_registry.py
+- tests/test_context_card.py
+- tests/test_build_facts.py
+- requirements/REQ-155-ENGINE-WATCHER-01/task.yaml
+focused_tests:
+- tests/test_engine_instance_boundary.py
+- tests/test_ingestion_kernel.py
+- tests/test_source_watcher.py
+- tests/test_cli_instance_config.py
+- tests/test_security_guards.py
+- tests/test_release.py
+- tests/test_gates.py
+- tests/test_source_exclusions.py
+- tests/test_current_state_consistency.py
+- tests/test_draft2_regressions.py
+- tests/test_registration_domain.py
+- tests/test_canonical_registry.py
+- tests/test_context_card.py
+- tests/test_build_facts.py::test_xlsx_writer_is_deterministic
+must_not_change:
+- canonical business-fact semantics
+- CBA_注册领域_六表.xlsx business facts
+- MASTER.xlsx business facts
+- CBA_球员注册_EVENTS.xlsx business facts
+- CBA_外籍球员注册_SNAPSHOTS.xlsx business facts
+- Snapshot/Event/Transaction/Stats/Claim semantic boundaries
+- unknown-date fail-closed semantics
+- single-writer/readback/verify/rollback controls
+acceptance_ids:
+- E01
+- E02
+- E03
+- E04
+- E05
+- A01
+- A02
+- A03
+- A04
+- A05
+- A06
+- A07
+- A08
+- A09
+- A10
+- A11
+- A12
+- A13
+- A14
+- A15
+- A16
+- A17
+- A18
+- A19
+- A20
+- A21
+external_fixtures:
+- release_status
+- six_tables
+- source_registry_private
+- watcher_source_contract
+- private_instance_contract
+private_instance_contract:
+  root: /Users/skychengneo/Agent/CBA_kb_instance
+  config_root: /Users/skychengneo/Agent/CBA_kb_instance/config
+  credentials_store: /Users/skychengneo/Agent/CBA_kb_instance/.credentials
+  real_fixture_root: /Users/skychengneo/Agent/CBA_kb_instance/fixtures/real
+  executor: local_trusted_runtime
+source_watcher_contract:
+  api: https://server.cbaleague.com/news_register/detail
+  page: https://www.cbaleague.com/#/news-register/detail/{article_id}
+  seasons:
+  - 2024-2025
+  - 2025-2026
+  - 2026-2027
+  index_ids:
+    2024-2025: 66b1de8bab
+    2025-2026: 68932081bf
+    2026-2027: 6a72fc344a
+  cadence: DAILY@10:00 Asia/Shanghai
+  min_delay_seconds: 1.5
+  retries: 3
+  timeout_seconds: 20
+  fail_closed_on:
+  - '403'
+  - '429'
+  - schema_drift
+  - team_page_count_not_20
+full_regression_owner: github_actions
+max_ci_repair_cycles: 3
+context_policy: allowlist_only
+log_policy: summary_or_failure_only
+production_access: forbidden
+optional_overlay:
+  release_performance:
+    enabled: true
+    trigger: H
