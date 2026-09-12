@@ -490,6 +490,23 @@ def test_incomplete_evidence_inventory_cannot_pass_closure(tmp_path):
     assert not d.calls
 
 
+def test_security_preflight_uses_logical_path_for_candidate(tmp_path):
+    from cba_kb.release import security_preflight
+    candidate = tmp_path / 'candidate/0'
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text('access_token = get_access_token()\n')
+    security_preflight(tmp_path, {
+        'release_id': 'v1.5.4-test',
+        'environment': 'sandbox',
+        'closure': {'code_commit': 'a' * 40},
+        'entries': [{
+            'logical_key': 'code/scripts/check_secrets.py',
+            'name': 'check_secrets.py',
+            'candidate': 'candidate/0',
+        }],
+    })
+
+
 def test_new_control_move_lost_response_can_resume_rollback(tmp_path):
     d, r = closure_setup(tmp_path)
     publish(d, r, True)
