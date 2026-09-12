@@ -1,0 +1,192 @@
+req_id: REQ-154-CANONSEC-01
+requirement_md_url: https://drive.google.com/file/d/1E-keiN92cubFQNcuhO5jhPEosp9ypPfK/view?usp=drivesdk
+requirement_revision_or_hash: REQ-154-CANONSEC-01/v1.1-r2-WEB03-2026-09-12
+baseline_release_id: v1.5.3-2
+baseline_code_commit: f9038fd9cc03e552abee0ca08ae51d047efd65af
+base_branch: codex/v1.5.2-draft2
+lane: CODE_CONFIG
+allowed_paths:
+  - config/canonical_products.yaml
+  - src/cba_kb/canonical_registry.py
+  - src/cba_kb/current_state.py
+  - src/cba_kb/release.py
+  - scripts/generate_context_card.py
+  - scripts/audit_current_history.py
+  - scripts/check_secrets.py
+  - tests/test_canonical_registry.py
+  - tests/test_current_state_consistency.py
+  - tests/test_context_card.py
+  - tests/test_current_history_separation.py
+  - tests/test_security_guards.py
+  - tests/test_compatibility_lineage.py
+  - tests/test_release.py
+  - requirements/REQ-154-CANONSEC-01/task.yaml
+  - src/cba_kb/cli.py
+  - .github/workflows/offline-tests.yml
+focused_tests:
+  - tests/test_canonical_registry.py
+  - tests/test_current_state_consistency.py
+  - tests/test_context_card.py
+  - tests/test_current_history_separation.py
+  - tests/test_security_guards.py
+  - tests/test_compatibility_lineage.py
+  - tests/test_release.py
+must_not_change:
+  - business_fact_semantics
+  - production_credentials
+  - drive_code_truth_direction
+  - source_registry_responsibility
+  - manifest_responsibility
+acceptance_ids:
+  - A01
+  - A02
+  - A03
+  - A04
+  - A05
+  - A06
+  - A07
+  - A08
+  - A09
+  - A10
+  - A11
+  - A12
+  - A13
+  - A14
+  - A15
+  - A16
+  - A17
+  - A18
+external_fixtures:
+  - frozen_release_status_json
+  - frozen_readme_current_release_block
+  - frozen_index_current_release_block
+  - frozen_v1_5_3_ledger
+  - frozen_business_fact_baseline
+full_regression_owner: github_actions
+max_ci_repair_cycles: 3
+context_policy: allowlist_only
+log_policy: summary_or_failure_only
+production_access: forbidden
+model_tier: high
+agent_harness: codex
+api_provider: openai
+feature_branch: codex/req-154-canonsec-01
+refrozen_at: '2026-09-12'
+refreeze_authority: user_requested_WEB03_controlled_refreeze
+refreeze_ledger_section: '8.3'
+original_base_branch: main
+implementation_status: CORE_AND_CLI_CI_IMPLEMENTED_CI_PASS
+focused_test_result: PASS_175
+ci_result: PASS
+reviewed_head_sha: 798fcca460637e1aca1e6ce9063c5c40ca876a6c
+reviewed_ci_run_id: 34665962599
+reviewed_ci_conclusion: success
+execution_state:
+  implementation: IMPLEMENTED_CANDIDATE
+  pr: READY_FOR_REVIEW
+  production: NOT_PRODUCTION
+local_production_acceptance: NOT_RUN
+production_sync: NOT_RUN
+requirement_drive_sync: VERIFIED_REFREEZE_2026_09_12
+context_expansion_request:
+  status: APPROVED_BY_CONTROLLED_REFREEZE
+  paths:
+    - src/cba_kb/cli.py
+    - .github/workflows/offline-tests.yml
+  excluded_paths:
+    - src/cba_kb/drive.py
+  ledger_section: '8.3'
+release_handoff:
+  candidate_generator: scripts/generate_context_card.py
+  history_audit: scripts/audit_current_history.py
+  closure_entrypoint: cba-kb plan --closure <frozen-closure.json> --environment <sandbox|production>
+  closure_required_fields:
+    - code_commit
+    - previous_code_commit
+    - baseline_release_id
+    - registry_key
+    - manifest_key
+    - documents
+    - zones
+    - protected
+  documents:
+    - readme
+    - index
+    - context_card
+    - version
+  protected_kinds:
+    - master
+    - six_table
+    - source_registry
+    - evidence
+  protected_item_fields:
+    - id
+    - name
+    - sha256
+    - kind
+  zone_fields:
+    - current
+    - history
+    - staging
+    - evidence
+  notes:
+    - Local Trusted Runtime must freeze actual manifest IDs, evidence coverage and hashes before production GO.
+    - Bind registry_release_id to the target release; UNRELEASED is never a published release.
+    - Legacy workbook projection mappings are unresolved and intentionally block publication until frozen from real evidence.
+    - Production mirror checks require a clean checkout of the merged commit on the frozen base.
+    - New control files use staged stable IDs; rollback returns them to non-current staging and retains before/candidate evidence.
+  production_go_blockers:
+    - Real compatibility workbook projections remain unresolved; fail closed until frozen from evidence.
+    - Real protected baseline, manifest IDs, evidence coverage and all five CI-skipped fixtures require Local Trusted Runtime
+      acceptance.
+    - Production and consumer acceptance have not run; CI success is not production GO.
+frozen_spec_sha256: e554cf57c5d891d1a36516ec7971b04fed6173d5f7a9496cdf125f842186812e
+refreeze_ledger_sync: VERIFIED_READBACK
+ci_repair_cycles: 1
+previous_ci_run_url: https://github.com/SkyCjq/cba-kb-engine/actions/runs/34663177607
+ci_verified_commit: 03b86a8d869f54c454606e16764cae3a84f37f14
+ci_run_url: https://github.com/SkyCjq/cba-kb-engine/actions/runs/34665962599
+ci_summary:
+  passed: 287
+  skipped: 5
+  failed: 0
+offline_regression:
+  command: python -m pytest -q -rs
+  passed: 287
+  skipped: 5
+  failed: 0
+determinism_checks:
+  focused_generated_artifacts: PASS
+  checks:
+    - tests/test_context_card.py::test_context_is_deterministic_bounded_and_routes_canonical_only
+    - tests/test_context_card.py::test_cli_generates_reviewable_candidates_without_changing_inputs
+    - tests/test_event_closure.py::test_event_closure_is_deterministic
+    - tests/test_build_facts.py::test_xlsx_writer_is_deterministic
+    - tests/test_release.py::test_canonical_release_happy_path_and_new_control_rollback
+secret_scan:
+  command: python scripts/check_secrets.py --tracked
+  result: PASS
+candidate_baseline:
+  status: FROZEN_BASELINE_REFERENCE
+  counts:
+    domestic_registrations: 46
+    domestic_transaction_windows: 10
+    registration_status_events: 131
+    foreign_registration_snapshots: 244
+    foreign_priority_right_snapshots: 227
+    foreign_priority_right_transactions: 7
+  workbook_sha256: 0c9812e5e49f0824b74966f3f3941d8eee3711fdafc19d88774084a83742e66c
+  semantic_sha256: 072f671553f86415f5462a74b0a83f5395b4a47ff2e1e124b33fd1bd944dacad
+  note: No new production candidate was generated; these are frozen v1.5.3-2 acceptance references.
+pr_url: https://github.com/SkyCjq/cba-kb-engine/pull/6
+release_critical_skips:
+  - test: tests/test_master.py:10
+    reason: production MASTER intentionally absent from Git
+  - test: tests/test_midseason_md.py:73
+    reason: real midseason source not staged
+  - test: tests/test_prepare_v1_5_2.py:33
+    reason: real DRAFT-2 candidate absent from Git
+  - test: tests/test_sync_v1_5_2_candidate.py:20
+    reason: real DRAFT-2 candidate absent from Git
+  - test: tests/test_sync_v1_5_2_candidate.py:31
+    reason: real DRAFT-2 candidate absent from Git
