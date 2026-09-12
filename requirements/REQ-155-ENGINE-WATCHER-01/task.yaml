@@ -1,6 +1,12 @@
 req_id: REQ-155-ENGINE-WATCHER-01
 requirement_md_url: https://drive.google.com/file/d/1mxMEhd4zhhHr0tDnVXYcbWngz8KYBLlK/view?usp=drivesdk
-requirement_revision_or_hash: r4-FROZEN-20260912
+requirement_revision_or_hash: r5-20260912-detail-discovery
+requirement_revision_artifact: requirements/REQ-155-ENGINE-WATCHER-01/requirement-r5-20260912-detail-discovery.md
+source_contract_review_result: SOURCE_CONTRACT_REVISION_REQUIRED
+scope_changed: false
+acceptance_changed: true
+release_risk_changed: true
+ready_to_code: true
 baseline_release_id: v1.5.4-1
 baseline_production_code_commit: e0dea09ccb020b2918cefa311365e8563348f293
 baseline_code_commit: 0f68792a1817a13abedd501a32ea656b0f828f3c
@@ -8,65 +14,20 @@ base_branch: codex/v1.5.2-draft2
 lane: CODE_CONFIG
 feature_branch: feat/REQ-155-ENGINE-WATCHER-01
 allowed_paths:
-- .github/workflows/offline-tests.yml
-- .gitignore
-- Makefile
-- README.md
-- docs/SETUP_AUTH.md
-- docs/OPERATIONS_V1_5.md
-- docs/import_inventory.json
-- config/runtime.json
-- config/production.json
-- config/drive_map.yaml
-- config/sandbox.json
-- config/v1.5.2_registry_proposal.json
-- config/v1.5.2_registry_status.json
-- src/cba_kb/cli.py
-- src/cba_kb/drive.py
-- src/cba_kb/gates.py
-- src/cba_kb/release.py
-- src/cba_kb/source_policy.py
-- src/cba_kb/adapters/__init__.py
+- requirements/REQ-155-ENGINE-WATCHER-01/requirement-r5-20260912-detail-discovery.md
+- requirements/REQ-155-ENGINE-WATCHER-01/task.yaml
+- config/club_aliases.yaml
+- src/cba_kb/aliases.py
 - src/cba_kb/adapters/cba_registration.py
-- src/cba_kb/catalog.py
-- src/cba_kb/instance.py
 - src/cba_kb/ingestion.py
 - src/cba_kb/source_watcher.py
-- scripts/check_secrets.py
-- scripts/prepare_production.py
-- scripts/prepare_v1_5_3_production.py
-- tests/test_engine_instance_boundary.py
+- tests/test_aliases.py
 - tests/test_ingestion_kernel.py
 - tests/test_source_watcher.py
-- tests/test_cli_instance_config.py
-- tests/test_catalog_instance_boundary.py
-- tests/test_security_guards.py
-- tests/test_release.py
-- tests/test_gates.py
-- tests/test_source_exclusions.py
-- tests/test_current_state_consistency.py
-- tests/test_draft2_regressions.py
-- tests/test_registration_domain.py
-- tests/test_canonical_registry.py
-- tests/test_context_card.py
-- tests/test_build_facts.py
-- requirements/REQ-155-ENGINE-WATCHER-01/task.yaml
 focused_tests:
-- tests/test_engine_instance_boundary.py
+- tests/test_aliases.py
 - tests/test_ingestion_kernel.py
 - tests/test_source_watcher.py
-- tests/test_cli_instance_config.py
-- tests/test_catalog_instance_boundary.py
-- tests/test_security_guards.py
-- tests/test_release.py
-- tests/test_gates.py
-- tests/test_source_exclusions.py
-- tests/test_current_state_consistency.py
-- tests/test_draft2_regressions.py
-- tests/test_registration_domain.py
-- tests/test_canonical_registry.py
-- tests/test_context_card.py
-- tests/test_build_facts.py::test_xlsx_writer_is_deterministic
 must_not_change:
 - canonical business-fact semantics
 - CBA_注册领域_六表.xlsx business facts
@@ -75,6 +36,9 @@ must_not_change:
 - CBA_外籍球员注册_SNAPSHOTS.xlsx business facts
 - Snapshot/Event/Transaction/Stats/Claim semantic boundaries
 - unknown-date fail-closed semantics
+- canonical team count identity must not be replaced by child publication count
+- source-observed aliases must not be guessed
+- watcher row keys are evidence keys, not business identity
 - single-writer/readback/verify/rollback controls
 acceptance_ids:
 - E01
@@ -103,6 +67,21 @@ acceptance_ids:
 - A19
 - A20
 - A21
+- A22
+- A23
+- A24
+- A25
+- A26
+- A27
+- A28
+- A29
+- A30
+- A31
+- A32
+- A33
+- A34
+- A35
+- A36
 external_fixtures:
 - release_status
 - six_tables
@@ -116,25 +95,88 @@ private_instance_contract:
   real_fixture_root: /Users/skychengneo/Agent/CBA_kb_instance/fixtures/real
   executor: local_trusted_runtime
 source_watcher_contract:
-  api: https://server.cbaleague.com/news_register/detail
+  revision: r5-20260912-detail-discovery
+  discovery_api: https://server.cbaleague.com/news_register/detail
+  child_api: https://server.cbaleague.com/news_register/detail
   page: https://www.cbaleague.com/#/news-register/detail/{article_id}
   seasons:
   - 2024-2025
   - 2025-2026
   - 2026-2027
-  index_ids:
+  discovery_roots:
     2024-2025: 66b1de8bab
     2025-2026: 68932081bf
     2026-2027: 6a72fc344a
+  discovery:
+    source_field: data.detail_content
+    child_link_pattern: /news-register/detail/<child_article_id>
+    child_ids_dynamic: true
+    deterministic_normalization: true
+  coverage:
+    canonical_team_count: 20
+    child_publication_count_rule: '>= 20'
+    supplemental_publications_allowed: true
+  alias_normalization:
+    source: config/club_aliases.yaml
+    verified_aliases:
+      吉林东北虎: 吉林九台农商行
+    unknown_alias: fail_closed
+  child_contract:
+    json_shape:
+    - code
+    - message
+    - data
+    table_field: data.detail_content
+    required_logical_fields:
+    - 运动员
+    - 注册类型
+    - 合同类别
+    - 合同原信息
+    - 原CBA俱乐部
+    - 公示截止时间
+    - 备注
+    contract_information_variants:
+    - 合同剩余年限
+    - 合同到期日
+    per_child_schema_validation: true
+    partial_failure: fail_closed
+  snapshot_identity:
+    includes:
+    - source_contract_revision
+    - season
+    - frozen_index_article_id
+    - index_content_sha256
+    - deterministic_child_hashes
+    child_order_independent: true
+  row_key:
+    fields:
+    - season
+    - child_article_id
+    - row_index
+    semantic_business_identity: false
   cadence: DAILY@10:00 Asia/Shanghai
+  sequential_requests: true
   min_delay_seconds: 1.5
+  jitter: true
   retries: 3
+  backoff: true
   timeout_seconds: 20
   fail_closed_on:
   - '403'
   - '429'
+  - index_fetch_failure
+  - child_fetch_failure
+  - child_json_schema_invalid
+  - table_missing
+  - unknown_table_schema
+  - canonical_team_count_not_20
+  - unknown_team_alias
+  - duplicate_or_unresolved_team_mapping
+  - partial_child_discovery
+  - modify
+  - delete
   - schema_drift
-  - team_page_count_not_20
+  no_canonical_write: true
 full_regression_owner: github_actions
 max_ci_repair_cycles: 3
 context_policy: allowlist_only
