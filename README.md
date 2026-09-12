@@ -1,5 +1,12 @@
 # CBA-KB Engine v1.5.4 production release
 
+v1.5.5 开发引入 Engine / Private Instance 边界。公开 Engine 只包含代码、schema、
+adapter、validator、synthetic fixture 和 public-safe 配置示例；真实 Drive IDs、source
+registry、production allowlist、凭据、真实 fixture、人工修正与 watcher 原始证据由调用方
+在独立 Private Instance 中维护。需要实例数据的命令通过 `INSTANCE_ROOT` 显式传入，缺失时
+fail closed。官方注册 watcher 只生成 `snapshot → diff → candidate → validation` 复核证据，
+不会把 observed change 自动提升为 business event 或写入 canonical facts。
+
 当前生产发布为 **v1.5.4-1 / COMPLETE**，发布代码提交
 `e0dea09ccb020b2918cefa311365e8563348f293`。171 个生产目标已逐项回读通过；
 `release_status`、README、INDEX、version、Context Card 与

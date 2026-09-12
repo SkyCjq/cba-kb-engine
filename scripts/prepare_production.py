@@ -9,19 +9,20 @@ from cba_kb.common import read,save,digest,atomic
 from cba_kb.native import wrap
 from cba_kb.master import build
 from cba_kb.release import fingerprint,snapshot
+from cba_kb.instance import load_instance,require_mapping
 
-ROOT='1bQybVHV_RRtZvvFuFhLpM-rXbVsNT2Dq'
-AI='1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp'
-SCRIPTS='1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC'
-CONFIG='1ccYmxy8NKt79pgyhDnyHUE14C6_wsn83'
-ARCHIVE='1GjDMkAYs7JpIrI9_kQduxlqygZmxeb9M'
 DOC='application/vnd.google-apps.document';FOLDER='application/vnd.google-apps.folder'
-from cba_kb.catalog import EXISTING_DOCS
 
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('step',choices=['reserve','freeze']);p.add_argument('--release',default='v1.5.0');a=p.parse_args()
- root=Path.cwd();d=Drive(root);area=root/'workspace/production'/a.release;area.mkdir(parents=True,exist_ok=True)
+ p=argparse.ArgumentParser();p.add_argument('step',choices=['reserve','freeze']);p.add_argument('--release',default='v1.5.0');p.add_argument('--instance-root',type=Path,required=True);a=p.parse_args()
+ root=Path.cwd();instance=load_instance(root,a.instance_root);private=instance.read_json('import_inventory.json')
+ parents=require_mapping(private.get('parents'),('root','ai','scripts','config','archive','data'),label='import_inventory.parents')
+ controls=require_mapping(private.get('controls'),('drive_map','entry_readme','entry_context','entry_crossseason'),label='import_inventory.controls')
+ existing_docs=private.get('existing_docs');inventory_rows=private.get('artifacts');runtime=instance.read_json('runtime.json')
+ if not isinstance(existing_docs,dict) or not isinstance(inventory_rows,list):raise RuntimeError('PRIVATE_CATALOG_MAPPING_REQUIRED')
+ ROOT,AI,SCRIPTS,CONFIG,ARCHIVE=(parents[key] for key in ('root','ai','scripts','config','archive'))
+ d=Drive(root,instance);area=root/'workspace/production'/a.release;area.mkdir(parents=True,exist_ok=True)
  allocation=area/'allocation.json'
  if a.step=='reserve':
   if allocation.exists():raise RuntimeError('Allocation exists; inspect/resume rather than reserve again')
@@ -37,17 +38,17 @@ def main():
    if new:item.update(staging_parent=staging,publish_parent=parent)
    definitions.append(item);save(area/'allocation-progress.json',definitions)
   for name in ['INDEX.md']+[f'CBA_注册_{y}-{y+1}.md' for y in range(2017,2027)]+['MASTER.csv','MASTER.jsonl','provenance.json','validation.json']:
-   fid=EXISTING_DOCS.get(name);mime=DOC if fid else ('text/csv' if name.endswith('.csv') else 'application/json' if name.endswith('.json') else 'application/x-ndjson' if name.endswith('.jsonl') else 'text/markdown')
+   fid=existing_docs.get(name);mime=DOC if fid else ('text/csv' if name.endswith('.csv') else 'application/json' if name.endswith('.json') else 'application/x-ndjson' if name.endswith('.jsonl') else 'text/markdown')
    add('derived/'+name,name.removesuffix('.md') if fid else name,CONFIG if name=='provenance.json' else AI,mime,fid,'managed_doc' if fid else 'binary',candidate_name=name)
   # Existing controls are included even when byte-identical, preventing partial release sets.
-  for name,item in read(root/'config/runtime.json')['inputs'].items():
-   add('input/'+name,name,'1nL4xomHNQInbskeYdqa45hHfleHhExW-' if name=='MASTER.xlsx' else CONFIG,item['mime'],item['id'])
-  add('control/drive_map.yaml','drive_map.yaml',CONFIG,'text/yaml','1wi_Oyp5DhJBEDiJoWdbMaX9ABoysdzRf')
-  add('entry/README','00_README_先读这个',ROOT,DOC,'1AqCZwlSKlZdfR9F0ftG_Dc36gffmz_NLs8v1FS99uu0','managed_doc')
-  add('entry/context','02_AI_PROJECT_CONTEXT_技术手册.md',ROOT,'text/markdown','1Ckg-y3Ke4tHxGHPp1dY2A_cO39xzF9u4')
-  add('entry/crossseason','CBA_跨赛季变动',AI,DOC,'1Vng3JOfE4Zi9zWbSUj8qhBJeuCU1jXS_LtGV6W_ozS0','managed_doc')
+  for name,item in runtime['inputs'].items():
+   add('input/'+name,name,parents['data'] if name=='MASTER.xlsx' else CONFIG,item['mime'],item['id'])
+  add('control/drive_map.yaml','drive_map.yaml',CONFIG,'text/yaml',controls['drive_map'])
+  add('entry/README','00_README_先读这个',ROOT,DOC,controls['entry_readme'],'managed_doc')
+  add('entry/context','02_AI_PROJECT_CONTEXT_技术手册.md',ROOT,'text/markdown',controls['entry_context'])
+  add('entry/crossseason','CBA_跨赛季变动',AI,DOC,controls['entry_crossseason'],'managed_doc')
   add('entry/code','CODE_MANIFEST.md',SCRIPTS)
-  inventory={x['name']:x for x in read(root/'docs/import_inventory.json')}
+  inventory={x['name']:x for x in inventory_rows}
   tracked=subprocess.check_output(['git','ls-files','-z'],text=True).split('\0')
   # production.json is created by this command and committed before freeze.
   tracked=sorted(set(filter(None,tracked))|{'config/production.json'})
@@ -55,13 +56,13 @@ def main():
    item=inventory.get(Path(relative).name) if relative.startswith('legacy/') and Path(relative).name!='Makefile' else inventory.get('Makefile') if relative=='Makefile' else None
    add('code/'+relative,item['name'] if item else relative.replace('/','__'),SCRIPTS,item['mime'] if item else 'text/plain',item['id'] if item else None,source=relative)
   save(allocation,{'status_id':status_id,'archive_id':ARCHIVE,'staging_id':staging,'definitions':definitions})
-  policy={'enabled':True,'status_id':status_id,'archive_id':ARCHIVE,'dependency_ids':[read(root/'config/runtime.json')['inputs']['MASTER.xlsx']['id'],read(root/'config/runtime.json')['inputs']['source_registry.csv']['id']], 'targets':{e['id']:{k:v for k,v in e.items() if k in ('mime','mode','allowed_parents','staging_parent','publish_parent')} for e in definitions}}
-  save(root/'config/production.json',policy);print('Reserved',len(definitions),'targets; commit policy and code before freeze',flush=True);return
+  policy={'enabled':True,'status_id':status_id,'archive_id':ARCHIVE,'dependency_ids':[runtime['inputs']['MASTER.xlsx']['id'],runtime['inputs']['source_registry.csv']['id']], 'targets':{e['id']:{k:v for k,v in e.items() if k in ('mime','mode','allowed_parents','staging_parent','publish_parent')} for e in definitions}}
+  save(instance.config_path('production.json'),policy);print('Reserved',len(definitions),'targets in Private Instance; commit Engine code before freeze',flush=True);return
  if subprocess.check_output(['git','status','--porcelain'],text=True).strip():raise RuntimeError('Clean committed tree required')
  alloc=read(allocation);commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip();defs=alloc['definitions']
  # Snapshot current raw controls; pin input dependencies at build time.
  inputs=area/'inputs';inputs.mkdir(exist_ok=False);dependencies=[];raw={}
- for name,item in read(root/'config/runtime.json')['inputs'].items():
+ for name,item in runtime['inputs'].items():
   content,meta=snapshot(d,item['id']);atomic(inputs/name,content);raw[name]=content
   if name in ('MASTER.xlsx','source_registry.csv'):dependencies.append(dict(id=item['id'],sha256=digest(content),meta=fingerprint(meta)))
  save(area/'dependencies.json',dependencies)
@@ -77,7 +78,7 @@ def main():
    data=(root/e['source']).read_bytes();code.append(f"- {e['source']} | SHA256 {digest(data)} | {urls[e['logical_key']]}")
  manifest=list(csv.DictReader(io.StringIO(raw['manifest.csv'].decode('utf-8-sig'))));columns=list(manifest[0])
  # Keep the legacy manifest schema and entries; complete release map is additive.
- map_before=d.get('1wi_Oyp5DhJBEDiJoWdbMaX9ABoysdzRf')
+ map_before=d.get(controls['drive_map'])
  import yaml
  mapping=yaml.safe_load(map_before);mapping['v1_5_release']={'release_id':a.release,'status_id':alloc['status_id'],'code_commit':commit,'targets':{e['logical_key']:e['id'] for e in defs}}
  frozen=area/'frozen';frozen.mkdir(exist_ok=False);entries=[]

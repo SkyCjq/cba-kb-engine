@@ -1,28 +1,6 @@
 {
-  "_说明": "v1.5.2-1 发布来源状态配置；两张 PNG 按用户决定永久排除，不进入当前 processing registry 或 backlog，旧状态仅保留于历史审计。",
-  "_registered_at": "2026-09-11T00:00:00Z",
-  "drive:1dOvVJBVahuyq0L2fI4WRhRy7QJOxdOUR": {
-    "business_status": "EXTRACTED",
-    "extraction_status": "markdown_extracted",
-    "processed_at": "2026-09-11T00:00:00Z",
-    "notes": "v1.5.2 六表范围内真实来源验证通过：国内注册 46、交易窗口 4、国内状态事件 53。尚有窗口覆盖和纠错生命周期边界。"
-  },
-  "drive:1eGrMDep9YMfPNy66M6-6Jwm9iYaF_gQj": {
-    "business_status": "EXTRACTED",
-    "extraction_status": "markdown_extracted",
-    "processed_at": "2026-09-11T00:00:00Z",
-    "notes": "v1.5.2 六表范围内真实来源验证通过：外援状态事件 19、注册快照 244、优先权快照 227、交易 7。两张 PNG、2023-2024 媒体快照和旧取消记录尚未并入。"
-  },
-  "drive:16H0cxiItoSlGALeHce-E06pD_a3RFAmd": {
-    "business_status": "EXTRACTED",
-    "extraction_status": "table_extracted",
-    "processed_at": "2026-09-10T13:15:00Z",
-    "notes": "Real-source extraction verified: 20 teams, 73 roster snapshots, 59 cancellation events, 132 observed registrations. Not yet IMPORTED/VERIFIED; production rows exist only through the published fact products."
-  },
-  "drive:1C8BpmY_MMjFGnSOdllRsnVWlwPdfKViV": {
-    "business_status": "EXTRACTED",
-    "extraction_status": "markdown_extracted",
-    "processed_at": "2026-09-10T13:15:00Z",
-    "notes": "14 parsed records, 14 events, 0 record_key collisions against the frozen 3,451-row baseline; registration_window_deadline kept separate from notice_deadline."
-  }
+  "schema_version": 1,
+  "visibility": "public_safe_example",
+  "sources": {},
+  "note": "Real source status and manual corrections belong in Private Instance."
 }

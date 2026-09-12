@@ -18,6 +18,13 @@ EXCLUDED = (
 )
 
 
+@pytest.fixture(autouse=True)
+def private_source_policy(monkeypatch):
+    monkeypatch.setenv('CBA_KB_SOURCE_POLICY_JSON', json.dumps({
+        'excluded_drive_ids': list(EXCLUDED),
+    }))
+
+
 def item(file_id, name='renamed.png'):
     return {'id': file_id, 'name': name, 'mimeType': 'image/png'}
 

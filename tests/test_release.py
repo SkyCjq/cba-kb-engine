@@ -555,7 +555,10 @@ def test_native_unmanaged_secret_is_rejected_before_any_backup(tmp_path):
 def cli_plan_arguments(tmp_path, entries, closure=None, environment='sandbox', release_id='v1.5.4-test'):
     entries_path = tmp_path / 'entries.json'
     entries_path.write_text(json.dumps(entries))
-    arguments = ['cba-kb', '--root', str(tmp_path / 'runtime'), 'plan',
+    instance = tmp_path / 'instance'
+    (instance / 'config').mkdir(parents=True, exist_ok=True)
+    arguments = ['cba-kb', '--root', str(tmp_path / 'runtime'),
+                 '--instance-root', str(instance), 'plan',
                  '--entries', str(entries_path), '--release-id', release_id,
                  '--archive-id', 'archive', '--status-id', 'status',
                  '--environment', environment]
@@ -576,8 +579,8 @@ def test_plan_cli_forwards_closure_and_environment_before_freeze(tmp_path, monke
     closure = {'code_commit': 'a' * 40}
     events = []
     drive = object()
-    monkeypatch.setattr(cli, 'Drive', lambda root: drive)
-    def authorize(actual, root, request, selected):
+    monkeypatch.setattr(cli, 'Drive', lambda root, instance: drive)
+    def authorize(actual, root, request, selected, instance):
         assert actual is drive and request['entries'] == entries
         assert selected == environment
         events.append('authorized')
@@ -607,7 +610,7 @@ def test_plan_cli_builds_real_closure_plan_with_fake_transport(tmp_path, monkeyp
         dict(entry, path=str(frozen_root / entry['candidate']))
         for entry in frozen['entries']
     ]
-    monkeypatch.setattr(cli, 'Drive', lambda root: drive)
+    monkeypatch.setattr(cli, 'Drive', lambda root, instance: drive)
     monkeypatch.setattr(gates, 'authorize_plan', lambda *args: None)
     monkeypatch.setattr(sys, 'argv', cli_plan_arguments(tmp_path, entries, frozen['closure']))
     cli.main()
