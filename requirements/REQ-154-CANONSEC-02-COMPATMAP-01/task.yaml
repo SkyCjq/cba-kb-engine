@@ -1,0 +1,80 @@
+req_id: REQ-154-CANONSEC-02-COMPATMAP-01
+title: Evidence-backed compatibility projection closure
+parent_req_id: REQ-154-CANONSEC-01
+status: FOLLOW_UP_REQUIRED
+lane: CODE_CONFIG
+base_branch: codex/v1.5.2-draft2
+baseline_commit: a3af8eab75841b34a3633ddda51c09950da2459c
+feature_branch: codex/req-154-compatmap-01
+production_access: forbidden
+publish_allowed: false
+must_not_change:
+  - production_facts
+  - release_status
+  - README_INDEX_current_state
+  - Drive_50_scripts_until_LOCAL_01_authorized
+  - unknown_dates_or_fields
+  - REQ-154-CANONSEC-01_history
+allowed_paths:
+  - config/canonical_products.yaml
+  - src/cba_kb/canonical_registry.py
+  - tests/test_compatibility_lineage.py
+  - requirements/REQ-154-CANONSEC-02-COMPATMAP-01/task.yaml
+evidence:
+  report: LOCAL-02/reconciliation/compatibility-reconciliation-report.json
+  foreign_report: LOCAL-02/reconciliation/foreign-snapshots-projection.json
+  event_summary: LOCAL-02/reconciliation/v1.5.3-event-reconciliation-summary.json
+  event_edges: LOCAL-02/reconciliation/v1.5.3-event-reconciliation.csv
+foreign_snapshot_mapping:
+  legacy_rows: 73
+  canonical_rows: 244
+  cardinality:
+    zero: 0
+    one: 73
+    many: 0
+  missing_rows: 0
+  extra_canonical_rows: 171
+  evidence_backed_translation:
+    status_at_snapshot:
+      legacy: registered_in_chinese
+      canonical: registered
+      evidence:
+        - src/cba_kb/adapters/foreign.py:141
+        - src/cba_kb/registration_domain.py:624
+        - docs/requirements/V1_5_1_THIRD_PARTY_REVIEW.md:285
+  unexplained_drift:
+    - legacy_snapshot_key: 2024-2025|2025-03-31|zhejiang_guangsha|JAMES NUNNALLY|美国
+      field: jersey_number
+      legacy: "0"
+      canonical: "00"
+    - legacy_snapshot_key: 2024-2025|2025-03-31|liaoning_shenyang_sansheng|CAMERON OLIVER|美国
+      field: jersey_number
+      legacy: "0"
+      canonical: "00"
+  required_behavior: fail_closed_until_source_storage_type_is_verified
+legacy_event_mapping:
+  legacy_rows: 73
+  mapping_edges: 87
+  exact_match_rows: 59
+  canonical_split_rows: 14
+  missing_rows: 0
+  unexplained_conflicts: 0
+  canonical_event_rows: 131
+  canonical_event_rows_referenced: 73
+  canonical_event_rows_extra: 58
+  domestic_relationship_rows: 46
+  domestic_relationship_rows_referenced: 14
+  domestic_relationship_rows_extra: 32
+  required_behavior: preserve_explicit_reconciliation_edges_and_never_reverse_write
+required_changes:
+  - explicit transform-aware projection contract for status and text-preserving jersey values
+  - explicit 0/1/N mapping artifact reference for legacy_registration_events
+  - deterministic reconciliation validator with missing/extra/unexplained drift output
+  - regression fixtures for the two jersey drift rows
+acceptance:
+  - no missing legacy business keys
+  - no unexplained 0/1/N mappings
+  - no inferred dates or fields
+  - deterministic projection and reconciliation
+  - compatibility remains read-only and never canonical input
+  - production GO remains blocked until this follow-up merges and LOCAL-02 reruns
