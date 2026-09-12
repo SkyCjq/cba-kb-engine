@@ -1,6 +1,30 @@
 # v1.5 实施与部署记录
 
-## v1.5.3 开发状态（2026-09-11）
+## v1.5.4 实际部署（2026-09-12）
+
+当前生产为 `v1.5.4-1 / COMPLETE`，上一发布为 `v1.5.3-2`，
+`pending_release_id=null`。发布代码提交为
+`e0dea09ccb020b2918cefa311365e8563348f293`，171 个目标全部完成上传、
+迁移和独立回读。
+
+- 事实零差异：MASTER SHA-256 `185cf58d...d588`，六表 SHA-256
+  `0c9812e5...e66c`，计数 `46 / 10 / 131 / 244 / 227 / 7`。
+- 兼容性：SNAPSHOTS 73/73、EVENTS 73/73，87 条映射边，missing、unexpected
+  extra、unexplained drift 均为 0。
+- Current state：README、INDEX、version、Context Card、registry 全部指向
+  `v1.5.4-1`；Context Card 为 1727 UTF-8 bytes。
+- 安全：Git/CI/Local preflight/readback secret gates PASS；真实凭据未进入 Git、
+  Drive、reports 或 Context Card。
+- 回归：`298 passed, 0 skipped`；rollback snapshot 包含 171 个 before 和
+  187 个 archive 快照。
+- Bayi evidence 已恢复为 `evidence/bayi_legacy_context.md`，位于
+  `10_sources_原始证据`，SHA-256
+  `d7272639a8503f60c3608e7ad914c891e3bda455994968b305027fdbe3994781`。
+
+详细链接、CI 与 rollback 信息见
+[v1.5.4 production closeout](v1.5.4-production-closeout-20260912.md)。
+
+## v1.5.3 历史开发状态（2026-09-11）
 
 当前生产仍为 `v1.5.2-2 / COMPLETE`，未执行 v1.5.3 production publish。
 `codex/v1.5.3-event-closure` 已建立只读候选链路：六表候选为
