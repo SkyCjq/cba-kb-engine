@@ -2,6 +2,7 @@ import copy
 import json
 from pathlib import Path
 import pytest
+from cba_kb import release as release_module
 from cba_kb.common import digest, read
 from cba_kb.release import prepare,publish,restore,verify,FOLDER
 
@@ -75,6 +76,70 @@ def test_single_writer_required(tmp_path):
     d,r=setup(tmp_path)
     with pytest.raises(RuntimeError,match='Single-writer'):publish(d,r)
     assert not d.calls
+
+
+def production_provenance_setup(tmp_path, previous_code='b' * 40):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    d = FakeDrive()
+    d.put('status', json.dumps({
+        'state': 'COMPLETE',
+        'current_release_id': 'v1.5.4-1',
+        'code_commit': previous_code,
+        'artifacts': [{'id': 'a', 'name': 'a', 'sha256': digest(b'old-a')}],
+    }).encode(), 'application/json')
+    candidate = tmp_path / 'candidate'
+    candidate.write_bytes(b'new-a')
+    root = tmp_path / 'production'
+    return d, root, candidate
+
+
+def test_non_closure_production_code_provenance_and_rollback(
+        tmp_path, monkeypatch):
+    d, root, candidate = production_provenance_setup(tmp_path)
+    monkeypatch.setattr(
+        release_module, 'verify_code_provenance',
+        lambda repo, code_commit: {'status': 'PASS', 'code_commit': code_commit},
+    )
+    prepare(
+        d, root, 'v1.5.5-1',
+        [{'id': 'a', 'name': 'a', 'mime': 'text/plain', 'path': str(candidate)}],
+        'archive', 'status', environment='production', code_commit='a' * 40,
+    )
+    publish(d, root, True)
+    complete = json.loads(d.get('status'))
+    assert complete['state'] == 'COMPLETE'
+    assert complete['code_commit'] == 'a' * 40
+    restore(d, root, True)
+    rolled_back = json.loads(d.get('status'))
+    assert rolled_back['state'] == 'ROLLED_BACK'
+    assert rolled_back['code_commit'] == 'b' * 40
+
+
+def test_production_code_provenance_fails_closed(tmp_path):
+    d, root, candidate = production_provenance_setup(tmp_path / 'first')
+    calls_before = list(d.calls)
+    entry = [{
+        'id': 'a', 'name': 'a', 'mime': 'text/plain',
+        'path': str(candidate),
+    }]
+    with pytest.raises(ValueError, match='PRODUCTION_CODE_COMMIT_REQUIRED'):
+        prepare(
+            d, root, 'v1.5.5-1', entry, 'archive', 'status',
+            environment='production',
+        )
+    assert d.calls == calls_before
+
+    d.put('status', json.dumps({
+        'state': 'COMPLETE',
+        'current_release_id': 'v1.5.4-1',
+        'artifacts': [{'id': 'a', 'name': 'a', 'sha256': digest(b'old-a')}],
+    }).encode(), 'application/json')
+    second_root = tmp_path / 'second' / 'production'
+    with pytest.raises(RuntimeError, match='PREVIOUS_CODE_COMMIT_REQUIRED'):
+        prepare(
+            d, second_root, 'v1.5.5-1', entry, 'archive', 'status',
+            environment='production', code_commit='a' * 40,
+        )
 
 
 def test_patch_release_carries_forward_unchanged_artifacts(tmp_path):
