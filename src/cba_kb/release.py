@@ -538,10 +538,17 @@ def validate_closure(drive, root, plan, *, candidate, relocated=False, final=Fal
     items, zones = _inventory(drive, closure['zones'])
     # Before relocation, validate the intended current location as well as bytes.
     by_id = {item['id']: copy.deepcopy(item) for item in items}
+    zone_roots = [
+        *zones['current'], *zones['history'], *zones['staging'], *zones['evidence'],
+    ]
     for entry in plan['entries']:
         item = copy.deepcopy(drive.meta(entry['id']))
-        if not relocated and entry.get('publish_parent'):
-            item['parents'] = [entry['publish_parent']]
+        target = entry.get('publish_parent')
+        if target and _under([target], zone_roots, zones.get('folders', {})):
+            if not relocated:
+                item['parents'] = [target]
+        elif not _under(item.get('parents', []), zone_roots, zones.get('folders', {})):
+            continue
         by_id[entry['id']] = item
     audit_current_history(list(by_id.values()), zones, manifest, registry)
     # Evidence coverage must be complete for the configured evidence trees.
