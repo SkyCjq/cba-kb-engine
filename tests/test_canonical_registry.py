@@ -151,7 +151,23 @@ def test_frozen_task_contract_and_changed_paths():
     assert task['acceptance_ids'] == [f'A{i:02}' for i in range(1, 19)]
     subprocess.run(['git', 'cat-file', '-e', task['baseline_code_commit'] + '^{commit}'], cwd=ROOT, check=True)
     changed = subprocess.check_output(
-        ['git', 'diff', '--name-only', task['baseline_code_commit']], cwd=ROOT, text=True,
+        ['git', 'diff', '--name-only', task['baseline_code_commit'], 'a3af8eab'], cwd=ROOT, text=True,
     ).splitlines()
     assert set(changed) <= set(task['allowed_paths'])
     assert all((ROOT / path).is_file() for path in task['focused_tests'])
+
+
+def test_compatibility_follow_up_stays_within_its_contract():
+    import subprocess
+    task = yaml.safe_load(
+        (ROOT / 'requirements/REQ-154-CANONSEC-02-COMPATMAP-01/task.yaml').read_text()
+    )
+    assert task['parent_req_id'] == 'REQ-154-CANONSEC-01'
+    assert task['baseline_commit'] == 'a3af8eab75841b34a3633ddda51c09950da2459c'
+    assert task['feature_branch'] == 'codex/req-154-compatmap-01'
+    assert task['production_access'] == 'forbidden'
+    assert task['publish_allowed'] is False
+    changed = set(subprocess.check_output(
+        ['git', 'diff', '--name-only', task['baseline_commit']], cwd=ROOT, text=True,
+    ).splitlines())
+    assert changed <= set(task['allowed_paths'])

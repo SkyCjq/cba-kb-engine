@@ -490,6 +490,29 @@ def validate_closure(drive, root, plan, *, candidate, relocated=False, final=Fal
         records[pid] = _rows(data, product)
     for pid, product in products.items():
         if product['current_eligible'] and product['authority'] in {'compatibility', 'derived'}:
+            annotation = (product.get('projection') or {}).get('legacy_annotations')
+            if annotation:
+                # Supplementary legacy context is parsed from pinned original
+                # evidence, never from a compatibility output or another date.
+                key = annotation['artifact_key']
+                row = by_key.get(key)
+                fid = (row.get('drive_file_id') or row.get('id')) if row else None
+                if fid not in protected or protected[fid]['kind'] != 'evidence':
+                    raise ValueError('LEGACY_ANNOTATION_EVIDENCE_NOT_PROTECTED')
+                source = protected[fid]
+                if (row.get('content_hash') or row.get('sha256')) != source['sha256']:
+                    raise ValueError('LEGACY_ANNOTATION_HASH_MISMATCH')
+                from .adapters import midseason_md
+                from .aliases import Clubs
+                if annotation['parser'] != 'midseason_md':
+                    raise ValueError('LEGACY_ANNOTATION_PARSER_FORBIDDEN')
+                result = midseason_md.extract(
+                    child(root, source['before']),
+                    product['projection']['scope']['domestic']['season'],
+                    {'id': fid, 'url': f'https://drive.google.com/file/d/{fid}/view', 'type': 'gdrive'},
+                    clubs=Clubs(Path(__file__).resolve().parents[2]), strict=True,
+                )
+                records[key] = result['events']
             reconcile_compatibility(registry, pid, records, records[pid])
     # Verify every changed transport record, including the new controls.
     for key, entry in entries.items():
