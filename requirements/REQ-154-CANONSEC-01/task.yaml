@@ -75,9 +75,9 @@ refrozen_at: '2026-09-12'
 refreeze_authority: user_requested_WEB03_controlled_refreeze
 refreeze_ledger_section: '8.3'
 original_base_branch: main
-implementation_status: CORE_AND_CLI_CI_IMPLEMENTED_PENDING_CI
+implementation_status: CORE_AND_CLI_CI_IMPLEMENTED_CI_PASS
 focused_test_result: PASS_175
-ci_result: PENDING_REPAIR_1
+ci_result: PASS
 local_production_acceptance: NOT_RUN
 production_sync: NOT_RUN
 requirement_drive_sync: VERIFIED_REFREEZE_2026_09_12
@@ -137,3 +137,21 @@ frozen_spec_sha256: e554cf57c5d891d1a36516ec7971b04fed6173d5f7a9496cdf125f842186
 refreeze_ledger_sync: VERIFIED_READBACK
 ci_repair_cycles: 1
 previous_ci_run_url: https://github.com/SkyCjq/cba-kb-engine/actions/runs/34663177607
+ci_verified_commit: 03b86a8d869f54c454606e16764cae3a84f37f14
+ci_run_url: https://github.com/SkyCjq/cba-kb-engine/actions/runs/34664565759
+ci_summary:
+  passed: 287
+  skipped: 5
+  failed: 0
+pr_url: https://github.com/SkyCjq/cba-kb-engine/pull/6
+release_critical_skips:
+  - test: tests/test_master.py:10
+    reason: production MASTER intentionally absent from Git
+  - test: tests/test_midseason_md.py:73
+    reason: real midseason source not staged
+  - test: tests/test_prepare_v1_5_2.py:33
+    reason: real DRAFT-2 candidate absent from Git
+  - test: tests/test_sync_v1_5_2_candidate.py:20
+    reason: real DRAFT-2 candidate absent from Git
+  - test: tests/test_sync_v1_5_2_candidate.py:31
+    reason: real DRAFT-2 candidate absent from Git
