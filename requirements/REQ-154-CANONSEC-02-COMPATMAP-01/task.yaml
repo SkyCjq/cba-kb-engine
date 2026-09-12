@@ -1,7 +1,7 @@
 req_id: REQ-154-CANONSEC-02-COMPATMAP-01
 title: Evidence-backed compatibility projection closure
 parent_req_id: REQ-154-CANONSEC-01
-status: IMPLEMENTING
+status: IMPLEMENTED_CI_PASS
 lane: CODE_CONFIG
 base_branch: codex/v1.5.2-draft2
 baseline_commit: a3af8eab75841b34a3633ddda51c09950da2459c
@@ -102,3 +102,25 @@ acceptance:
   - deterministic projection and reconciliation
   - compatibility remains read-only and never canonical input
   - production GO remains blocked until this follow-up merges and LOCAL-02 reruns
+implementation:
+  commit: a79f6779e6bff0ed25a4495d6a7cbd81536e3b23
+  focused_tests: PASS_91
+  offline_regression:
+    command: python -m pytest -q -rs
+    passed: 297
+    skipped: 0
+    failed: 0
+  release_critical_local_fixtures: PASS_5_OF_5
+  tracked_secret_scan: PASS
+  ci:
+    run_id: 34676021530
+    url: https://github.com/SkyCjq/cba-kb-engine/actions/runs/34676021530
+    conclusion: success
+  execution_state:
+    implementation: IMPLEMENTED_CANDIDATE
+    pr: READY_FOR_REVIEW
+    production: NOT_PRODUCTION
+  next_gate:
+    - merge this follow-up
+    - rerun LOCAL-02 against the merged commit
+    - run WEB-05 production GO / NO-GO
