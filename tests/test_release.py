@@ -266,6 +266,10 @@ def closure_setup(tmp_path):
              'docs/version': 'version.md', 'ai/context': 'CONTEXT_CARD.md'}
     for key, data in content.items():
         manifest_rows.append({'uid': key, 'drive_file_id': key, 'content_hash': digest(data)})
+    manifest_rows.append({
+        'uid': 'evidence/new-evidence', 'drive_file_id': 'new-evidence',
+        'content_hash': digest(b'new protected evidence'),
+    })
     manifest_rows.append({'uid': 'control/manifest', 'drive_file_id': 'control/manifest', 'content_hash': ''})
     stream = io.StringIO()
     writer = csv.DictWriter(stream, fieldnames=['uid', 'drive_file_id', 'content_hash'])
@@ -284,6 +288,15 @@ def closure_setup(tmp_path):
             d.files[key]['parents'] = ['staging']
             entry.update(staging_parent='staging', publish_parent='control')
         entries.append(entry)
+    d.add('new-evidence', b'new protected evidence')
+    d.files['new-evidence'].update(name='new-evidence', parents=['staging'])
+    new_path = tmp_path / 'new-evidence'
+    new_path.write_bytes(b'new protected evidence')
+    entries.append({
+        'id': 'new-evidence', 'name': 'new-evidence', 'mime': 'text/plain',
+        'path': str(new_path), 'logical_key': 'evidence/new-evidence',
+        'staging_parent': 'staging', 'publish_parent': 'evidence-folder',
+    })
     request = {
         'code_commit': SHA, 'previous_code_commit': 'b' * 40, 'baseline_release_id': 'v1.5.3-2',
         'registry_key': 'control/registry', 'manifest_key': 'control/manifest',
@@ -294,7 +307,7 @@ def closure_setup(tmp_path):
             {'id': fid, 'name': fid, 'sha256': digest(d.get(fid)), 'kind': kind}
             for fid, kind in [('master', 'master'), ('event-file', 'six_table'),
                               ('compat-file', 'compatibility'), ('sources', 'source_registry'),
-                              ('evidence', 'evidence')]
+                              ('evidence', 'evidence'), ('new-evidence', 'evidence')]
         ],
     }
     root = tmp_path / 'closure-release'
@@ -310,7 +323,7 @@ def test_canonical_release_happy_path_and_new_control_rollback(tmp_path):
     assert status['state'] == 'COMPLETE'
     assert status['code_commit'] == 'a' * 40
     assert d.meta('ai/context')['parents'] == ['control']
-    assert len(consumer_artifacts(status)) == 7
+    assert len(consumer_artifacts(status)) == 8
     count = len(d.calls)
     publish(d, r, True)
     assert len(d.calls) == count
@@ -387,7 +400,7 @@ def test_stale_index_blocks_complete_and_keeps_previous_snapshot(tmp_path):
     status = json.loads(d.get('status'))
     assert status['state'] == 'FAILED'
     assert status['current_release_id'] == 'v1.5.3-2'
-    assert len(status['previous_snapshot']) == 11
+    assert len(status['previous_snapshot']) == 12
     d.put = original
     restore(d, r, True)
 
