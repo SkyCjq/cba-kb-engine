@@ -1,0 +1,121 @@
+# CBA-KB Requirement - REQ-155-RELEASE-ORCH-01
+
+> Revision: `r1-20260912-v1.5.5-prepare`
+> Status: `FROZEN_SPEC`
+> Target release: `v1.5.5-1`
+> Engine merge SHA: `c14a0f2579fcc86e2dc114f0b15d00dd54e9f55e`
+
+## Goal
+
+Add a deterministic, fail-closed v1.5.5 release orchestration path:
+
+```text
+project -> reserve-staging -> freeze/plan -> publish
+```
+
+This requirement repairs release tooling only. It does not change the r5
+watcher source contract or any canonical business facts.
+
+## Release ID
+
+The commands must hard-fail unless the release ID is exactly `v1.5.5-1`.
+It is not a reusable default.
+
+## Project
+
+`project` is read-only.
+
+Inputs:
+
+- production policy from Private Instance;
+- current release status;
+- previous artifact manifest;
+- current Git tracked tree;
+- Private Instance import inventory.
+
+It must emit `target_projection.json` containing:
+
+- previous artifact count;
+- reused target count;
+- new target count;
+- removed target count;
+- carried-forward count;
+- final artifact count;
+- exact logical keys and target IDs;
+- exact new logical keys requiring reservation;
+- deterministic hashes and ordering.
+
+Any duplicate or unresolved logical key fails closed.
+
+## Reserve Staging
+
+`reserve-staging` is the only pre-GO production mutation.
+
+It may only:
+
+- create or reuse the release-specific staging folder;
+- create empty immutable objects for projected NEW logical keys;
+- persist local allocation metadata under Private Instance.
+
+It must not:
+
+- modify existing target bytes;
+- modify `release_status.json`;
+- move targets to publish parents;
+- delete objects;
+- update canonical facts.
+
+It requires explicit `--single-writer`. Retry must reuse the same IDs.
+
+## Freeze / Plan
+
+`freeze` consumes the reserved allocation and read-only production snapshots.
+It writes only local orchestration evidence:
+
+- `allocation.json`;
+- `entries.json`;
+- `dependencies.json`;
+- `before/`;
+- `candidate/`;
+- `plan.json`;
+- `journal.json`;
+- rollback manifest;
+- verification manifest.
+
+The resulting plan must be consumable by existing `publish`, `verify`, and
+`restore`.
+
+## Safety Boundaries
+
+- Existing production targets are reused and never overwritten during
+  reservation.
+- The existing release-status object is referenced from Private Instance and
+  is never recreated.
+- Removed targets require explicit policy and fail closed otherwise.
+- New code mirror targets use only `code/<tracked-path>` logical keys.
+- Business facts, watcher semantics, and Engine/Private Instance dependency
+  direction are unchanged.
+- `publish` still requires `--single-writer`.
+
+## Acceptance
+
+The orchestration implementation must demonstrate:
+
+- projection is read-only and deterministic;
+- `v1.5.5-1` binding is exact;
+- release status is byte-identical during reservation;
+- existing bytes are untouched during reservation;
+- only projected NEW keys are created, under staging only;
+- retry returns identical IDs;
+- duplicate key and removed target fail closed;
+- plan generation performs no remote mutation;
+- publish/readback/verify/rollback semantics remain unchanged;
+- Private Instance mappings never enter Engine tracked files.
+
+## Non-Goals
+
+- watcher changes;
+- canonical fact changes;
+- production publish;
+- Stage 5 execution;
+- production Drive mutation during implementation.
