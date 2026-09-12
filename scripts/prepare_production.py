@@ -752,16 +752,8 @@ def freeze_plan(
     entries = _candidate_inputs(
         drive, engine_root, projection, allocation, output,
     )
-    runtime = instance.read_json("runtime.json")
-    dependencies = []
-    for name in ("MASTER.xlsx", "source_registry.csv"):
-        item = runtime["inputs"][name]
-        data, meta = snapshot(drive, item["id"])
-        dependencies.append({
-            "id": item["id"],
-            "sha256": digest(data),
-            "meta": fingerprint(meta),
-        })
+    policy = instance.read_json("production.json")
+    dependencies = load_production_dependencies(drive, policy)
     outbox = output / "outbox"
     plan = prepare_release(
         drive,
@@ -775,6 +767,10 @@ def freeze_plan(
         environment="production",
         code_commit=projection["engine_sha"],
     )
+    if {item["id"] for item in plan["dependencies"]} != {
+        item["id"] for item in dependencies
+    }:
+        raise ProjectionError("PRODUCTION_DEPENDENCY_BINDING_MISMATCH")
     save(output / "allocation.json", allocation)
     save(output / "entries.json", plan["entries"])
     save(output / "target_classification.json", {
@@ -823,6 +819,32 @@ def freeze_plan(
             (output / "verification_manifest.json").read_bytes()
         ),
     }
+
+
+def load_production_dependencies(drive, policy):
+    dependency_ids = policy.get("dependency_ids")
+    if (
+        not isinstance(dependency_ids, list)
+        or not dependency_ids
+        or not all(isinstance(item, str) and item for item in dependency_ids)
+        or len(dependency_ids) != len(set(dependency_ids))
+    ):
+        raise ProjectionError("PRODUCTION_DEPENDENCY_BINDING_MISMATCH")
+    dependencies = []
+    for file_id in sorted(dependency_ids):
+        try:
+            data, meta = snapshot(drive, file_id)
+        except Exception as exc:
+            raise ProjectionError(
+                "PRODUCTION_DEPENDENCY_BINDING_MISMATCH"
+            ) from exc
+        dependencies.append({
+            "id": file_id,
+            "sha256": digest(data),
+            "meta": fingerprint(meta),
+            "mode": "binary",
+        })
+    return dependencies
 
 
 def _load_manifest(raw):

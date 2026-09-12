@@ -1,5 +1,5 @@
 req_id: REQ-155-RELEASE-ORCH-01
-requirement_revision_or_hash: r3-20260912-v1.5.5-prepare-final
+requirement_revision_or_hash: r4-20260912-dependency-binding-recovery
 requirement_artifact: requirements/REQ-155-RELEASE-ORCH-01/requirement-r1-20260912.md
 target_release_id: v1.5.5-1
 product_baseline_sha: c14a0f2579fcc86e2dc114f0b15d00dd54e9f55e
@@ -35,3 +35,5 @@ staging_reservation: separate_web_go_required
 publish: stage5_only
 context_policy: allowlist_only
 full_regression_owner: github_actions
+dependency_authority: private_instance_production_json_dependency_ids
+runtime_input_ids_are_dependency_authority: false

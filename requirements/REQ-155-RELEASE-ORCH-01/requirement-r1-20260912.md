@@ -1,6 +1,6 @@
 # CBA-KB Requirement - REQ-155-RELEASE-ORCH-01
 
-> Revision: `r3-20260912-v1.5.5-prepare-final`
+> Revision: `r4-20260912-dependency-binding-recovery`
 > Status: `FROZEN_SPEC`
 > Target release: `v1.5.5-1`
 > Product baseline SHA: `c14a0f2579fcc86e2dc114f0b15d00dd54e9f55e`
@@ -47,6 +47,13 @@ It is not a reusable default.
    semantic delta and status fingerprints before producing a plan.
 4. README, context and INDEX preserve existing substantive content while
    replacing obsolete current-release metadata.
+
+## R4 dependency-binding recovery
+
+`production.json.dependency_ids` is the only production dependency authority.
+Freeze must never substitute runtime input IDs for that allowlist. The
+dependency list must be non-empty, unique, deterministic, completely
+snapshotted, and exactly equal to the policy IDs in the generated plan.
 
 ## Project
 
