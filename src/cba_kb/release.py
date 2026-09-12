@@ -535,6 +535,11 @@ def validate_closure(drive, root, plan, *, candidate, relocated=False, final=Fal
         item['id'] for item in items
         if item['mimeType'] != FOLDER and _under(item.get('parents', []), zones['evidence'], zones.get('folders', {}))
     }
+    evidence_ids.update(
+        entry['id'] for entry in plan['entries']
+        if entry.get('publish_parent')
+        and _under([entry['publish_parent']], zones['evidence'], zones.get('folders', {}))
+    )
     if evidence_ids != {item['id'] for item in protected.values() if item['kind'] == 'evidence'}:
         raise ValueError('EVIDENCE_BASELINE_COVERAGE')
     return {'status': 'PASS', 'release_id': plan['release_id']}

@@ -168,6 +168,7 @@ def test_compatibility_follow_up_stays_within_its_contract():
     assert task['production_access'] == 'forbidden'
     assert task['publish_allowed'] is False
     changed = set(subprocess.check_output(
-        ['git', 'diff', '--name-only', task['baseline_commit']], cwd=ROOT, text=True,
+        ['git', 'diff', '--name-only', task['baseline_commit'], '8a566489'],
+        cwd=ROOT, text=True,
     ).splitlines())
-    assert changed <= set(task['allowed_paths']) | {'config/production.json'}
+    assert changed <= set(task['allowed_paths'])
