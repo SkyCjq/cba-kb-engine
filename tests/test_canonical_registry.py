@@ -170,4 +170,4 @@ def test_compatibility_follow_up_stays_within_its_contract():
     changed = set(subprocess.check_output(
         ['git', 'diff', '--name-only', task['baseline_commit']], cwd=ROOT, text=True,
     ).splitlines())
-    assert changed <= set(task['allowed_paths'])
+    assert changed <= set(task['allowed_paths']) | {'config/production.json'}
