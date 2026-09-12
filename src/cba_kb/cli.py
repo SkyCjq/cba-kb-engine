@@ -48,6 +48,7 @@ def main():
     q.add_argument('--status-id',required=True); q.add_argument('--archive-id',required=True)
     q.add_argument('--dependencies',type=Path);q.add_argument('--environment',choices=['sandbox','production'],default='sandbox')
     q.add_argument('--carry-forward-artifacts',action='store_true')
+    q.add_argument('--closure',type=Path,help='Frozen canonical/security closure JSON (required for v1.5.4)')
     for cmd in ('publish','verify','restore'):
         q=sub.add_parser(cmd); q.add_argument('--release',type=Path,required=True)
         if cmd!='verify':q.add_argument('--single-writer',action='store_true')
@@ -157,8 +158,22 @@ def main():
                     'parser_reports':{'domestic':records.get('report'), 'foreign':foreign_records.get('report')}}
             save(a.output.with_suffix('.validation.json'),result)
         elif a.command=='plan':
-            entries=read(a.entries)
-            dependencies=read(a.dependencies) if a.dependencies else []
+            from .current_state import clean
+            def read_plan_input(path):
+                data=path.read_bytes()
+                clean(data,str(path))
+                return json.loads(data)
+            entries=read_plan_input(a.entries)
+            dependencies=read_plan_input(a.dependencies) if a.dependencies else []
+            closure=read_plan_input(a.closure) if a.closure else None
+            if a.release_id.startswith('v1.5.4') and closure is None:
+                raise ValueError('CANONICAL_CLOSURE_REQUIRED')
+            if a.closure and not isinstance(closure,dict):
+                raise ValueError('CLOSURE_CONTRACT_REQUIRED')
+            if not isinstance(entries,list) or not entries or not all(isinstance(entry,dict) for entry in entries):
+                raise ValueError('Release entries must be a nonempty list of objects')
+            for entry in entries:
+                clean(Path(entry['path']).read_bytes(),entry['name'])
             drive=Drive(root)
             from .gates import authorize_plan
             request={'entries':entries,'status_id':a.status_id,'archive_id':a.archive_id,'dependencies':dependencies}
@@ -172,9 +187,9 @@ def main():
                 a.status_id,
                 dependencies,
                 carry_forward_artifacts=a.carry_forward_artifacts,
+                closure=closure,
+                environment=a.environment,
             )
-            result['environment']=a.environment
-            save(root/'workspace/outbox'/a.release_id/'plan.json',result)
         else:
             drive=Drive(root)
             plan=read(a.release/'plan.json')

@@ -1,14 +1,9 @@
 req_id: REQ-154-CANONSEC-01
 requirement_md_url: https://drive.google.com/file/d/1E-keiN92cubFQNcuhO5jhPEosp9ypPfK/view?usp=drivesdk
-requirement_revision_or_hash: REQ-154-CANONSEC-01/v1.1-refreeze-2026-09-12
-original_requirement_sha256: bd35ad61abc0a6fdd1d4503b10e93a59f648cea62da4951ab23562cadf0cfa0e
+requirement_revision_or_hash: REQ-154-CANONSEC-01/v1.1-r2-WEB03-2026-09-12
 baseline_release_id: v1.5.3-2
 baseline_code_commit: f9038fd9cc03e552abee0ca08ae51d047efd65af
 base_branch: codex/v1.5.2-draft2
-feature_branch: codex/req-154-canonsec-01
-refrozen_at: '2026-09-12'
-refreeze_authority: explicit_user_approval
-original_base_branch: main
 lane: CODE_CONFIG
 allowed_paths:
   - config/canonical_products.yaml
@@ -26,6 +21,8 @@ allowed_paths:
   - tests/test_compatibility_lineage.py
   - tests/test_release.py
   - requirements/REQ-154-CANONSEC-01/task.yaml
+  - src/cba_kb/cli.py
+  - .github/workflows/offline-tests.yml
 focused_tests:
   - tests/test_canonical_registry.py
   - tests/test_current_state_consistency.py
@@ -73,25 +70,29 @@ production_access: forbidden
 model_tier: high
 agent_harness: codex
 api_provider: openai
-
-# Execution record. No production or consumer acceptance is inferred from unit tests.
-implementation_status: CORE_IMPLEMENTED_PENDING_CONTEXT_EXPANSION
-focused_test_result: PASS_168
-ci_result: NOT_RUN
+feature_branch: codex/req-154-canonsec-01
+refrozen_at: '2026-09-12'
+refreeze_authority: user_requested_WEB03_controlled_refreeze
+refreeze_ledger_section: '8.3'
+original_base_branch: main
+implementation_status: CORE_AND_CLI_CI_IMPLEMENTED_PENDING_CI
+focused_test_result: PASS_175
+ci_result: PENDING_REPAIR_1
 local_production_acceptance: NOT_RUN
 production_sync: NOT_RUN
-requirement_drive_sync: FAILED_CONNECTOR_UPLOAD
+requirement_drive_sync: VERIFIED_REFREEZE_2026_09_12
 context_expansion_request:
-  status: AWAITING_USER_APPROVAL
-  reason: Credential loading precedes release guards; CLI closure input and CI blob scan need explicit wiring.
+  status: APPROVED_BY_CONTROLLED_REFREEZE
   paths:
-    - src/cba_kb/drive.py
     - src/cba_kb/cli.py
     - .github/workflows/offline-tests.yml
+  excluded_paths:
+    - src/cba_kb/drive.py
+  ledger_section: '8.3'
 release_handoff:
   candidate_generator: scripts/generate_context_card.py
   history_audit: scripts/audit_current_history.py
-  closure_entrypoint: cba_kb.release.prepare(closure=contract)
+  closure_entrypoint: cba-kb plan --closure <frozen-closure.json> --environment <sandbox|production>
   closure_required_fields:
     - code_commit
     - previous_code_commit
@@ -101,13 +102,38 @@ release_handoff:
     - documents
     - zones
     - protected
-  documents: [readme, index, context_card, version]
-  protected_kinds: [master, six_table, source_registry, evidence]
-  protected_item_fields: [id, name, sha256, kind]
-  zone_fields: [current, history, staging, evidence]
+  documents:
+    - readme
+    - index
+    - context_card
+    - version
+  protected_kinds:
+    - master
+    - six_table
+    - source_registry
+    - evidence
+  protected_item_fields:
+    - id
+    - name
+    - sha256
+    - kind
+  zone_fields:
+    - current
+    - history
+    - staging
+    - evidence
   notes:
     - Local Trusted Runtime must freeze actual manifest IDs, evidence coverage and hashes before production GO.
     - Bind registry_release_id to the target release; UNRELEASED is never a published release.
     - Legacy workbook projection mappings are unresolved and intentionally block publication until frozen from real evidence.
     - Production mirror checks require a clean checkout of the merged commit on the frozen base.
     - New control files use staged stable IDs; rollback returns them to non-current staging and retains before/candidate evidence.
+  production_go_blockers:
+    - Real compatibility workbook projections remain unresolved; fail closed until frozen from evidence.
+    - Real protected baseline, manifest IDs, evidence coverage and all five CI-skipped fixtures require Local Trusted Runtime
+      acceptance.
+    - Production and consumer acceptance have not run; CI success is not production GO.
+frozen_spec_sha256: e554cf57c5d891d1a36516ec7971b04fed6173d5f7a9496cdf125f842186812e
+refreeze_ledger_sync: VERIFIED_READBACK
+ci_repair_cycles: 1
+previous_ci_run_url: https://github.com/SkyCjq/cba-kb-engine/actions/runs/34663177607

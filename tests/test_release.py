@@ -520,3 +520,93 @@ def test_native_unmanaged_secret_is_rejected_before_any_backup(tmp_path):
     assert value not in str(error.value)
     assert not d.calls
     assert not any(fid.startswith('archive/') for fid in d.files)
+
+
+def cli_plan_arguments(tmp_path, entries, closure=None, environment='sandbox', release_id='v1.5.4-test'):
+    entries_path = tmp_path / 'entries.json'
+    entries_path.write_text(json.dumps(entries))
+    arguments = ['cba-kb', '--root', str(tmp_path / 'runtime'), 'plan',
+                 '--entries', str(entries_path), '--release-id', release_id,
+                 '--archive-id', 'archive', '--status-id', 'status',
+                 '--environment', environment]
+    if closure is not None:
+        closure_path = tmp_path / 'closure.json'
+        closure_path.write_text(json.dumps(closure))
+        arguments.extend(['--closure', str(closure_path)])
+    return arguments
+
+
+@pytest.mark.parametrize('environment', ['sandbox', 'production'])
+def test_plan_cli_forwards_closure_and_environment_before_freeze(tmp_path, monkeypatch, capsys, environment):
+    import sys
+    from cba_kb import cli, gates
+    path = tmp_path / 'document.md'
+    path.write_text('Safe control document')
+    entries = [{'id': 'doc', 'name': 'document.md', 'mime': 'text/plain', 'path': str(path)}]
+    closure = {'code_commit': 'a' * 40}
+    events = []
+    drive = object()
+    monkeypatch.setattr(cli, 'Drive', lambda root: drive)
+    def authorize(actual, root, request, selected):
+        assert actual is drive and request['entries'] == entries
+        assert selected == environment
+        events.append('authorized')
+    def freeze(actual, root, release_id, supplied_entries, archive, status, dependencies, **options):
+        assert events == ['authorized']
+        assert actual is drive
+        assert supplied_entries == entries
+        assert root == tmp_path / 'runtime/workspace/outbox/v1.5.4-test'
+        assert options['closure'] == closure
+        assert options['environment'] == environment
+        events.append('frozen')
+        return {'environment': environment, 'release_id': release_id}
+    monkeypatch.setattr(gates, 'authorize_plan', authorize)
+    monkeypatch.setattr(cli, 'prepare', freeze)
+    monkeypatch.setattr(sys, 'argv', cli_plan_arguments(tmp_path, entries, closure, environment))
+    cli.main()
+    assert events == ['authorized', 'frozen']
+    assert json.loads(capsys.readouterr().out)['environment'] == environment
+
+
+def test_plan_cli_builds_real_closure_plan_with_fake_transport(tmp_path, monkeypatch):
+    import sys
+    from cba_kb import cli, gates
+    drive, frozen_root = closure_setup(tmp_path)
+    frozen = read(frozen_root / 'plan.json')
+    entries = [
+        dict(entry, path=str(frozen_root / entry['candidate']))
+        for entry in frozen['entries']
+    ]
+    monkeypatch.setattr(cli, 'Drive', lambda root: drive)
+    monkeypatch.setattr(gates, 'authorize_plan', lambda *args: None)
+    monkeypatch.setattr(sys, 'argv', cli_plan_arguments(tmp_path, entries, frozen['closure']))
+    cli.main()
+    actual = read(tmp_path / 'runtime/workspace/outbox/v1.5.4-test/plan.json')
+    assert actual['closure']['registry_key'] == frozen['closure']['registry_key']
+    assert actual['closure']['code_commit'] == 'a' * 40
+    assert actual['environment'] == 'sandbox'
+    assert read(tmp_path / 'runtime/workspace/outbox/v1.5.4-test/journal.json')['state'] == 'PREPARED'
+    assert not drive.calls
+
+
+@pytest.mark.parametrize('case', ['missing', 'wrong_type', 'secret', 'candidate_secret'])
+def test_plan_cli_rejects_bad_input_before_transport(tmp_path, monkeypatch, capsys, case):
+    import sys
+    from cba_kb import cli
+    def forbidden(root):
+        pytest.fail('Invalid closure/candidate reached authenticated transport')
+    monkeypatch.setattr(cli, 'Drive', forbidden)
+    value = '_'.join(['FAKE', 'CLI', 'TOKEN'])
+    path = tmp_path / 'document.md'
+    path.write_text('Safe control document')
+    entries = [{'id': 'doc', 'name': 'document.md', 'mime': 'text/plain', 'path': str(path)}]
+    closure = None if case == 'missing' else ([] if case == 'wrong_type' else {})
+    if case == 'secret':
+        closure = dict(zip(['access_token'], [value]))
+    if case == 'candidate_secret':
+        path.write_text('access_' + 'token=' + value)
+    monkeypatch.setattr(sys, 'argv', cli_plan_arguments(tmp_path, entries, closure))
+    with pytest.raises(SystemExit) as error:
+        cli.main()
+    assert error.value.code == 1
+    assert value not in capsys.readouterr().err

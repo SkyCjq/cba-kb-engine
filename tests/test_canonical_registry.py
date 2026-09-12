@@ -139,6 +139,13 @@ def test_frozen_task_contract_and_changed_paths():
     task = yaml.safe_load((ROOT / 'requirements/REQ-154-CANONSEC-01/task.yaml').read_text())
     assert task['base_branch'] == 'codex/v1.5.2-draft2'
     assert task['feature_branch'] == 'codex/req-154-canonsec-01'
+    assert task['requirement_revision_or_hash'] == 'REQ-154-CANONSEC-01/v1.1-r2-WEB03-2026-09-12'
+    assert task['refreeze_ledger_sync'] == 'VERIFIED_READBACK'
+    assert task['refreeze_ledger_section'] == '8.3'
+    assert len(task['allowed_paths']) == 17
+    assert {'src/cba_kb/cli.py', '.github/workflows/offline-tests.yml'} <= set(task['allowed_paths'])
+    assert 'src/cba_kb/drive.py' not in task['allowed_paths']
+    assert len(task['frozen_spec_sha256']) == 64
     assert task['production_access'] == 'forbidden'
     assert task['full_regression_owner'] == 'github_actions'
     assert task['acceptance_ids'] == [f'A{i:02}' for i in range(1, 19)]

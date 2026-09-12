@@ -126,5 +126,14 @@ def test_git_tracked_scan_and_credential_free_ci_contract():
     assert all('.credentials' not in Path(path).parts for path in tracked if path)
     assert not (ROOT / '.credentials').exists()
     workflow = (ROOT / '.github/workflows/offline-tests.yml').read_text()
-    assert 'secrets.' not in workflow
+    import re
+    assert not re.search(r'\$\{\{[^}]*\bsecrets(?:\.|\[)', workflow)
     assert 'id-' + 'token: write' not in workflow
+    import yaml
+    steps = yaml.safe_load(workflow)['jobs']['tests']['steps']
+    checkout = next(step for step in steps if step.get('uses', '').startswith('actions/checkout@'))
+    assert checkout['with']['fetch-depth'] == 0
+    scanner = next(i for i, step in enumerate(steps)
+                   if step.get('run') == 'python scripts/check_secrets.py --tracked')
+    regression = next(i for i, step in enumerate(steps) if step.get('name') == 'Offline regression suite')
+    assert scanner < regression
