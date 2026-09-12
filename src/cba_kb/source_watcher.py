@@ -8,6 +8,7 @@ from pathlib import Path
 import random
 import time
 
+from .aliases import Clubs
 from .adapters import cba_registration
 from .ingestion import (
     build_candidate, build_snapshot, canonical_bytes, diff_snapshots,
@@ -33,26 +34,49 @@ def _previous(path):
 
 
 def run_source(source, output, *, previous_snapshot=None, fetcher=None,
-               started_at=None, ended_at=None):
-    """Fetch one source and persist deterministic review artifacts."""
+               started_at=None, ended_at=None, sleeper=time.sleep,
+               randomizer=None, clubs=None):
+    """Fetch one season discovery root plus every discovered child publication."""
     started = started_at or datetime.now(timezone.utc)
-    raw = b"{}\n"
+    index_raw = b"{}\n"
+    child_raw = {}
+    children = []
     requests = 0
     failure = None
+    rows = []
+    rng = randomizer or random.Random()
+    clubs = clubs or Clubs(Path(__file__).resolve().parents[2])
+    revision = cba_registration.SOURCE_CONTRACT_REVISION
     try:
-        raw, requests = (fetcher or cba_registration.fetch)(source)
-        rows = cba_registration.normalize(raw, source)
+        index_raw, attempts = (fetcher or cba_registration.fetch)(source)
+        requests += attempts
+        children = cba_registration.discover(index_raw, source)
+        for child in children:
+            sleeper(cba_registration.MIN_DELAY_SECONDS + rng.uniform(0, .5))
+            raw, attempts = (fetcher or cba_registration.fetch)(child)
+            requests += attempts
+            child_raw[child["article_id"]] = raw
+        rows = cba_registration.normalize_children(
+            child_raw, children, source, clubs=clubs,
+        )
         snapshot = build_snapshot(
-            source, raw, rows, key_fields=cba_registration.ROW_KEY_FIELDS,
+            source, index_raw, rows, key_fields=cba_registration.ROW_KEY_FIELDS,
+            children=child_raw, source_contract_revision=revision,
         )
         diff = diff_snapshots(_previous(previous_snapshot), snapshot)
     except (cba_registration.SourceSchemaDrift, ValueError) as exc:
         failure = str(exc)
-        snapshot, diff = schema_drift(source, failure, raw=raw)
+        snapshot, diff = schema_drift(
+            source, failure, raw=index_raw, children=child_raw,
+            source_contract_revision=revision,
+        )
     except cba_registration.SourceFetchClosed as exc:
-        requests = exc.requests
-        failure = str(exc)
-        snapshot, diff = schema_drift(source, "fetch_fail_closed", raw=raw)
+        requests += exc.requests
+        failure = f"fetch_fail_closed:{exc}"
+        snapshot, diff = schema_drift(
+            source, "fetch_fail_closed", raw=index_raw, children=child_raw,
+            source_contract_revision=revision,
+        )
     candidate = build_candidate(diff)
     validation = validate_candidate(candidate, diff)
     if failure:
@@ -73,6 +97,11 @@ def run_source(source, output, *, previous_snapshot=None, fetcher=None,
         "request_count": requests,
         "provider_tokens": None,
         "snapshot_hash": snapshot["content_sha256"],
+        "source_contract_revision": revision,
+        "child_count": len(children),
+        "canonical_team_count": len({
+            row["canonical_team_id"] for row in rows
+        }),
         "diff_counts": {name: counts[name] for name in sorted(counts)},
         "candidate_count": candidate["candidate_count"],
         "validation_result": validation["result"],
@@ -84,14 +113,18 @@ def run_source(source, output, *, previous_snapshot=None, fetcher=None,
         "canonical_publish_allowed": False,
     }
     hashes = write_evidence(
-        output, raw=raw, snapshot=snapshot, diff=diff, candidate=candidate,
+        output, raw=index_raw, snapshot=snapshot, diff=diff, candidate=candidate,
         validation=validation, publish=publish, run_report=report,
+        raw_files={
+            f"children/{article_id}.json": raw
+            for article_id, raw in child_raw.items()
+        },
     )
     return {"report": report, "artifact_sha256": hashes}
 
 
 def run_planned(instance, output, *, previous_root=None, sleeper=time.sleep,
-                randomizer=None, fetcher=None):
+                randomizer=None, fetcher=None, clubs=None):
     """Run the three frozen sources sequentially inside private instance data."""
     output = Path(output).resolve()
     try:
@@ -112,7 +145,8 @@ def run_planned(instance, output, *, previous_root=None, sleeper=time.sleep,
             previous = Path(previous_root) / source["source_id"] / "snapshot.json"
         result = run_source(
             source, output / source["source_id"],
-            previous_snapshot=previous, fetcher=fetcher,
+            previous_snapshot=previous, fetcher=fetcher, sleeper=sleeper,
+            randomizer=rng, clubs=clubs,
         )
         reports.append(result["report"])
     ledger = {

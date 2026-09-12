@@ -25,6 +25,46 @@ def content_sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def _child_hashes(children):
+    if children is None:
+        return []
+    items = children.items() if isinstance(children, dict) else children
+    hashes = {}
+    for item in items:
+        if isinstance(children, dict):
+            article_id, raw = item
+            child_sha = content_sha256(raw)
+        else:
+            if not isinstance(item, dict):
+                raise ValueError("CHILD_SNAPSHOT_OBJECT_REQUIRED")
+            article_id = item.get("article_id")
+            child_sha = item.get("content_sha256")
+            if not child_sha and item.get("raw") is not None:
+                child_sha = content_sha256(item["raw"])
+        if not isinstance(article_id, str) or not article_id:
+            raise ValueError("CHILD_ARTICLE_ID_REQUIRED")
+        if not isinstance(child_sha, str) or len(child_sha) != 64:
+            raise ValueError("CHILD_CONTENT_SHA256_REQUIRED")
+        if article_id in hashes:
+            raise ValueError("CHILD_ARTICLE_ID_DUPLICATE")
+        hashes[article_id] = child_sha
+    return [
+        {"article_id": article_id, "content_sha256": hashes[article_id]}
+        for article_id in sorted(hashes)
+    ]
+
+
+def _snapshot_identity(source, index_sha, children, revision):
+    payload = {
+        "source_contract_revision": revision,
+        "season": source["season"],
+        "index_article_id": source["article_id"],
+        "index_content_sha256": index_sha,
+        "children": _child_hashes(children),
+    }
+    return hashlib.sha256(canonical_bytes(payload)).hexdigest()
+
+
 def _indexed(rows, key_fields):
     result = {}
     for row in rows:
@@ -39,16 +79,24 @@ def _indexed(rows, key_fields):
     return result
 
 
-def build_snapshot(source, raw, rows, *, key_fields):
+def build_snapshot(source, raw, rows, *, key_fields, children=None,
+                   source_contract_revision="legacy-single-response"):
     sha = content_sha256(raw)
-    identity = "|".join((source["season"], source["article_id"], sha))
+    child_hashes = _child_hashes(children)
+    identity = _snapshot_identity(
+        source, sha, child_hashes, source_contract_revision,
+    )
     ordered = [row for _, row in sorted(_indexed(rows, key_fields).items())]
     return {
         "schema_version": 1,
         "source_id": source["source_id"],
         "season": source["season"],
         "article_id": source["article_id"],
+        "index_article_id": source["article_id"],
+        "source_contract_revision": source_contract_revision,
         "content_sha256": sha,
+        "index_content_sha256": sha,
+        "children": child_hashes,
         "snapshot_identity": identity,
         "row_key_fields": list(key_fields),
         "rows": ordered,
@@ -99,17 +147,24 @@ def _schema_drift(snapshot, reason):
     }
 
 
-def schema_drift(source, reason, *, raw=b""):
+def schema_drift(source, reason, *, raw=b"", children=None,
+                 source_contract_revision="legacy-single-response"):
+    sha = content_sha256(raw)
+    child_hashes = _child_hashes(children)
     snapshot = {
         "schema_version": 1,
         "source_id": source["source_id"],
         "season": source["season"],
         "article_id": source["article_id"],
-        "content_sha256": content_sha256(raw),
-        "snapshot_identity": "|".join(
-            (source["season"], source["article_id"], content_sha256(raw))
+        "index_article_id": source["article_id"],
+        "source_contract_revision": source_contract_revision,
+        "content_sha256": sha,
+        "index_content_sha256": sha,
+        "children": child_hashes,
+        "snapshot_identity": _snapshot_identity(
+            source, sha, child_hashes, source_contract_revision,
         ),
-        "row_key_fields": ["season", "article_id", "raw_player_name"],
+        "row_key_fields": ["season", "child_article_id", "row_index"],
         "rows": [],
     }
     return snapshot, _schema_drift(snapshot, reason)
@@ -169,7 +224,8 @@ def publish_decision(candidate, validation):
     }
 
 
-def write_evidence(output, *, raw, snapshot, diff, candidate, validation, publish, run_report):
+def write_evidence(output, *, raw, snapshot, diff, candidate, validation,
+                   publish, run_report, raw_files=None):
     output = Path(output)
     if output.exists():
         raise ValueError("WATCHER_OUTPUT_MUST_BE_NEW")
@@ -183,6 +239,13 @@ def write_evidence(output, *, raw, snapshot, diff, candidate, validation, publis
         "publish.json": canonical_bytes(publish),
         "run_report.json": canonical_bytes(run_report),
     }
+    for name, data in sorted((raw_files or {}).items()):
+        target = Path(name)
+        if target.is_absolute() or ".." in target.parts or not target.parts:
+            raise ValueError("EVIDENCE_RAW_PATH_INVALID")
+        artifacts[name] = data
     for name, data in artifacts.items():
-        (output / name).write_bytes(data)
+        target = output / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
     return {name: content_sha256(data) for name, data in sorted(artifacts.items())}
