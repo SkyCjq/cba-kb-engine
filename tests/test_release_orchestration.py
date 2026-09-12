@@ -321,6 +321,10 @@ class ReservationInstance:
         self.policy = {
             "enabled": True,
             "targets": projection_inputs()["previous_targets"],
+            "dependency_ids": [
+                "fact-dependency-id",
+                "source-registry-dependency-id",
+            ],
         }
 
     def read_json(self, name):
@@ -513,6 +517,8 @@ def test_freeze_uses_reserved_ids_and_does_not_mutate_remote(
                 b"current release: v1.5.4-1\n"
             ),
             "manifest": manifest_raw,
+            "fact-dependency-id": b"factor-dependency",
+            "source-registry-dependency-id": b"registry-dependency",
         }.get(file_id, b"old")
         meta = {
             "id": file_id, "version": "1", "modifiedTime": "t",
@@ -534,6 +540,7 @@ def test_freeze_uses_reserved_ids_and_does_not_mutate_remote(
         outbox.mkdir(parents=True)
         plan = {
             "release_id": release_id,
+            "dependencies": dependencies,
             "entries": [
                 {
                     **entry,
@@ -576,6 +583,12 @@ def test_freeze_uses_reserved_ids_and_does_not_mutate_remote(
     assert new_entry["id"] == allocation["reservations"]["code/src/new.py"]
     assert new_entry["allowed_parents"] == ["scripts", allocation["staging_id"]]
     assert captured["options"]["code_commit"] == ENGINE_SHA
+    assert [item["id"] for item in captured["dependencies"]] == [
+        "fact-dependency-id", "source-registry-dependency-id",
+    ]
+    assert {item["id"] for item in captured["dependencies"]} != {
+        "master", "registry",
+    }
 
     candidates = {
         entry["logical_key"]: Path(entry["path"]).read_bytes()
@@ -615,6 +628,48 @@ def test_freeze_uses_reserved_ids_and_does_not_mutate_remote(
     assert classification["input/MASTER.xlsx"] == "BUSINESS_FACT_CARRY_FORWARD"
     assert classification["code/src/new.py"] == "NEW_CODE_MIRROR"
     assert classification["input/manifest.csv"] == "CONTROL_METADATA_UPDATE"
+
+
+@pytest.mark.parametrize("dependency_ids", [
+    [],
+    ["duplicate", "duplicate"],
+    ["missing"],
+])
+def test_production_dependency_binding_fails_closed(
+        dependency_ids, monkeypatch):
+    monkeypatch.setattr(
+        orchestration, "snapshot",
+        lambda drive, file_id, mode="binary": (
+            b"value", {
+                "id": file_id, "version": "1", "modifiedTime": "t",
+                "mimeType": "application/json", "parents": ["config"],
+            },
+        ) if file_id != "missing" else (_ for _ in ()).throw(OSError("missing")),
+    )
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match="PRODUCTION_DEPENDENCY_BINDING_MISMATCH",
+    ):
+        orchestration.load_production_dependencies(
+            object(), {"dependency_ids": dependency_ids},
+        )
+
+
+def test_production_dependency_binding_is_deterministic(monkeypatch):
+    monkeypatch.setattr(
+        orchestration, "snapshot",
+        lambda drive, file_id, mode="binary": (
+            file_id.encode(), {
+                "id": file_id, "version": "1", "modifiedTime": "t",
+                "mimeType": "application/json", "parents": ["config"],
+            },
+        ),
+    )
+    policy = {"dependency_ids": ["b", "a"]}
+    first = orchestration.load_production_dependencies(object(), policy)
+    second = orchestration.load_production_dependencies(object(), policy)
+    assert first == second
+    assert [item["id"] for item in first] == ["a", "b"]
 
 
 def test_freeze_rejects_release_state_drift(tmp_path, monkeypatch):
