@@ -1,5 +1,5 @@
 req_id: REQ-155-RELEASE-ORCH-01
-requirement_revision_or_hash: r2-20260912-v1.5.5-prepare-fix
+requirement_revision_or_hash: r3-20260912-v1.5.5-prepare-final
 requirement_artifact: requirements/REQ-155-RELEASE-ORCH-01/requirement-r1-20260912.md
 target_release_id: v1.5.5-1
 product_baseline_sha: c14a0f2579fcc86e2dc114f0b15d00dd54e9f55e

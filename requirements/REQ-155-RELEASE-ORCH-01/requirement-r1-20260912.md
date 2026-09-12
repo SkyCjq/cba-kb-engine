@@ -1,6 +1,6 @@
 # CBA-KB Requirement - REQ-155-RELEASE-ORCH-01
 
-> Revision: `r2-20260912-v1.5.5-prepare-fix`
+> Revision: `r3-20260912-v1.5.5-prepare-final`
 > Status: `FROZEN_SPEC`
 > Target release: `v1.5.5-1`
 > Product baseline SHA: `c14a0f2579fcc86e2dc114f0b15d00dd54e9f55e`
@@ -36,6 +36,17 @@ It is not a reusable default.
 5. Reconciliation must distinguish active production targets from reserved
    staging targets; `release_status` may remain on the previous release set
    until publish.
+
+## R3 final consistency repairs
+
+1. `input/manifest.csv` is regenerated as release control metadata and must
+   cover every final target with one unique logical key and Drive ID.
+2. `project` can consume `--allocation` after reservation, accepting only exact
+   reserved policy targets with no unexplained extras.
+3. `freeze` revalidates active release status, policy targets, reservation IDs,
+   semantic delta and status fingerprints before producing a plan.
+4. README, context and INDEX preserve existing substantive content while
+   replacing obsolete current-release metadata.
 
 ## Project
 

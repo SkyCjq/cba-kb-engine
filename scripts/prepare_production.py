@@ -30,6 +30,7 @@ CONTROL_KEYS = frozenset({
     "entry/README",
     "entry/context",
     "derived/INDEX.md",
+    "input/manifest.csv",
 })
 
 
@@ -108,8 +109,6 @@ def _status_rows(status, targets):
         if file_id not in targets:
             raise ProjectionError("PREVIOUS_STATUS_TARGET_MISMATCH")
         by_id[file_id] = item
-    if set(by_id) != set(targets):
-        raise ProjectionError("PREVIOUS_STATUS_TARGET_MISMATCH")
     return by_id
 
 
@@ -138,6 +137,9 @@ def project_targets(
     tracked,
     tracked_hashes,
     code_parent,
+    status_hash=None,
+    status_meta=None,
+    allocation=None,
 ):
     """Project exact target semantics without any remote mutation."""
     _require_release(release_id)
@@ -145,6 +147,25 @@ def project_targets(
     logical_by_id = _manifest_rows(manifest_rows)
     if set(status_by_id) - set(logical_by_id):
         raise ProjectionError("MANIFEST_MAPPING_MISSING")
+    active_ids = set(status_by_id)
+    reserved_ids = set()
+    reserved_keys = {}
+    if allocation is not None:
+        if allocation.get("release_id") != release_id:
+            raise ProjectionError("RESERVATION_RELEASE_MISMATCH")
+        if allocation.get("status_id") != status_id:
+            raise ProjectionError("RESERVATION_STATUS_MISMATCH")
+        reserved_keys = dict(allocation.get("reservations") or {})
+        reserved_ids = set(reserved_keys.values())
+        if len(reserved_ids) != len(reserved_keys):
+            raise ProjectionError("RESERVATION_ID_DUPLICATE")
+    policy_ids = set(previous_targets)
+    extra_policy_ids = policy_ids - active_ids
+    if not extra_policy_ids and reserved_ids:
+        raise ProjectionError("RESERVATION_POLICY_TARGETS_MISSING")
+    if extra_policy_ids != reserved_ids:
+        raise ProjectionError("UNEXPLAINED_RESERVED_POLICY_TARGET")
+    reserved_by_id = {file_id: key for key, file_id in reserved_keys.items()}
 
     existing = {}
     logical_seen = set()
@@ -165,6 +186,9 @@ def project_targets(
             "publish_parent": policy.get("publish_parent"),
             "staging_parent": policy.get("staging_parent"),
         }
+    if set(reserved_by_id) & set(existing):
+        raise ProjectionError("RESERVATION_REUSES_EXISTING_TARGET")
+    logical_by_id.update(reserved_by_id)
 
     tracked = sorted(set(tracked))
     for relative in tracked:
@@ -186,7 +210,9 @@ def project_targets(
     non_code_keys = set(existing) - existing_code_keys
     control_keys = non_code_keys & CONTROL_KEYS
     business_keys = non_code_keys - CONTROL_KEYS
-    removed_code_keys = sorted(existing_code_keys - set(current_code))
+    removed_code_keys = sorted(
+        key for key in existing_code_keys if key not in current_code
+    )
     if removed_code_keys:
         raise ProjectionError(
             "REMOVED_TARGET_POLICY_REQUIRED:" + ",".join(removed_code_keys)
@@ -204,6 +230,8 @@ def project_targets(
             modified.append(logical_key)
 
     new_keys = sorted(set(current_code) - existing_code_keys)
+    if allocation is not None and set(new_keys) != set(reserved_keys):
+        raise ProjectionError("RESERVATION_KEY_SET_MISMATCH")
     if not code_parent:
         raise ProjectionError("CODE_PARENT_REQUIRED")
     new_targets = [
@@ -215,6 +243,10 @@ def project_targets(
             "publish_parent": code_parent,
             "sha256": current_code[logical_key]["sha256"],
             "relative": current_code[logical_key]["relative"],
+            **(
+                {"id": reserved_keys[logical_key]}
+                if logical_key in reserved_keys else {}
+            ),
         }
         for logical_key in new_keys
     ]
@@ -253,6 +285,14 @@ def project_targets(
         "modified_content_targets": modified,
         "unchanged_targets": unchanged,
         "carried_forward_artifacts": sorted(business_keys),
+        "active_target_ids": sorted(active_ids),
+        "active_production_target_count": len(active_ids),
+        "reserved_policy_target_ids": sorted(reserved_ids),
+        "reserved_staging_target_count": len(reserved_ids),
+        "release_status_unchanged": True,
+        "status_before_hash": status_hash,
+        "status_before_meta": status_meta,
+        "active_release_id": previous_status.get("current_release_id"),
     }
     projection["semantic_delta_signature"] = _json_hash({
         "keys": final_keys,
@@ -311,6 +351,43 @@ def validate_policy_reconciliation(projection, allocation, policy):
     return {
         "active_production_targets": sorted(active_ids),
         "reserved_staging_targets": sorted(reserved_ids),
+    }
+
+
+def validate_release_state(drive, instance, projection, allocation):
+    try:
+        validate_reservation(projection, allocation)
+        status_raw, status_meta = snapshot(
+            drive, allocation["status_id"],
+        )
+        status = json.loads(status_raw)
+    except Exception as exc:
+        raise ProjectionError("STAGE4_RELEASE_STATE_DRIFT") from exc
+    if digest(status_raw) != allocation.get("status_before_hash"):
+        raise ProjectionError("STAGE4_RELEASE_STATE_DRIFT")
+    if fingerprint(status_meta) != allocation.get("status_before_meta"):
+        raise ProjectionError("STAGE4_RELEASE_STATE_DRIFT")
+    active_ids = {
+        item["id"] for item in projection["existing_targets"]
+    }
+    status_ids = {
+        item.get("id") for item in (status.get("artifacts") or [])
+    }
+    if (
+        status.get("state") != "COMPLETE"
+        or status.get("current_release_id") != allocation.get("active_release_id")
+        or status_ids != active_ids
+    ):
+        raise ProjectionError("STAGE4_RELEASE_STATE_DRIFT")
+    policy = instance.read_json("production.json")
+    reconciliation = validate_policy_reconciliation(
+        projection, allocation, policy,
+    )
+    return {
+        "result": "PASS",
+        "active_production_target_count": len(active_ids),
+        "reserved_staging_target_count": len(allocation["reservations"]),
+        **reconciliation,
     }
 
 
@@ -375,6 +452,9 @@ def reserve_staging(
         "archive_id": projection["archive_id"],
         "staging_id": staging_id,
         "semantic_delta_signature": projection["semantic_delta_signature"],
+        "status_before_hash": projection.get("status_before_hash"),
+        "status_before_meta": projection.get("status_before_meta"),
+        "active_release_id": projection.get("active_release_id"),
         "active_production_targets": sorted(
             item["id"] for item in projection["existing_targets"]
         ),
@@ -428,24 +508,47 @@ def _candidate_inputs(drive, engine_root, projection, allocation, output):
         for item in projection["new_targets"]
     })
     ordered = sorted(set(existing_by_key) | set(new_by_key))
-    for index, logical_key in enumerate(ordered):
-        item = existing_by_key.get(logical_key) or new_by_key[logical_key]
-        candidate = candidates / str(index)
-        generated = None
+    item_by_key = {
+        key: existing_by_key.get(key) or new_by_key[key] for key in ordered
+    }
+    data_by_key = {}
+    previous_by_key = {}
+    for logical_key in ordered:
+        if logical_key == "input/manifest.csv":
+            continue
+        item = item_by_key[logical_key]
         if logical_key.startswith("code/"):
             relative = logical_key.removeprefix("code/")
             data = (Path(engine_root) / relative).read_bytes()
+            generated = True
         else:
             previous, _ = snapshot(
                 drive, item["id"], item.get("mode", "binary"),
             )
-            generated = _control_candidate(
+            previous_by_key[logical_key] = previous
+            generated_data = _control_candidate(
                 logical_key, previous, projection, allocation, id_by_key,
-                code_hashes,
+                code_hashes, engine_root,
             )
-            data = generated if generated is not None else previous
-        if generated is not None and item.get("mode") == "managed_doc":
+            generated = generated_data is not None
+            data = generated_data if generated else previous
+        if generated and item.get("mode") == "managed_doc":
             data = _managed_candidate(data)
+        data_by_key[logical_key] = data
+    if "input/manifest.csv" in item_by_key:
+        previous, _ = snapshot(
+            drive, item_by_key["input/manifest.csv"]["id"],
+            "binary",
+        )
+        previous_by_key["input/manifest.csv"] = previous
+        data_by_key["input/manifest.csv"] = _manifest_candidate(
+            previous, projection, allocation, id_by_key, data_by_key,
+            item_by_key,
+        )
+    for index, logical_key in enumerate(ordered):
+        item = item_by_key[logical_key]
+        candidate = candidates / str(index)
+        data = data_by_key[logical_key]
         atomic(candidate, data)
         if logical_key in new_by_key:
             change_class = "NEW_CODE_MIRROR"
@@ -483,12 +586,59 @@ def _candidate_inputs(drive, engine_root, projection, allocation, output):
     return entries
 
 
+def _manifest_candidate(previous, projection, allocation, id_by_key,
+                        data_by_key, item_by_key):
+    reader = csv.DictReader(io.StringIO(previous.decode("utf-8-sig")))
+    if not reader.fieldnames:
+        raise ProjectionError("MANIFEST_SCHEMA_REQUIRED")
+    columns = list(reader.fieldnames)
+    for name in ("published_release", "hash_scope"):
+        if name not in columns:
+            columns.append(name)
+    rows = list(reader)
+    by_id = {}
+    by_key = {}
+    for row in rows:
+        file_id = row.get("drive_file_id")
+        logical_key = row.get("uid") or row.get("local_path")
+        if not file_id or not logical_key:
+            raise ProjectionError("MANIFEST_ROW_INCOMPLETE")
+        if file_id in by_id or logical_key in by_key:
+            raise ProjectionError("MANIFEST_DUPLICATE")
+        by_id[file_id] = row
+        by_key[logical_key] = row
+    final_keys = sorted(id_by_key)
+    if set(final_keys) != set(item_by_key):
+        raise ProjectionError("MANIFEST_COVERAGE_MISMATCH")
+    output_rows = []
+    for logical_key in final_keys:
+        file_id = id_by_key[logical_key]
+        row = dict(by_key.get(logical_key) or by_id.get(file_id) or {})
+        row["drive_file_id"] = file_id
+        row["uid"] = logical_key
+        row["published_release"] = projection["release_id"]
+        mode = item_by_key[logical_key].get("mode", "binary")
+        row["hash_scope"] = "managed_prefix" if mode == "managed_doc" else "bytes"
+        if logical_key == "input/manifest.csv":
+            row["content_hash"] = ""
+        elif logical_key in data_by_key:
+            row["content_hash"] = digest(data_by_key[logical_key])
+        output_rows.append({name: row.get(name, "") for name in columns})
+    stream = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        stream, fieldnames=columns, lineterminator="\n",
+    )
+    writer.writeheader()
+    writer.writerows(output_rows)
+    return stream.getvalue().encode("utf-8-sig")
+
+
 def _managed_candidate(data):
     return wrap(data.decode()).encode()
 
 
 def _control_candidate(logical_key, previous, projection, allocation,
-                       id_by_key, code_hashes):
+                       id_by_key, code_hashes, engine_root):
     release_id = projection["release_id"]
     engine_sha = projection["engine_sha"]
     status_id = allocation["status_id"]
@@ -516,19 +666,69 @@ def _control_candidate(logical_key, previous, projection, allocation,
         )
         return ("\n".join(lines) + "\n").encode()
     if logical_key in {"entry/README", "entry/context", "derived/INDEX.md"}:
-        title = {
-            "entry/README": "CBA-KB 发布入口",
-            "entry/context": "CBA-KB 当前状态",
-            "derived/INDEX.md": "CBA-KB INDEX",
-        }[logical_key]
+        return _content_preserving_candidate(
+            logical_key, previous, projection, allocation, id_by_key,
+            engine_root,
+        )
+    return None
+
+
+def _managed_body(data):
+    text = data.decode(errors="replace")
+    if text.startswith("[CBA-KB CURRENT RELEASE BEGIN]"):
+        start = text.find("\n") + 1
+        end = text.find("[CBA-KB CURRENT RELEASE END]")
+        text = text[start:end if end >= 0 else None]
+    history = "以下为迁移前的历史阅读内容；当前回答请以上方发布内容及 MASTER 为准。"
+    return text.replace(history, "").strip()
+
+
+def _content_preserving_candidate(logical_key, previous, projection, allocation,
+                                  id_by_key, engine_root):
+    release_id = projection["release_id"]
+    engine_sha = projection["engine_sha"]
+    title = {
+        "entry/README": "CBA-KB 发布入口",
+        "entry/context": "CBA-KB 当前状态",
+        "derived/INDEX.md": "CBA-KB INDEX",
+    }[logical_key]
+    links = "\n".join(
+        f"- {key}: {file_id}" for key, file_id in sorted(id_by_key.items())
+    )
+    if logical_key == "entry/context":
+        operations = (
+            Path(engine_root) / "docs/OPERATIONS_V1_5.md"
+        ).read_text()
+        migration = (
+            Path(engine_root) / "docs/MASTER_MIGRATION_NOTE.md"
+        ).read_text()
         return (
             f"# {title}\n\n"
             f"当前发布：{release_id}\n\n"
             f"代码提交：{engine_sha}\n\n"
             "读取前请校验 release_status；"
-            "PUBLISHING/FAILED/ROLLING_BACK 时使用上一快照。\n"
+            "PUBLISHING/FAILED/ROLLING_BACK 时使用上一快照。\n\n"
+            f"代码镜像：https://github.com/SkyCjq/cba-kb-engine/tree/{engine_sha}\n\n"
+            f"## Current target mapping\n\n{links}\n\n"
+            f"## Operations\n\n{operations}\n\n"
+            f"## Migration\n\n{migration}\n"
         ).encode()
-    return None
+    preserved = _managed_body(previous)
+    preserved = preserved.replace("当前发布：v1.5.4-1", "历史发布：v1.5.4-1")
+    preserved = preserved.replace("v1.5.4-1 / COMPLETE", "v1.5.4-1 / 历史发布")
+    preserved = preserved.replace(
+        "current release: v1.5.4-1", "historical release: v1.5.4-1",
+    )
+    return (
+        f"# {title}\n\n"
+        f"当前发布：{release_id}\n\n"
+        f"代码提交：{engine_sha}\n\n"
+        "读取前请校验 release_status；"
+        "PUBLISHING/FAILED/ROLLING_BACK 时使用上一快照。\n\n"
+        f"代码镜像：https://github.com/SkyCjq/cba-kb-engine/tree/{engine_sha}\n\n"
+        f"## Current target mapping\n\n{links}\n\n"
+        f"## Previous current navigation\n\n{preserved}\n"
+    ).encode()
 
 
 def freeze_plan(
@@ -545,6 +745,7 @@ def freeze_plan(
     _require_release(release_id)
     verify_execution_sha(engine_root, projection["engine_sha"])
     validate_reservation(projection, allocation)
+    state = validate_release_state(drive, instance, projection, allocation)
     output = Path(output)
     if output.exists():
         raise ProjectionError("FREEZE_OUTPUT_MUST_BE_NEW")
@@ -580,6 +781,7 @@ def freeze_plan(
         entry["logical_key"]: entry["change_class"] for entry in entries
     })
     save(output / "dependencies.json", dependencies)
+    save(output / "release_state_reconciliation.json", state)
     rollback = {
         "release_id": release_id,
         "actions": [
@@ -632,7 +834,9 @@ def _project_command(args, instance):
     production = instance.read_json("production.json")
     runtime = instance.read_json("runtime.json")
     drive = Drive(Path.cwd(), instance)
-    status = json.loads(drive.get(production["status_id"]))
+    status_raw = drive.get(production["status_id"])
+    status_meta = drive.meta(production["status_id"])
+    status = json.loads(status_raw)
     manifest = _load_manifest(
         drive.get(runtime["inputs"]["manifest.csv"]["id"])
     )
@@ -656,6 +860,9 @@ def _project_command(args, instance):
         code_parent=instance.read_json("import_inventory.json")["parents"][
             "scripts"
         ],
+        status_hash=digest(status_raw),
+        status_meta=fingerprint(status_meta),
+        allocation=read(args.allocation) if args.allocation else None,
     )
     save(args.output, projection)
     return projection
