@@ -1,6 +1,6 @@
 req_id: REQ-155-ENGINE-WATCHER-01
 requirement_md_url: https://drive.google.com/file/d/1mxMEhd4zhhHr0tDnVXYcbWngz8KYBLlK/view?usp=drivesdk
-requirement_revision_or_hash: r3-FROZEN-20260912
+requirement_revision_or_hash: r4-FROZEN-20260912
 baseline_release_id: v1.5.4-1
 baseline_production_code_commit: e0dea09ccb020b2918cefa311365e8563348f293
 baseline_code_commit: 0f68792a1817a13abedd501a32ea656b0f828f3c
@@ -14,6 +14,7 @@ allowed_paths:
 - README.md
 - docs/SETUP_AUTH.md
 - docs/OPERATIONS_V1_5.md
+- docs/import_inventory.json
 - config/runtime.json
 - config/production.json
 - config/drive_map.yaml
@@ -27,6 +28,7 @@ allowed_paths:
 - src/cba_kb/source_policy.py
 - src/cba_kb/adapters/__init__.py
 - src/cba_kb/adapters/cba_registration.py
+- src/cba_kb/catalog.py
 - src/cba_kb/instance.py
 - src/cba_kb/ingestion.py
 - src/cba_kb/source_watcher.py
@@ -37,6 +39,7 @@ allowed_paths:
 - tests/test_ingestion_kernel.py
 - tests/test_source_watcher.py
 - tests/test_cli_instance_config.py
+- tests/test_catalog_instance_boundary.py
 - tests/test_security_guards.py
 - tests/test_release.py
 - tests/test_gates.py
@@ -53,6 +56,7 @@ focused_tests:
 - tests/test_ingestion_kernel.py
 - tests/test_source_watcher.py
 - tests/test_cli_instance_config.py
+- tests/test_catalog_instance_boundary.py
 - tests/test_security_guards.py
 - tests/test_release.py
 - tests/test_gates.py
