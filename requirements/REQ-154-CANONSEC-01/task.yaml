@@ -78,8 +78,8 @@ original_base_branch: main
 implementation_status: CORE_AND_CLI_CI_IMPLEMENTED_CI_PASS
 focused_test_result: PASS_175
 ci_result: PASS
-reviewed_head_sha: 25f8fac690afb87c8f5092b30590a1d43eddf0bd
-reviewed_ci_run_id: 34664771854
+reviewed_head_sha: 798fcca460637e1aca1e6ce9063c5c40ca876a6c
+reviewed_ci_run_id: 34665962599
 reviewed_ci_conclusion: success
 execution_state:
   implementation: IMPLEMENTED_CANDIDATE
@@ -145,7 +145,7 @@ refreeze_ledger_sync: VERIFIED_READBACK
 ci_repair_cycles: 1
 previous_ci_run_url: https://github.com/SkyCjq/cba-kb-engine/actions/runs/34663177607
 ci_verified_commit: 03b86a8d869f54c454606e16764cae3a84f37f14
-ci_run_url: https://github.com/SkyCjq/cba-kb-engine/actions/runs/34664565759
+ci_run_url: https://github.com/SkyCjq/cba-kb-engine/actions/runs/34665962599
 ci_summary:
   passed: 287
   skipped: 5
