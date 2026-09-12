@@ -169,6 +169,29 @@ products:
   read_policy: compatibility_only
   current_eligible: true
   independent_write_allowed: false
+  projection:
+    kind: legacy_foreign_snapshots_v1
+    source: foreign_registration_snapshots
+    scope:
+      season: 2024-2025
+      snapshot_as_of: '2025-03-31'
+    status_labels:
+      registered: 注册在册
+    # Display-only spellings verified in original XLSX and season-aware aliases.
+    label_renderings:
+      club_source_name:
+        广州朗钛海本: 广州朗肽海本
+      name_en_raw:
+        GEORGE KELL III: GEORGE KELL Ⅲ
+    jersey_renderings:
+      '2024-2025|2025-03-31|zhejiang_guangsha|JAMES NUNNALLY|美国':
+        canonical: '00'
+        legacy: '0'
+        evidence: 'original XLSX Sheet1!F16 stores numeric 0; canonical merged Markdown preserves 00'
+      '2024-2025|2025-03-31|liaoning_shenyang_sansheng|CAMERON OLIVER|美国':
+        canonical: '00'
+        legacy: '0'
+        evidence: 'original XLSX Sheet1!F57 stores numeric 0; canonical merged Markdown preserves 00'
 - product_id: legacy_registration_events
   semantic_grain: registration_status_events
   authority: compatibility
@@ -178,7 +201,45 @@ products:
   generated_from:
   - registration_status_events
   - domestic_registrations
+  - domestic_season_snapshots
   deprecated_by: registration_status_events
   read_policy: compatibility_only
   current_eligible: true
   independent_write_allowed: false
+  projection:
+    kind: legacy_registration_events_v1
+    source: registration_status_events
+    relationship_source: domestic_registrations
+    master_source: domestic_season_snapshots
+    # Preserve explicitly documented legacy context. Never fill canonical nulls.
+    legacy_annotations:
+      artifact_key: evidence/bayi_legacy_context.md
+      parser: midseason_md
+      fields:
+      - club_announcement_date
+    scope:
+      foreign:
+        season: 2024-2025
+        player_type: foreign
+        event_domain: foreign_registration
+        event_type: registration_cancelled
+      domestic:
+        season: 2020-2021
+        player_type: domestic
+        event_domain: domestic_movement
+        from_club_id: bayi
+    domestic_event_aliases:
+      "2020-2021|domestic|beijing_konggu|石颜博|free_agent_claim|2021-02-27|118": "2020-2021|domestic|beijing_konggu|石颜博|registration_change|2021-02-27|4"
+      "2020-2021|domestic|beijing_konggu|罗凯文|free_agent_claim|2021-02-25|108": "2020-2021|domestic|beijing_konggu|罗凯文|registration_change|2021-02-25|2"
+      "2020-2021|domestic|beijing_konggu|邹雨宸|free_agent_claim|2021-02-25|107": "2020-2021|domestic|beijing_konggu|邹雨宸|registration_change|2021-02-25|1"
+      "2020-2021|domestic|beijing_konggu|马泳|free_agent_claim|2021-02-25|109": "2020-2021|domestic|beijing_konggu|马泳|registration_change|2021-02-25|3"
+      "2020-2021|domestic|beijing_shougang|田宇翔|free_agent_claim|2021-02-26|113": "2020-2021|domestic|beijing_shougang|田宇翔|registration_change|2021-02-26|2"
+      "2020-2021|domestic|beijing_shougang|雷蒙|free_agent_claim|2021-02-25|110": "2020-2021|domestic|beijing_shougang|雷蒙|registration_change|2021-02-25|1"
+      "2020-2021|domestic|guangzhou_longshi|宁鸿宇|free_agent_claim|2021-02-26|116": "2020-2021|domestic|guangzhou_longshi|宁鸿宇|registration_change|2021-02-26|1"
+      "2020-2021|domestic|guangzhou_longshi|缪光旸|free_agent_claim|2021-02-26|117": "2020-2021|domestic|guangzhou_longshi|缪光旸|registration_change|2021-02-26|2"
+      "2020-2021|domestic|liaoning_shenyang_sansheng|付豪|free_agent_claim|2021-02-24|105": "2020-2021|domestic|liaoning_shenyang_sansheng|付豪|registration_change|2021-02-24|1"
+      "2020-2021|domestic|nanjing_tongxi|刘航初|free_agent_claim|2021-02-25|111": "2020-2021|domestic|nanjing_tongxi|刘航初|registration_change|2021-02-25|1"
+      "2020-2021|domestic|shanghai_jiushi|郭昊文|free_agent_claim|2021-02-26|115": "2020-2021|domestic|shanghai_jiushi|郭昊文|registration_change|2021-02-26|1"
+      "2020-2021|domestic|shanxi_fenjiu|张旭|free_agent_claim|2021-02-26|114": "2020-2021|domestic|shanxi_fenjiu|张旭|registration_change|2021-02-26|1"
+      "2020-2021|domestic|xinjiang_guanghui|阿尔斯兰|free_agent_claim|2021-02-24|106": "2020-2021|domestic|xinjiang_guanghui|阿尔斯兰|registration_change|2021-02-24|1"
+      "2020-2021|domestic|zhejiang_guangsha|许钟豪|free_agent_claim|2021-02-25|112": "2020-2021|domestic|zhejiang_guangsha|许钟豪|registration_change|2021-02-25|1"
