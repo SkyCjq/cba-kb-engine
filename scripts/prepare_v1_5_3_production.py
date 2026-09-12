@@ -16,6 +16,7 @@ sys.path.insert(1, str(ROOT))
 
 from cba_kb.common import atomic, digest, read, save
 from cba_kb.drive import Drive
+from cba_kb.instance import load_instance, require_mapping
 from cba_kb.release import fingerprint, snapshot
 from scripts import prepare_v1_5_1 as base
 from scripts import prepare_v1_5_2 as prior
@@ -59,10 +60,10 @@ RECONCILIATION_CONTROLS = {
 }
 QA_SIGNAL_COUNT = 6
 QA_WARNING_COUNT = 329
-VERSION_DOC_ID = '1ZebJR9YPKX37cMDdz0xznHDa45at_q65'
-VERSION_DOC_PARENT = '1emuFQE0-sKDreyJ9tARuGeeFME-kzGyy'
+VERSION_DOC_ID = None
+VERSION_DOC_PARENT = None
 VERSION_DOC_LOGICAL_KEY = 'ai/CBA-KB_v1.5.3.md'
-DRIVE_MAP_ID = '1wi_Oyp5DhJBEDiJoWdbMaX9ABoysdzRf'
+DRIVE_MAP_ID = None
 VERSION_DOC_BASE_SHA256 = (
     'dde6aaa043ecf07e8321103622303d92e248a820f3d479f0f8c77de2ad70db81'
 )
@@ -74,12 +75,36 @@ AI_ARTIFACTS = {
     'v1.5.3-event-schema.json',
     'v1.5.3-phase0-freeze.json',
 }
-MIME_OVERRIDES = {
-    '1OwjOa26nrMqmyzA5ZUoVURN2buBhdIOE': 'text/x-python-script',
-    '1Qhga1BIcF_H1Ra4HCx0OX87GT7Z7qPwX': 'application/json',
-    '1aefDZ5WNQiLoGR1p-bO-sJR9Y5Iuous9': 'text/x-python-script',
-    '1xIcqerya95H5KzXxbLWYYkWMYf3CyrY-': 'text/x-python-script',
-}
+MIME_OVERRIDES = {}
+ACTIVE_INSTANCE = None
+
+
+def configure_private_instance(instance):
+    global ACTIVE_INSTANCE, VERSION_DOC_ID, VERSION_DOC_PARENT, DRIVE_MAP_ID, MIME_OVERRIDES
+    private = instance.read_json('import_inventory.json')
+    legacy = require_mapping(
+        private.get('legacy_v1_5_3'),
+        ('version_doc_id', 'version_doc_parent', 'drive_map_id', 'mime_overrides'),
+        label='import_inventory.legacy_v1_5_3',
+    )
+    parents = require_mapping(
+        private.get('parents'), ('root', 'ai', 'scripts', 'config', 'archive', 'data'),
+        label='import_inventory.parents',
+    )
+    if not isinstance(legacy['mime_overrides'], dict):
+        raise RuntimeError('PRIVATE_MIME_OVERRIDES_REQUIRED')
+    ACTIVE_INSTANCE = instance
+    VERSION_DOC_ID = legacy['version_doc_id']
+    VERSION_DOC_PARENT = legacy['version_doc_parent']
+    DRIVE_MAP_ID = legacy['drive_map_id']
+    MIME_OVERRIDES = legacy['mime_overrides']
+    for name, key in (('ROOT', 'root'), ('AI', 'ai'), ('SCRIPTS', 'scripts'),
+                      ('CONFIG', 'config'), ('ARCHIVE', 'archive'), ('DATA', 'data')):
+        if hasattr(base, name):
+            setattr(base, name, parents[key])
+    for entries in base.EXTRAS.values():
+        for entry in entries:
+            entry['parent'] = parents['archive'] if entry['logical_key'].startswith('report/') else parents['ai']
 
 base.PRODUCTS = base.PRODUCTS + (DOMAIN_PRODUCT,)
 base.EXTRAS = {
@@ -188,7 +213,7 @@ def reserve(root):
     allocation['definitions'].append(definition)
     save(area / 'allocation.json', allocation)
 
-    policy = read(root / 'config/production.json')
+    policy = ACTIVE_INSTANCE.read_json('production.json')
     policy['targets'][VERSION_DOC_ID] = {
         key: definition[key]
         for key in (
@@ -199,7 +224,7 @@ def reserve(root):
             'publish_parent',
         )
     }
-    save(root / 'config/production.json', policy)
+    save(ACTIVE_INSTANCE.config_path('production.json'), policy)
     print(json.dumps({
         'status': 'RESERVED',
         'release': RELEASE,
@@ -376,8 +401,8 @@ interchangeable and must not be added as independent people.
 
 ## Source and registry records
 
-- Domestic merged source: `1dOvVJBVahuyq0L2fI4WRhRy7QJOxdOUR`.
-- Foreign merged source: `1eGrMDep9YMfPNy66M6-6Jwm9iYaF_gQj`.
+- Domestic merged source: resolved from the Private Instance registry.
+- Foreign merged source: resolved from the Private Instance registry.
 - Registry rows added: {json.dumps(added, ensure_ascii=False)}.
 - Registry statuses applied: {json.dumps(applied, ensure_ascii=False)}.
 - Candidate validation: `{validation['status']}`.
@@ -464,7 +489,7 @@ def freeze(root, staging_runs):
         raise RuntimeError('Clean committed tree required')
     commit = git('rev-parse', 'HEAD')
     validation, _, reconciliation, qa = validate_candidate()
-    drive = Drive(root)
+    drive = Drive(root, ACTIVE_INSTANCE)
     area = root / 'workspace/production' / RELEASE
     allocation = read(area / 'allocation.json')
     definitions = allocation['definitions']
@@ -472,7 +497,7 @@ def freeze(root, staging_runs):
         if item['id'] in MIME_OVERRIDES:
             item['mime'] = MIME_OVERRIDES[item['id']]
     save(area / 'allocation.json', allocation)
-    policy = read(root / 'config/production.json')
+    policy = ACTIVE_INSTANCE.read_json('production.json')
     if {item['id'] for item in definitions} != set(policy['targets']):
         raise RuntimeError('Production policy does not match the allocation target set')
     for item in definitions:
@@ -486,7 +511,7 @@ def freeze(root, staging_runs):
         item.get('appProperties', {}).get('cba_key'): item['id']
         for item in drive.list(allocation['staging_id'])
     }
-    for name, item in read(root / 'config/runtime.json')['inputs'].items():
+    for name, item in ACTIVE_INSTANCE.read_json('runtime.json')['inputs'].items():
         content, _ = snapshot(drive, item['id'])
         atomic(inputs / name, content)
         raw[name] = content
@@ -504,9 +529,9 @@ def freeze(root, staging_runs):
                 'sha256': digest(frozen_content),
                 'meta': fingerprint(frozen_meta),
             })
-    registry, added = prior.merged_registry(root, raw['source_registry.csv'])
+    registry, added = prior.merged_registry(ACTIVE_INSTANCE.root, raw['source_registry.csv'])
     registry, applied = base.apply_status(
-        registry, root / 'config/v1.5.2_registry_status.json'
+        registry, ACTIVE_INSTANCE.config_path('v1.5.2_registry_status.json')
     )
     _, baseline = base.inspect(inputs / 'MASTER.xlsx')
     candidate = area / 'candidate'
@@ -752,7 +777,7 @@ def freeze(root, staging_runs):
 
 def refresh_dependencies(root):
     """Re-pin immutable dependency metadata after uploads settle."""
-    drive = Drive(root)
+    drive = Drive(root, ACTIVE_INSTANCE)
     area = root / 'workspace/production' / RELEASE
     dependencies = read(area / 'dependencies.json')
     refreshed = []
@@ -776,7 +801,7 @@ def patch_document(root, output, release_id):
     """Build a one-document correction release after the v1.5.3 switch."""
     if release_id == RELEASE:
         raise RuntimeError('Patch document requires a new release id')
-    drive = Drive(root)
+    drive = Drive(root, ACTIVE_INSTANCE)
     allocation = read(root / 'workspace/production' / RELEASE / 'allocation.json')
     status_id = allocation['status_id']
     status = json.loads(drive.get(status_id))
@@ -827,6 +852,7 @@ def main():
         choices=['reserve', 'freeze', 'refresh-dependencies', 'patch-document'],
     )
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--instance-root', type=Path, required=True)
     parser.add_argument('--release-id', default='v1.5.3-2')
     parser.add_argument(
         '--staging',
@@ -838,6 +864,7 @@ def main():
     )
     arguments = parser.parse_args()
     root = Path.cwd()
+    configure_private_instance(load_instance(root, arguments.instance_root))
     if arguments.step == 'reserve':
         reserve(root)
     elif arguments.step == 'refresh-dependencies':

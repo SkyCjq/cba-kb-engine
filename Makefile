@@ -1,10 +1,11 @@
 PYTHON ?= .venv/bin/python
 export PYTHONPATH := src:legacy
-.PHONY: doctor auth test validate build pull extract facts domain verify-v1.5.2 sync-v1.5.2 prepare-v1.5.2 reconcile-v1.5.3 prepare-v1.5.3 prepare-v1.5.3-production accept registry plan publish verify restore sync
+INSTANCE_ARG = $(if $(INSTANCE_ROOT),--instance-root "$(INSTANCE_ROOT)",)
+.PHONY: doctor auth test validate build pull extract facts domain watch verify-v1.5.2 sync-v1.5.2 prepare-v1.5.2 reconcile-v1.5.3 prepare-v1.5.3 prepare-v1.5.3-production accept registry plan publish verify restore sync
 doctor:
-	$(PYTHON) -m cba_kb.cli doctor
+	$(PYTHON) -m cba_kb.cli $(INSTANCE_ARG) doctor
 auth:
-	$(PYTHON) -m cba_kb.cli auth
+	$(PYTHON) -m cba_kb.cli $(INSTANCE_ARG) auth
 test:
 	$(PYTHON) -m pytest -q
 validate:
@@ -12,13 +13,15 @@ validate:
 build:
 	$(PYTHON) -m cba_kb.cli build --master "$(MASTER)" --output "$(OUTPUT)" --release-id "$(RELEASE_ID)"
 pull:
-	$(PYTHON) -m cba_kb.cli pull --output "$(OUTPUT)"
+	$(PYTHON) -m cba_kb.cli $(INSTANCE_ARG) pull --output "$(OUTPUT)"
 extract:
 	$(PYTHON) -m cba_kb.cli extract $(ARGS)
 facts:
 	$(PYTHON) -m cba_kb.cli facts $(ARGS)
 domain:
 	$(PYTHON) -m cba_kb.cli domain $(ARGS)
+watch:
+	$(PYTHON) -m cba_kb.cli $(INSTANCE_ARG) watch $(ARGS)
 verify-v1.5.2:
 	$(PYTHON) scripts/verify_v1_5_2_sources.py $(ARGS)
 sync-v1.5.2:
@@ -36,13 +39,13 @@ accept:
 registry:
 	$(PYTHON) scripts/propose_source_registry.py $(ARGS)
 plan:
-	$(PYTHON) -m cba_kb.cli plan $(ARGS)
+	$(PYTHON) -m cba_kb.cli $(INSTANCE_ARG) plan $(ARGS)
 publish:
-	$(PYTHON) -m cba_kb.cli publish $(ARGS)
+	$(PYTHON) -m cba_kb.cli $(INSTANCE_ARG) publish $(ARGS)
 verify:
-	$(PYTHON) -m cba_kb.cli verify $(ARGS)
+	$(PYTHON) -m cba_kb.cli $(INSTANCE_ARG) verify $(ARGS)
 restore:
-	$(PYTHON) -m cba_kb.cli restore $(ARGS)
+	$(PYTHON) -m cba_kb.cli $(INSTANCE_ARG) restore $(ARGS)
 sync:
 	@echo 'Legacy sync is disabled. Use pull, validate, build, plan, publish, verify.'
 	@exit 1

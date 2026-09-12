@@ -1,11 +1,11 @@
 {
-  "deployment_root": "/Users/skychengneo/Agent/CBA_kb",
+  "schema_version": 1,
+  "visibility": "public_safe_default",
   "github_repository": "SkyCjq/cba-kb-engine",
+  "instance_root_env": "CBA_KB_INSTANCE_ROOT",
+  "private_config_required": true,
   "production_enabled": false,
-  "sandbox_folder_id": "1AgKJdSLPun7B6YsYC96w8Nlky7U1XZSq",
-  "inputs": {
-    "MASTER.xlsx": {"id": "1Nb4-4rrySjKW7GSA_PLh1SCkPgW9kJtc", "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
-    "source_registry.csv": {"id": "106NV6lV4mPLNjohMcSLdOyPRct0uOUsx", "mime": "text/csv"},
-    "manifest.csv": {"id": "1OsaC9ZQRC8pljd6VRMtub2YOVIv1QYKl", "mime": "text/csv"}
-  }
+  "sandbox_folder_id": null,
+  "inputs": {},
+  "note": "Real runtime targets belong in Private Instance config/runtime.json."
 }

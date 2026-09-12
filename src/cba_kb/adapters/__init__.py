@@ -3,10 +3,17 @@
 Adapters never write to Drive and never touch production data. Each adapter
 reads one registered source and returns grain-separated records plus a QA report.
 """
-from . import foreign_image, foreign_xlsx, midseason_md
+from . import cba_registration, foreign_image, foreign_xlsx, midseason_md
 
 ADAPTERS = {'midseason_md': midseason_md, 'foreign_xlsx': foreign_xlsx,
             'foreign_image': foreign_image}
+WATCHER_ADAPTERS = {'cba_registration': cba_registration}
+
+
+def watcher_adapter_for(name):
+    if name not in WATCHER_ADAPTERS:
+        raise ValueError(f'Unknown watcher adapter {name!r}')
+    return WATCHER_ADAPTERS[name]
 
 
 def adapter_for(name=None, path=None):

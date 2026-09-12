@@ -1,114 +1,37 @@
-[
-  {
-    "name": "test_process_inbox_v1_1.py",
-    "id": "140CE6gIUzl9QJIRClAdUZMrG93cxbCdF",
-    "size": 5011,
-    "mime": "text/x-python",
-    "sha256": "9f4d9cdb771b20c2cdaca83e1b8eb1af7145fa4cd6ededb2bfe47581bffa04e7"
-  },
-  {
-    "name": "Makefile",
-    "id": "1DSBbzvhHHKDmMQhdVOREbbpuQaUn_P5_",
-    "size": 1966,
-    "mime": "text/plain",
-    "sha256": "d46061d0caa463e7a821e3e06b024d38ea9e58722d65608ba56a288019701236"
-  },
-  {
-    "name": "build_bundles.py",
-    "id": "1p4tBICPi_RzpzEApw959VjtX29IwoYp5",
-    "size": 11385,
-    "mime": "text/x-python",
-    "sha256": "a05ae8306f0890cb65dd29acb2ba62a11161909f9f9dbc8e8f078e9704071005"
-  },
-  {
-    "name": "process_inbox.py",
-    "id": "16DzFRDlYGVI0VH51kuexjiNdyCt7Uj8-",
-    "size": 36032,
-    "mime": "text/x-python",
-    "sha256": "8284640af41770f96d7b4b73d8f018faacb8c962c1d0db5f3a1df2392a60cca9"
-  },
-  {
-    "name": "test_fetch_cba_parser.py",
-    "id": "1K5Ypi7aK2RQmOjcatKK9oFigIrCe_8iO",
-    "size": 1448,
-    "mime": "text/x-python",
-    "sha256": "367d636f6a51643ec9ce830d210b1b2b5ca0fbc9160405c505a2e2b4578b83a8"
-  },
-  {
-    "name": "fixture_6a97f61ed5_20260908T114135Z.json",
-    "id": "1u0p3knckyxcfkimrVKGPftmVIp8Zj3Nk",
-    "size": 21821,
-    "mime": "application/json",
-    "sha256": "7549f01299eb8640f3271fc1c4cd777aa3ccdf46c45e810e136d89739fdc2fdb"
-  },
-  {
-    "name": "audit_pdf_text_layers.py",
-    "id": "1_ez729CzjKckkzvn4Im3QIviW1KNyWG6",
-    "size": 2714,
-    "mime": "text/x-python",
-    "sha256": "34e5b4a41ac108903ff4ca5860cbfaeb5464ceeeb7f5655db1dde061f471d723"
-  },
-  {
-    "name": "fetch_cba.py",
-    "id": "1ofG_36BzvElRXLnCKaRuFWRsN0U0jxZK",
-    "size": 14601,
-    "mime": "text/x-python",
-    "sha256": "9e10638336fe47678ac70cd31d62b4818a375836b1e5e62ee4d19c2382a7956b"
-  },
-  {
-    "name": "upload_drive.py",
-    "id": "1fBDkv461HBY6kmXDH9xqQu-5G7fWpX5J",
-    "size": 11093,
-    "mime": "text/x-python",
-    "sha256": "95ea710b4736e20fb2b8e0f06faad396e0449bbb033b4a9080fa3aaa8ebf7051"
-  },
-  {
-    "name": "MASTER.xlsx",
-    "id": "1Nb4-4rrySjKW7GSA_PLh1SCkPgW9kJtc",
-    "size": 314762,
-    "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "sha256": "75a937bbb0f7696ba966b56aaafc4cc4d34b8e7751e9fb4a6995be44354a8aa7"
-  },
-  {
-    "name": "ingest_wechat.py",
-    "id": "1tHLvjfLj-GxWQ06erqodnJZ5Bmc3HTfy",
-    "size": 5213,
-    "mime": "text/x-python",
-    "sha256": "7505dfb2583ce20fc0a9fed27ae308af3aca809f8b5259d178dd69a45dcca083"
-  },
-  {
-    "name": "classify_notes.py",
-    "id": "1tgScOrJ082eHeoA0ysFrKihlc3UC5-2_",
-    "size": 7966,
-    "mime": "text/x-python",
-    "sha256": "15c0560e69ff767a207198e0bee45ca79c33619cc986616ed1a4d59e9693624b"
-  },
-  {
-    "name": "drive_map.yaml",
-    "id": "1wi_Oyp5DhJBEDiJoWdbMaX9ABoysdzRf",
-    "size": 1772,
-    "mime": "text/yaml",
-    "sha256": "7b0a7471c49009ff2f7a51ac0d45c96d273c26dcb81b57974128297f7d2ab229"
-  },
-  {
-    "name": "taxonomy.yaml",
-    "id": "1O6OpkSS8Ckuz4O5M9BR2dPbhbr3p6rwy",
-    "size": 1989,
-    "mime": "text/plain",
-    "sha256": "b2232a8cb2b9dd0f9e4c7b0452ddf84fb9852c25f7ef7f2b0291ca8cf5463e16"
-  },
-  {
-    "name": "source_registry.csv",
-    "id": "106NV6lV4mPLNjohMcSLdOyPRct0uOUsx",
-    "size": 49693,
-    "mime": "text/csv",
-    "sha256": "e8f9e568452cd0d34555a8800ba6154766d6702b962561e9ccf2b60b4854ffe6"
-  },
-  {
-    "name": "manifest.csv",
-    "id": "1OsaC9ZQRC8pljd6VRMtub2YOVIv1QYKl",
-    "size": 10873,
-    "mime": "text/csv",
-    "sha256": "f509074b64f1c50761256d65709d0455a58695ee9b1de5da3fe173e3978234d9"
+{
+  "schema_version": 1,
+  "visibility": "public_safe_example",
+  "description": "Real Drive IDs, target parents, hashes, and inventory rows belong in Private Instance config/import_inventory.json.",
+  "required_private_shape": {
+    "parents": {
+      "root": "<DRIVE_FOLDER_ID>",
+      "ai": "<DRIVE_FOLDER_ID>",
+      "scripts": "<DRIVE_FOLDER_ID>",
+      "config": "<DRIVE_FOLDER_ID>",
+      "archive": "<DRIVE_FOLDER_ID>",
+      "data": "<DRIVE_FOLDER_ID>"
+    },
+    "existing_docs": {
+      "INDEX.md": "<DRIVE_FILE_ID>"
+    },
+    "controls": {
+      "drive_map": "<DRIVE_FILE_ID>",
+      "entry_readme": "<DRIVE_FILE_ID>",
+      "entry_context": "<DRIVE_FILE_ID>",
+      "entry_crossseason": "<DRIVE_FILE_ID>"
+    },
+    "legacy_v1_5_3": {
+      "version_doc_id": "<DRIVE_FILE_ID>",
+      "version_doc_parent": "<DRIVE_FOLDER_ID>",
+      "drive_map_id": "<DRIVE_FILE_ID>",
+      "mime_overrides": {}
+    },
+    "artifacts": [
+      {
+        "name": "Makefile",
+        "id": "<DRIVE_FILE_ID>",
+        "mime": "text/plain"
+      }
+    ]
   }
-]
+}

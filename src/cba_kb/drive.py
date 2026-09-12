@@ -10,20 +10,23 @@ SCOPES = ['https://www.googleapis.com/auth/drive']
 FIELDS = 'id,name,mimeType,parents,version,modifiedTime,headRevisionId,md5Checksum,size,webViewLink'
 
 
-def credentials(root, interactive=False):
+def credentials(root, interactive=False, credentials_store=None):
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
     from .oauth import authorize
-    directory = Path(root)/'.credentials'
+    if credentials_store is None:
+        from .instance import load_instance
+        credentials_store = load_instance(root).credentials_store
+    directory = Path(credentials_store).resolve()
     client, token = directory/'credentials.json', directory/'token.json'
     creds = Credentials.from_authorized_user_file(str(token)) if token.exists() else None
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
     if not creds or not creds.valid or not creds.has_scopes(SCOPES):
         if not interactive:
-            raise RuntimeError('Drive authorization missing; run make auth after adding .credentials/credentials.json')
+            raise RuntimeError('Drive authorization missing from Private Instance; run make auth')
         if not client.exists():
-            raise RuntimeError('Desktop OAuth client JSON missing: .credentials/credentials.json')
+            raise RuntimeError('Desktop OAuth client JSON missing from Private Instance credentials store')
         if 'installed' not in json.loads(client.read_text()):
             raise ValueError('Expected Desktop OAuth client (installed)')
         creds = authorize(client, SCOPES)
@@ -34,9 +37,9 @@ def credentials(root, interactive=False):
 
 
 class Drive:
-    def __init__(self, root):
+    def __init__(self, root, instance=None):
         from googleapiclient.discovery import build
-        creds=credentials(root)
+        creds=credentials(root, credentials_store=instance.credentials_store if instance else None)
         self.api = build('drive','v3',credentials=creds,cache_discovery=False)
         from .native import NativeDocs
         self.docs=NativeDocs(build('docs','v1',credentials=creds,cache_discovery=False))

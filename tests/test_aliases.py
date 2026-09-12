@@ -40,6 +40,12 @@ def test_unknown_name_fails_closed_or_is_reported():
     assert lenient.report()['unresolved'] == [{'name': '中央陆军', 'season': '2024-2025'}]
 
 
+def test_jilin_source_aliases_resolve_to_one_canonical_team():
+    clubs = Clubs(ROOT)
+    assert clubs.resolve('吉林东北虎', '2025-2026') == 'jilin_jiutai'
+    assert clubs.resolve('吉林九台农商行', '2025-2026') == 'jilin_jiutai'
+
+
 def test_whitespace_and_width_normalization():
     clubs = Clubs(ROOT)
     assert clubs.resolve('  宁波町渥\u3000', '2024-2025') == 'ningbo_fubang'

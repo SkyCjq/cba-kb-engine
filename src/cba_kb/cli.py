@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,11 +9,13 @@ from .master import inspect, build
 from .drive import Drive, credentials
 from .release import snapshot, prepare, publish, verify, restore
 from .transport import stage
+from .instance import load_instance
 
 
 def main():
     p=argparse.ArgumentParser(prog='cba-kb')
     p.add_argument('--root',type=Path,default=Path.cwd())
+    p.add_argument('--instance-root',type=Path)
     sub=p.add_subparsers(dest='command',required=True)
     sub.add_parser('auth'); sub.add_parser('doctor')
     for cmd in ('validate','build'):
@@ -44,6 +47,7 @@ def main():
     q.add_argument('--rights-source-id',required=True)
     q.add_argument('--lenient-clubs',action='store_true')
     q=sub.add_parser('catalog');q.add_argument('--candidate',type=Path,required=True);q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('watch');q.add_argument('--output',type=Path,required=True);q.add_argument('--previous-root',type=Path)
     q=sub.add_parser('plan'); q.add_argument('--entries',type=Path,required=True); q.add_argument('--release-id',required=True)
     q.add_argument('--status-id',required=True); q.add_argument('--archive-id',required=True)
     q.add_argument('--dependencies',type=Path);q.add_argument('--environment',choices=['sandbox','production'],default='sandbox')
@@ -53,22 +57,28 @@ def main():
         q=sub.add_parser(cmd); q.add_argument('--release',type=Path,required=True)
         if cmd!='verify':q.add_argument('--single-writer',action='store_true')
     a=p.parse_args(); root=a.root.resolve()
+    def private_instance():
+        return load_instance(root,a.instance_root)
     stage(a.command,'start')
     try:
         if a.command=='auth':
-            credentials(root,interactive=True); result={'authorization':'complete'}
+            instance=private_instance()
+            credentials(root,interactive=True,credentials_store=instance.credentials_store)
+            result={'authorization':'complete'}
         elif a.command=='doctor':
             from . import __version__
-            runtime=read(root/'config/runtime.json') if (root/'config/runtime.json').exists() else {}
-            production=read(root/'config/production.json') if (root/'config/production.json').exists() else {}
+            configured=a.instance_root is not None or bool(os.environ.get('CBA_KB_INSTANCE_ROOT'))
+            instance=private_instance() if configured else None
+            runtime=instance.read_json('runtime.json') if instance else {}
+            production=instance.read_json('production.json') if instance else {}
             result={'engine_version':__version__,'python':__import__('sys').version.split()[0], 'root':str(root),
-                    'deployment_root':runtime.get('deployment_root'),
-                    'oauth_client_present':(root/'.credentials/credentials.json').exists(),
-                    'oauth_token_present':(root/'.credentials/token.json').exists(),
+                    'instance_configured':instance is not None,
+                    'oauth_client_present':bool(instance and (instance.credentials_store/'credentials.json').exists()),
+                    'oauth_token_present':bool(instance and (instance.credentials_store/'token.json').exists()),
                     'production_enabled':production.get('enabled') is True,
                     'sandbox_folder_id':runtime.get('sandbox_folder_id'),
                     'fact_products':['MASTER.xlsx','CBA_外籍球员注册_SNAPSHOTS.xlsx','CBA_球员注册_EVENTS.xlsx'],
-                    'note':'Production target allowlist is enforced from config/production.json.'
+                    'note':'Production target allowlist is enforced from Private Instance config/production.json.'
                         if production.get('enabled') is True else
                         'Production writes stay disabled until config/production.json is enabled for the complete approved target set.'}
         elif a.command=='validate':
@@ -81,7 +91,7 @@ def main():
                 a.generated_at or datetime.now(timezone.utc).isoformat())
         elif a.command=='pull':
             if a.output.exists():raise ValueError('Choose new output directory; inputs are immutable')
-            drive=Drive(root); mapping=read(root/'config/runtime.json'); result={}
+            instance=private_instance();drive=Drive(root,instance);mapping=instance.read_json('runtime.json');result={}
             a.output.mkdir(parents=True)
             for name,item in mapping['inputs'].items():
                 data,meta=snapshot(drive,item['id'])
@@ -91,9 +101,13 @@ def main():
                 save(a.output/'snapshot.json',result)
         elif a.command=='catalog':
             from .catalog import catalog
-            artifacts=catalog(root,a.candidate,a.output)
+            artifacts=catalog(root,a.candidate,a.output,private_instance())
             result={'artifacts':len(artifacts),'unassigned_ids':sum(not e['id'] for e in artifacts),
                     'catalog':str(a.output/'artifact_catalog.json')}
+        elif a.command=='watch':
+            from .source_watcher import run_planned
+            instance=private_instance()
+            result=run_planned(instance,a.output,previous_root=a.previous_root)
         elif a.command=='extract':
             from . import facts as definitions
             from .adapters import adapter_for
@@ -174,10 +188,10 @@ def main():
                 raise ValueError('Release entries must be a nonempty list of objects')
             for entry in entries:
                 clean(Path(entry['path']).read_bytes(),entry['name'])
-            drive=Drive(root)
+            instance=private_instance();drive=Drive(root,instance)
             from .gates import authorize_plan
             request={'entries':entries,'status_id':a.status_id,'archive_id':a.archive_id,'dependencies':dependencies}
-            authorize_plan(drive,root,request,a.environment)
+            authorize_plan(drive,root,request,a.environment,instance)
             result=prepare(
                 drive,
                 root/'workspace/outbox'/a.release_id,
@@ -191,10 +205,10 @@ def main():
                 environment=a.environment,
             )
         else:
-            drive=Drive(root)
+            instance=private_instance();drive=Drive(root,instance)
             plan=read(a.release/'plan.json')
             from .gates import authorize_plan
-            authorize_plan(drive,root,plan,plan.get('environment','sandbox'))
+            authorize_plan(drive,root,plan,plan.get('environment','sandbox'),instance)
             fn={'publish':publish,'verify':verify,'restore':restore}[a.command]
             result=fn(drive,a.release,**({'single_writer':a.single_writer} if a.command!='verify' else {}))
         stage(a.command,'done')

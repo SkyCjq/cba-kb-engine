@@ -1,6 +1,14 @@
 # 本地授权准备
 
-部署目录：`/Users/skychengneo/Agent/CBA_kb`。
+Engine 与 Private Instance 必须位于不同目录。以下命令用变量表示两者：
+
+```sh
+export ENGINE_ROOT="<ENGINE_REPOSITORY_ROOT>"
+export INSTANCE_ROOT="<PRIVATE_INSTANCE_ROOT>"
+```
+
+Private Instance 至少包含 `config/`、`.credentials/`、`fixtures/real/` 和 `data/`；
+这些目录及其真实 ID、真实 fixture、凭据和人工修正不得提交到 Engine repository。
 
 ## Google Drive OAuth
 
@@ -9,11 +17,11 @@
 3. Google Auth platform → Branding 配置应用名称、支持邮箱和联系邮箱。
 4. 个人 Google 账号的 Audience 选 External；Testing 阶段把拥有项目 Drive 文件夹的账号加入 Test users。
 5. Clients → Create client → Desktop app，命名 CBA-KB Local，下载客户端 JSON。
-6. 把 JSON 保存为 `/Users/skychengneo/Agent/CBA_kb/.credentials/credentials.json`。不要提交 Git 或上传 Drive。
-7. 在项目目录运行 `make auth`，在浏览器选择拥有该 Drive 知识库的账号并授权。
-8. 运行 `make pull OUTPUT=workspace/inputs/first-oauth-pull`，核对下载与 bootstrap 基线。
+6. 把 JSON 保存为 `$INSTANCE_ROOT/.credentials/credentials.json`。不要提交 Git 或上传 Drive。
+7. 在 Engine 目录运行 `make auth INSTANCE_ROOT="$INSTANCE_ROOT"`，在浏览器选择拥有该 Drive 知识库的账号并授权。
+8. 运行 `make pull INSTANCE_ROOT="$INSTANCE_ROOT" OUTPUT=workspace/inputs/first-oauth-pull`，核对下载与 bootstrap 基线。
 
-程序把 token 保存在 `.credentials/token.json`，目录权限 700、token 权限 600。Drive Connector 登录不能替代这一步。
+程序把 token 保存在 `$INSTANCE_ROOT/.credentials/token.json`，目录权限 700、token 权限 600。Drive Connector 登录不能替代这一步。
 本地程序需访问现有项目文件，因此使用 Drive scope；授权覆盖面大于单个文件，程序通过稳定 ID 和沙盒门禁限制写入。
 Testing 状态下授权可能需要重新进行；长期运行前应检查 OAuth 发布状态与 Google 的 token 生命周期要求。不要把一次授权描述为永久有效。
 

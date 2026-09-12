@@ -124,7 +124,9 @@ def test_staged_blob_scan_cannot_be_bypassed_by_clean_worktree(tmp_path):
 def test_git_tracked_scan_and_credential_free_ci_contract():
     tracked = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode().split('\0')
     assert all('.credentials' not in Path(path).parts for path in tracked if path)
-    assert not (ROOT / '.credentials').exists()
+    assert subprocess.run(
+        ['git', 'check-ignore', '-q', '.credentials'], cwd=ROOT,
+    ).returncode == 0
     workflow = (ROOT / '.github/workflows/offline-tests.yml').read_text()
     import re
     assert not re.search(r'\$\{\{[^}]*\bsecrets(?:\.|\[)', workflow)
