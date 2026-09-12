@@ -171,8 +171,107 @@ def verified_local(root, entry, key):
     return data
 
 
+def archive_namespace(plan):
+    """Production children are isolated by the frozen execution SHA."""
+    import json
+    import re
+    code_commit = (plan.get('closure') or {}).get('code_commit') or plan.get('code_commit')
+    if code_commit is not None:
+        if not isinstance(code_commit, str) or not re.fullmatch('[0-9a-f]{40}', code_commit):
+            raise ValueError('ARCHIVE_CODE_COMMIT_REQUIRED')
+        return code_commit
+    if plan.get('environment') == 'production':
+        raise ValueError('ARCHIVE_CODE_COMMIT_REQUIRED')
+    # Legacy sandbox plans have no execution SHA; isolate them by frozen plan bytes.
+    return 'plan-' + digest(json.dumps(plan, sort_keys=True).encode())
+
+
+def require_archive_status_unchanged(drive, plan):
+    before = fingerprint(drive.meta(plan['status_id']))
+    content = drive.get(plan['status_id'])
+    after = fingerprint(drive.meta(plan['status_id']))
+    if (digest(content) != plan['status_before_hash']
+            or before != plan['status_before_meta'] or after != before):
+        raise RuntimeError('ARCHIVE_RESUME_PRODUCTION_DRIFT')
+
+
+def validate_previous_snapshot(plan, previous):
+    """Require exactly one verified rollback reference per target/protected object."""
+    expected = {e['id']: e['before_hash'] for e in plan['entries']}
+    if len(expected) != len(plan['entries']):
+        raise RuntimeError('PREVIOUS_SNAPSHOT_INCOMPLETE')
+    for item in (plan.get('closure') or {}).get('protected', []):
+        expected.setdefault(item['id'], item['sha256'])
+    if not isinstance(previous, list) or len(previous) != len(expected):
+        raise RuntimeError('PREVIOUS_SNAPSHOT_INCOMPLETE')
+    seen = set()
+    for item in previous:
+        if not isinstance(item, dict):
+            raise RuntimeError('PREVIOUS_SNAPSHOT_INCOMPLETE')
+        fid = item.get('original_id')
+        if (fid not in expected or fid in seen or not item.get('snapshot_id')
+                or item.get('sha256') != expected[fid]
+                or item.get('hash_scope') not in ('managed_prefix', 'bytes')):
+            raise RuntimeError('PREVIOUS_SNAPSHOT_INCOMPLETE')
+        seen.add(fid)
+
+
+def archive_snapshot(drive, root, plan):
+    namespace = archive_namespace(plan)
+    folder = drive.ensure(plan['archive_id'], plan['release_id'], plan['release_id'], FOLDER)
+    index = drive.index_cba_keys(folder)
+    previous = []
+    for i, e in enumerate(plan['entries']):
+        native = e.get('mode') == 'managed_doc'
+        native_backup = None
+        if native:
+            scan_native_document(drive, e)
+            native_backup = drive.ensure_copy(
+                folder, f'{namespace}:native-before-{i}', e['id'], f'before_{e["name"]}',
+                index=index,
+            )
+            if digest(drive.get_managed_doc(native_backup)) != e['before_hash']:
+                raise RuntimeError('Immutable native backup differs')
+        for kind in ('before', 'candidate'):
+            data = verified_local(root, e, kind)
+            fid = drive.ensure(
+                folder, f'{namespace}:{kind}-{i}',
+                f'{kind}_{e["name"]}' + ('.txt' if native else ''),
+                'text/plain' if native else e['mime'], data, index=index,
+            )
+            if kind == 'before':
+                previous.append({
+                    'original_id': e['id'], 'snapshot_id': native_backup or fid,
+                    'name': e['name'], 'sha256': e['before_hash'],
+                    'hash_scope': 'managed_prefix' if native else 'bytes',
+                })
+    if plan.get('closure'):
+        snapshotted = {item['original_id'] for item in previous}
+        for i, item in enumerate(plan['closure']['protected']):
+            if item['id'] in snapshotted:
+                continue
+            data = child(root, item['before']).read_bytes()
+            if digest(data) != item['sha256']:
+                raise RuntimeError('Frozen protected snapshot was altered')
+            fid = drive.ensure(folder, f'{namespace}:protected-{i}', f'before_{item["name"]}',
+                               'application/octet-stream', data, index=index)
+            previous.append({'original_id': item['id'], 'snapshot_id': fid,
+                             'name': item['name'], 'sha256': item['sha256'], 'hash_scope': 'bytes'})
+            snapshotted.add(item['id'])
+        status_before = (root/'status.before.json').read_bytes()
+        if digest(status_before) != plan['status_before_hash']:
+            raise RuntimeError('Frozen status snapshot was altered')
+        drive.ensure(folder, f'{namespace}:status-before', 'status.before.json',
+                     'application/json', status_before, index=index)
+    drive.ensure(folder, f'{namespace}:plan', 'plan.json', 'application/json',
+                 (root/'plan.json').read_bytes(), index=index)
+    return previous
+
+
 def set_status(drive, plan, state, previous_snapshot):
     import json
+    if state == 'PUBLISHING':
+        validate_previous_snapshot(plan, previous_snapshot)
     artifacts={
         item['id']:dict(item)
         for item in plan.get('carry_forward_artifacts',[])
@@ -212,6 +311,10 @@ def publish(drive, root, single_writer=False):
         security_preflight(root, plan)
         stage('publish',f'release {plan["release_id"]} journal {journal["state"]}')
         if journal['state'] in ('ROLLED_BACK','ROLLING_BACK'): raise RuntimeError('Create a new plan after rollback')
+        if journal['state'] == 'ARCHIVING':
+            if journal.get('uploaded') != {} or journal.get('inflight') is not None:
+                raise RuntimeError('ARCHIVING_JOURNAL_INVALID')
+            require_archive_status_unchanged(drive, plan)
         check_dependencies(drive,plan)
         for e in plan['entries']:
             verified_local(root,e,'before'); verified_local(root,e,'candidate')
@@ -231,48 +334,30 @@ def publish(drive, root, single_writer=False):
                 if sha!=e['before_hash']: raise RuntimeError('Conflict while resuming')
             if fingerprint(meta)!=e['meta'] or sha!=e['before_hash']:
                 raise RuntimeError('Remote conflict: '+e['name'])
-        if journal['state']=='PREPARED' and fingerprint(drive.meta(plan['status_id']))!=plan['status_before_meta']:
-            raise RuntimeError('Publication status changed')
+        if journal['state']=='PREPARED':
+            require_archive_status_unchanged(drive, plan)
         if plan.get('closure'):
             validate_closure(drive, root, plan, candidate=True)
         stage('publish','preflight passed')
         import json
-        if journal['state']!='PREPARED':
+        if journal['state'] not in ('PREPARED', 'ARCHIVING'):
             status=json.loads(drive.get(plan['status_id']))
             untouched_status=digest(drive.get(plan['status_id']))==plan['status_before_hash']
             if not untouched_status and status.get('pending_release_id')!=plan['release_id'] and status.get('current_release_id')!=plan['release_id']:
                 raise RuntimeError('Another publisher changed the release status')
-        folder=drive.ensure(plan['archive_id'],plan['release_id'],plan['release_id'],FOLDER)
-        previous=[]
-        for i,e in enumerate(plan['entries']):
-            native=e.get('mode')=='managed_doc'
-            native_backup=None
-            if native:
-                scan_native_document(drive, e)
-                native_backup=drive.ensure_copy(folder,f'native-before-{i}',e['id'],f'before_{e["name"]}')
-            for kind in ('before','candidate'):
-                data=verified_local(root,e,kind)
-                fid=drive.ensure(folder,f'{kind}-{i}',f'{kind}_{e["name"]}'+('.txt' if native else ''),'text/plain' if native else e['mime'],data)
-                if kind=='before': previous.append({'original_id':e['id'],'snapshot_id':native_backup or fid,'name':e['name'],
-                    'sha256':e['before_hash'],'hash_scope':'managed_prefix' if native else 'bytes'})
-        if plan.get('closure'):
-            snapshotted = {item['original_id'] for item in previous}
-            for i, item in enumerate(plan['closure']['protected']):
-                if item['id'] in snapshotted:
-                    continue
-                data = child(root, item['before']).read_bytes()
-                fid = drive.ensure(folder, f'protected-{i}', f'before_{item["name"]}',
-                                   'application/octet-stream', data)
-                previous.append({'original_id': item['id'], 'snapshot_id': fid,
-                                 'name': item['name'], 'sha256': item['sha256'], 'hash_scope': 'bytes'})
-            drive.ensure(folder, 'status-before', 'status.before.json',
-                         'application/json', (root/'status.before.json').read_bytes())
-        drive.ensure(folder,'plan','plan.json','application/json',(root/'plan.json').read_bytes())
+        if journal['state'] in ('PREPARED', 'ARCHIVING'):
+            journal.update(state='ARCHIVING', uploaded={}, inflight=None)
+            save(root/'journal.json', journal)
+        previous = archive_snapshot(drive, root, plan)
+        validate_previous_snapshot(plan, previous)
+        # Dependency/status drift during a long archive must not change canonical status.
+        check_dependencies(drive, plan)
+        if journal['state'] == 'ARCHIVING':
+            require_archive_status_unchanged(drive, plan)
         journal['previous_snapshot']=previous
         journal['state']='PUBLISHING'; save(root/'journal.json',journal)
         stage('publish',f'archive snapshot for {len(plan["entries"])} artifacts')
         try:
-            check_dependencies(drive,plan)
             set_status(drive,plan,'PUBLISHING',previous)
             for index,e in enumerate(plan['entries'],1):
                 stage('publish',f'{index}/{len(plan["entries"])} {e["name"]}')

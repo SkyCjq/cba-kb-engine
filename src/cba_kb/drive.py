@@ -54,12 +54,31 @@ class Drive:
             raise ValueError('Not a native Doc')
         return self.docs.put(file_id,content)
 
-    def ensure_copy(self,parent,key,file_id,name):
-        matches=[f for f in self.list(parent) if f.get('appProperties',{}).get('cba_key')==key]
-        if len(matches)>1:raise RuntimeError('Duplicate backup copy')
-        if matches:return matches[0]['id']
-        return self.api.files().copy(fileId=file_id,body={'name':name,'parents':[parent],
+    def index_cba_keys(self, parent):
+        """List all pages once; reject ambiguous identities before any writes."""
+        index = {}
+        for item in self.list(parent):
+            key = item.get('appProperties', {}).get('cba_key')
+            if key is None:
+                continue
+            if key in index:
+                raise RuntimeError('Duplicate release object key')
+            index[key] = item
+        return index
+
+    def ensure_copy(self,parent,key,file_id,name,*,index=None):
+        index = self.index_cba_keys(parent) if index is None else index
+        source_mime = self.meta(file_id)['mimeType']
+        if key in index:
+            existing = self.meta(index[key]['id'])
+            if existing['mimeType'] != source_mime or parent not in existing.get('parents', []):
+                raise RuntimeError('Existing backup copy MIME/parent mismatch')
+            return existing['id']
+        result = self.api.files().copy(fileId=file_id,body={'name':name,'parents':[parent],
             'appProperties':{'cba_key':key}},fields='id',supportsAllDrives=True).execute(num_retries=0)['id']
+        index[key] = {'id': result, 'mimeType': source_mime, 'parents': [parent],
+                      'appProperties': {'cba_key': key}}
+        return result
 
     def meta(self, file_id):
         return retry_read(lambda: self.api.files().get(fileId=file_id,fields=FIELDS,
@@ -101,13 +120,13 @@ class Drive:
             items.extend(result.get('files',[])); page=result.get('nextPageToken')
             if not page: return items
 
-    def ensure(self, parent, key, name, mime, content=None):
+    def ensure(self, parent, key, name, mime, content=None, *, index=None):
         # Recovery after a successful create with a lost response: same key, no blind duplicate.
-        matches=[f for f in self.list(parent) if f.get('appProperties',{}).get('cba_key')==key]
-        if len(matches)>1: raise RuntimeError('Duplicate release object key')
-        if matches:
-            result=matches[0]
-            if result['mimeType']!=mime: raise ValueError('Existing object MIME mismatch')
+        index = self.index_cba_keys(parent) if index is None else index
+        if key in index:
+            result=self.meta(index[key]['id'])
+            if result['mimeType']!=mime or parent not in result.get('parents', []):
+                raise ValueError('Existing object MIME/parent mismatch')
             if content is not None and digest(self.get(result['id']))!=digest(content):
                 raise RuntimeError('Immutable release object differs')
             return result['id']
@@ -115,4 +134,7 @@ class Drive:
         body={'name':name,'parents':[parent],'mimeType':mime,'appProperties':{'cba_key':key}}
         kwargs={'body':body,'fields':'id','supportsAllDrives':True}
         if content is not None: kwargs['media_body']=MediaIoBaseUpload(io.BytesIO(content),mimetype=mime)
-        return self.api.files().create(**kwargs).execute(num_retries=0)['id']
+        result = self.api.files().create(**kwargs).execute(num_retries=0)['id']
+        index[key] = {'id': result, 'mimeType': mime, 'parents': [parent],
+                      'appProperties': {'cba_key': key}}
+        return result

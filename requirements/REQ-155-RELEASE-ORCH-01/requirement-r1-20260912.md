@@ -1,6 +1,6 @@
 # CBA-KB Requirement - REQ-155-RELEASE-ORCH-01
 
-> Revision: `r4-20260912-dependency-binding-recovery`
+> Revision: `r5-20260912-archive-snapshot-recovery`
 > Status: `FROZEN_SPEC`
 > Target release: `v1.5.5-1`
 > Product baseline SHA: `c14a0f2579fcc86e2dc114f0b15d00dd54e9f55e`
@@ -54,6 +54,70 @@ It is not a reusable default.
 Freeze must never substitute runtime input IDs for that allowlist. The
 dependency list must be non-empty, unique, deterministic, completely
 snapshotted, and exactly equal to the policy IDs in the generated plan.
+
+## R5 archive snapshot recovery
+
+Frozen hotfix base: `b618668b9ceb630c44397c91204052736139d303`.
+Only the requirement, task contract, `release.py`, `drive.py`, and
+`tests/test_release.py` are in this revision's implementation allowlist.
+The r4 production dependency authority and existing publish/rollback controls
+remain unchanged.
+
+Recovery1 is preserved as failed-attempt evidence:
+
+```text
+attempt: Recovery1
+plan: SUPERSEDED_ARCHIVE_TIMEOUT
+result: ARCHIVE_TIMEOUT_PRE_CANONICAL_MUTATION
+observed_partial_children: 320
+canonical_mutation: NO
+journal: PREPARED / uploaded={} / inflight=null / previous_snapshot absent
+production: v1.5.4-1 / COMPLETE
+```
+
+Do not directly retry its old plan, restore/rollback, delete, move, overwrite,
+or otherwise mutate its archive objects or the existing 15 reservations.
+
+The new archive attempt must list the complete release folder once, index all
+`cba_key` identities, and reject duplicates. Every successful create/copy updates
+that in-memory index. Reused immutable non-native objects must match MIME and
+content. Writes are single-attempt; a lost response is recovered only by the
+next invocation's fresh index.
+
+Archive child keys use `<frozen_code_commit>:<key>` for `before-N`,
+`candidate-N`, `native-before-N`, `plan`, `protected-N`, and `status-before`.
+The top-level folder identity remains the release ID. Legacy sandbox plans
+without an execution SHA use a deterministic plan-hash namespace.
+
+Before the first remote archive write, persist `ARCHIVING` locally with empty
+`uploaded` and null `inflight`. A timeout leaves this state intact and canonical
+status/targets untouched. Resume requires byte- and metadata-identical frozen
+production status; drift fails with `ARCHIVE_RESUME_PRODUCTION_DRIFT`.
+Check status and dependencies again after archiving. Only a complete, unique
+rollback reference set permits `ARCHIVING -> PUBLISHING` and then canonical
+status mutation. Non-closure Recovery2 requires exactly 186 references for its
+186 entries; closure plans also retain their protected-object references.
+
+Focused acceptance in `tests/test_release.py` covers constant folder-list calls
+at 186-entry scale, timeout and lost-response resume, only-missing creation,
+existing snapshot validation, duplicate keys, preservation of 320 old keys,
+complete previous_snapshot before canonical writes, status/dependency drift,
+closure key namespaces, and existing publish/rollback compatibility.
+
+Implementation performs no production access, real archive writes, reservation,
+publish, restore, or Private Instance policy changes. Fake-transport tests are
+the only publication/recovery executions during this stage. GitHub Actions owns
+full regression.
+
+After Web review and merge, the new merge SHA becomes `release_execution_sha`.
+Reprepare Recovery2 in a fresh local root and mechanically verify topology:
+171 active targets + 15 existing reservations + 0 new reservations = 186.
+Re-freeze code/control metadata and immutable hashes; never reuse Recovery1
+plan hashes. Produce `GO_PACKET_RECOVERY2.json` and `GO_PACKET_RECOVERY2.md`,
+preserving attempt-1 dependency failure, reservation deviation, Recovery1
+timeout, its 320 partial children, and no canonical mutation for both failures.
+Publish is forbidden until `RECOVERY2_WEB_GO = GO`. This implementation stage
+ends at a new PR and `READY_FOR_WEB_REVIEW`, without merge or production work.
 
 ## Project
 
