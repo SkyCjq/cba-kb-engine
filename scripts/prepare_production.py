@@ -14,6 +14,7 @@ import subprocess
 import yaml
 
 from cba_kb.common import atomic, digest, read, save
+from cba_kb.current_state import current_version_document_migration
 from cba_kb.drive import Drive
 from cba_kb.instance import load_instance
 from cba_kb.native import wrap
@@ -29,6 +30,9 @@ RELEASE_SPECS = {
     "v1.6.0-1": {
         "product_baseline_sha": "0b9c6e062616fc8d4349304ea483afdd917ce181",
     },
+    "v1.6.1-1": {
+        "product_baseline_sha": "4fab3d0e8eedc594fae982f12a507fef88958f15",
+    },
 }
 FOLDER = "application/vnd.google-apps.folder"
 FORBIDDEN_CODE_PREFIXES = ("workspace/", ".credentials/", ".venv/")
@@ -37,6 +41,7 @@ CONTROL_KEYS = frozenset({
     "entry/code",
     "entry/README",
     "entry/context",
+    "CURRENT_VERSION_DOC",
     "derived/INDEX.md",
     "input/manifest.csv",
 })
@@ -161,6 +166,8 @@ def project_targets(
 ):
     """Project exact target semantics without any remote mutation."""
     _require_release(release_id)
+    migration = current_version_document_migration(manifest_rows, release_id)
+    manifest_rows = migration["manifest"]
     status_by_id = _status_rows(previous_status, previous_targets)
     logical_by_id = _manifest_rows(manifest_rows)
     if set(status_by_id) - set(logical_by_id):
@@ -287,6 +294,7 @@ def project_targets(
         raise ProjectionError("LOGICAL_KEY_COLLISION")
     projection = {
         "schema_version": 1,
+        "state": "PROJECTED",
         "release_id": release_id,
         "engine_sha": engine_sha,
         "status_id": status_id,
@@ -308,6 +316,10 @@ def project_targets(
         "reserved_policy_target_ids": sorted(reserved_ids),
         "reserved_staging_target_count": len(reserved_ids),
         "release_status_unchanged": True,
+        "control_target_migrations": (
+            [] if migration["report"]["status"] == "NOT_APPLICABLE"
+            else [migration["report"]]
+        ),
         "status_before_hash": status_hash,
         "status_before_meta": status_meta,
         "active_release_id": previous_status.get("current_release_id"),
@@ -323,6 +335,31 @@ def project_targets(
         },
     })
     return projection
+
+
+def reproject_targets(projection, allocation):
+    """Invalidate a pre-reservation projection and bind it to the reservation."""
+    validate_reservation(projection, allocation)
+    result = dict(projection)
+    result.update({
+        "state": "REPROJECTED",
+        "reservation_state": "RESERVED",
+        "reservation_semantic_delta_signature": allocation.get(
+            "semantic_delta_signature",
+        ),
+        "reserved_target_ids": sorted(
+            set((allocation.get("reservations") or {}).values()),
+        ),
+    })
+    return result
+
+
+def validate_manifest_coverage(planned_targets, resolved_targets,
+                               manifest_targets, publish_targets):
+    from cba_kb.release import manifest_coverage
+    return manifest_coverage(
+        planned_targets, resolved_targets, manifest_targets, publish_targets,
+    )
 
 
 def validate_reservation(projection, allocation):
@@ -465,6 +502,7 @@ def reserve_staging(
         })
     allocation = {
         "schema_version": 1,
+        "state": "RESERVED",
         "release_id": release_id,
         "status_id": projection["status_id"],
         "archive_id": projection["archive_id"],
@@ -683,7 +721,10 @@ def _control_candidate(logical_key, previous, projection, allocation,
             for key in sorted(code_hashes)
         )
         return ("\n".join(lines) + "\n").encode()
-    if logical_key in {"entry/README", "entry/context", "derived/INDEX.md"}:
+    if logical_key in {
+        "entry/README", "entry/context", "CURRENT_VERSION_DOC",
+        "derived/INDEX.md",
+    }:
         return _content_preserving_candidate(
             logical_key, previous, projection, allocation, id_by_key,
             engine_root,
@@ -708,6 +749,7 @@ def _content_preserving_candidate(logical_key, previous, projection, allocation,
     title = {
         "entry/README": "CBA-KB 发布入口",
         "entry/context": "CBA-KB 当前状态",
+        "CURRENT_VERSION_DOC": "CBA-KB 当前版本",
         "derived/INDEX.md": "CBA-KB INDEX",
     }[logical_key]
     links = "\n".join(
@@ -780,7 +822,7 @@ def freeze_plan(
         projection["engine_sha"],
         release_spec["product_baseline_sha"],
     )
-    validate_reservation(projection, allocation)
+    projection = reproject_targets(projection, allocation)
     state = validate_release_state(drive, instance, projection, allocation)
     output = Path(output)
     if output.exists():
@@ -843,6 +885,7 @@ def freeze_plan(
     save(output / "rollback_manifest.json", rollback)
     save(output / "verification_manifest.json", verification)
     return {
+        "state": "FROZEN_PLAN",
         "plan": str(outbox / "plan.json"),
         "journal": str(outbox / "journal.json"),
         "entries": len(plan["entries"]),

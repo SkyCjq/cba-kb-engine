@@ -17,6 +17,9 @@ def test_public_engine_config_and_catalog_have_no_real_drive_ids():
         'config/drive_map.yaml', 'config/v1.5.2_registry_proposal.json',
         'config/v1.5.2_registry_status.json', 'docs/import_inventory.json',
         'src/cba_kb/catalog.py', 'src/cba_kb/source_policy.py',
+        'src/cba_kb/consumer_projection.py', 'src/cba_kb/evidence_ledger.py',
+        'src/cba_kb/operational_qualification.py',
+        'config/consumer_golden_questions_v1.yaml',
         'scripts/prepare_production.py', 'scripts/prepare_v1_5_3_production.py',
     ]
     findings = {path: DRIVE_ID.findall((ROOT/path).read_text()) for path in paths}

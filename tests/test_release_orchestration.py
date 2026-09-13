@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from cba_kb.common import digest
-from cba_kb.release import publish
+from cba_kb.release import ReleaseContractError, publish
 from scripts import prepare_production as orchestration
 
 
@@ -140,6 +140,56 @@ def test_projection_binds_exact_release_id_and_fails_closed():
     inputs["release_id"] = "v1.5.5-2"
     with pytest.raises(orchestration.ProjectionError, match="RELEASE_ID_FORBIDDEN"):
         orchestration.project_targets(**inputs)
+
+
+def test_v161_release_spec_and_reprojection_contract():
+    spec = orchestration._release_spec("v1.6.1-1")
+    assert spec["product_baseline_sha"] == (
+        "4fab3d0e8eedc594fae982f12a507fef88958f15"
+    )
+    inputs = projection_inputs()
+    version_id = "1ZebJR9YPKX37cMDdz0xznHDa45at_q65"
+    inputs["previous_targets"][version_id] = {
+        "mime": "text/markdown",
+        "mode": "binary",
+        "allowed_parents": ["ai"],
+        "publish_parent": "ai",
+    }
+    inputs["previous_status"]["artifacts"].append({
+        "id": version_id,
+        "name": "CBA-KB_v1.5.3.md",
+        "sha256": "version-old-sha",
+    })
+    inputs["manifest_rows"] = list(inputs["manifest_rows"]) + [{
+        "drive_file_id": version_id,
+        "uid": "ai/CBA-KB_v1.5.3.md",
+        "content_hash": "version-old-sha",
+    }]
+    inputs["release_id"] = "v1.6.1-1"
+    projected = orchestration.project_targets(**inputs)
+    assert projected["state"] == "PROJECTED"
+    allocation = {
+        "release_id": "v1.6.1-1",
+        "semantic_delta_signature": projected["semantic_delta_signature"],
+        "reservations": {
+            item["logical_key"]: "reserved-" + str(index)
+            for index, item in enumerate(projected["new_targets"])
+        },
+    }
+    reprojected = orchestration.reproject_targets(projected, allocation)
+    assert reprojected["state"] == "REPROJECTED"
+    assert reprojected["reservation_state"] == "RESERVED"
+    assert projected["state"] == "PROJECTED"
+
+
+def test_manifest_coverage_helper_rejects_any_set_drift():
+    orchestration.validate_manifest_coverage(
+        ["a", "b"], ["b", "a"], ["a", "b"], ["b", "a"],
+    )
+    with pytest.raises(ReleaseContractError, match="MANIFEST_COVERAGE"):
+        orchestration.validate_manifest_coverage(
+            ["a"], ["a"], ["a", "b"], ["a"],
+        )
 
 
 def test_v160_release_spec_uses_post_document_lane_baseline():
@@ -734,3 +784,46 @@ def test_freeze_rejects_release_state_drift(tmp_path, monkeypatch):
             release_id=RELEASE, projection=value, allocation=allocation,
             output=tmp_path / "freeze",
         )
+
+
+def test_v161_projection_migrates_version_doc_as_existing_control_target():
+    inputs = projection_inputs()
+    version_id = '1ZebJR9YPKX37cMDdz0xznHDa45at_q65'
+    inputs['previous_targets'][version_id] = {
+        'mime': 'text/markdown',
+        'mode': 'binary',
+        'allowed_parents': ['ai'],
+        'publish_parent': 'ai',
+    }
+    inputs['previous_status']['artifacts'].append({
+        'id': version_id,
+        'name': 'CBA-KB_v1.5.3.md',
+        'sha256': 'version-old-sha',
+    })
+    inputs['manifest_rows'] = list(inputs['manifest_rows']) + [{
+        'drive_file_id': version_id,
+        'uid': 'ai/CBA-KB_v1.5.3.md',
+        'content_hash': 'version-old-sha',
+    }]
+    inputs['release_id'] = 'v1.6.1-1'
+    value = orchestration.project_targets(**inputs)
+    assert value['state'] == 'PROJECTED'
+    assert value['control_target_migrations'] == [{
+        'status': 'MIGRATED',
+        'release_id': 'v1.6.1-1',
+        'logical_key': 'CURRENT_VERSION_DOC',
+        'drive_file_id': version_id,
+        'existing_object_reused': True,
+        'source_logical_key': 'ai/CBA-KB_v1.5.3.md',
+    }]
+    by_key = {item['logical_key']: item for item in value['existing_targets']}
+    assert by_key['CURRENT_VERSION_DOC']['id'] == version_id
+    assert all(item['logical_key'] != 'CURRENT_VERSION_DOC' for item in value['new_targets'])
+    ids = [item['id'] for item in value['existing_targets']]
+    assert len(ids) == len(set(ids))
+    target_keys = {item['logical_key'] for item in value['existing_targets']}
+    target_keys.update(item['logical_key'] for item in value['new_targets'])
+    assert orchestration.validate_manifest_coverage(
+        target_keys, target_keys, target_keys, target_keys,
+    )['missing'] == 0
+    assert [item['status'] for item in value['control_target_migrations']].count('MIGRATED') == 1
