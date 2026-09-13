@@ -228,6 +228,39 @@ def test_v160_content_preserving_candidate_marks_v155_as_historical(tmp_path):
     assert b"navigation-marker" in candidate
 
 
+def test_v161_content_candidate_replaces_native_managed_current_block(tmp_path):
+    from cba_kb.current_state import (
+        read_current_block, render_current_state, target_metadata,
+    )
+    from cba_kb.native import wrap
+
+    registry = canonical_registry()
+    registry["registry_release_id"] = "v1.6.1-1"
+    previous_metadata = target_metadata(
+        "v1.6.1-1", "b" * 40, registry,
+    )
+    previous = wrap(
+        "legacy payload\n" + render_current_state(previous_metadata)
+    ).encode()
+    candidate = orchestration._content_preserving_candidate(
+        "entry/README",
+        previous,
+        {
+            "release_id": "v1.6.1-1",
+            "engine_sha": "a" * 40,
+            "active_release_id": "v1.6.0-1",
+        },
+        {"status_id": "status"},
+        {},
+        tmp_path,
+        registry,
+    )
+    assert read_current_block(candidate.decode()) == target_metadata(
+        "v1.6.1-1", "a" * 40, registry,
+    )
+    assert b"legacy payload" in candidate
+
+
 def test_release_execution_sha_provenance_fails_closed(monkeypatch):
     engine_sha = "b" * 40
 

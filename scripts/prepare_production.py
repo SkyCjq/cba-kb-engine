@@ -16,8 +16,9 @@ import yaml
 from cba_kb.common import atomic, digest, read, save
 from cba_kb.canonical_registry import load_registry
 from cba_kb.current_state import (
-    generate_context_card, current_version_document_migration,
-    replace_current_block, target_metadata,
+    END as CURRENT_STATE_END, generate_context_card,
+    current_version_document_migration, replace_current_block,
+    target_metadata,
 )
 from cba_kb.drive import Drive
 from cba_kb.instance import load_instance
@@ -796,7 +797,10 @@ def _managed_body(data):
         end = text.find("[CBA-KB CURRENT RELEASE END]")
         text = text[start:end if end >= 0 else None]
     history = "以下为迁移前的历史阅读内容；当前回答请以上方发布内容及 MASTER 为准。"
-    return text.replace(history, "").strip()
+    text = text.replace(history, "").strip()
+    if text.endswith(CURRENT_STATE_END.rstrip("\n")):
+        text += "\n"
+    return text
 
 
 def _content_preserving_candidate(logical_key, previous, projection, allocation,
