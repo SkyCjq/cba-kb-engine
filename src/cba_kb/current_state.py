@@ -15,9 +15,13 @@ END = '[CBA-KB CURRENT STATE END]\n'
 CURRENT_VERSION_DOC = 'CURRENT_VERSION_DOC'
 LEGACY_CURRENT_VERSION_DOC_ID = '1ZebJR9YPKX37cMDdz0xznHDa45at_q65'
 CURRENT_VERSION_DOC_MIGRATION_RELEASE = 'v1.6.1-1'
-CURRENT_DOCUMENT_SURFACES = frozenset({
-    'readme', 'index', 'context_card', 'version', 'current_version_doc',
+LEGACY_DOCUMENT_SURFACES = frozenset({
+    'readme', 'index', 'context_card', 'version',
 })
+V161_DOCUMENT_SURFACES = frozenset({
+    'readme', 'index', 'context_card', 'current_version_doc',
+})
+CURRENT_DOCUMENT_SURFACES = V161_DOCUMENT_SURFACES
 TRANSITIONAL = {'PUBLISHING', 'VERIFYING', 'FAILED', 'ROLLING_BACK'}
 NON_CURRENT = {'candidate', 'before', 'rollback', 'staging', 'prechange', 'historical', 'historical-only'}
 HISTORY_NAME = re.compile(r'(?i)(?:^|[_. /-])(candidate|before|rollback|staging|prechange|historical)(?:$|[_. /-])')
@@ -159,9 +163,9 @@ def control_document_identities(status, registry, documents):
         status.get('current_release_id'), commit, registry,
     )
     required = (
-        CURRENT_DOCUMENT_SURFACES
+        V161_DOCUMENT_SURFACES
         if status.get('current_release_id') == 'v1.6.1-1'
-        else {'readme', 'index', 'context_card', 'version'}
+        else LEGACY_DOCUMENT_SURFACES
     )
     if not required <= set(documents):
         raise ValueError('CURRENT_DOCUMENT_MISSING')
@@ -182,9 +186,9 @@ def validate_current_state(status, registry, manifest, documents, counts=None, b
         raise ValueError('CURRENT_STATE_DRIFT')
     metadata = target_metadata(status.get('current_release_id'), commit, registry)
     required = (
-        CURRENT_DOCUMENT_SURFACES
+        V161_DOCUMENT_SURFACES
         if status.get('current_release_id') == 'v1.6.1-1'
-        else {'readme', 'index', 'context_card', 'version'}
+        else LEGACY_DOCUMENT_SURFACES
     )
     if not required <= set(documents):
         raise ValueError('CURRENT_DOCUMENT_MISSING')
@@ -196,7 +200,7 @@ def validate_current_state(status, registry, manifest, documents, counts=None, b
         'status': 'PASS',
         'release_id': metadata['release_id'],
         'code_commit': commit,
-        'surfaces': sorted(['release_status', *CURRENT_DOCUMENT_SURFACES]),
+        'surfaces': sorted({'release_status', *required, *documents}),
     }
 
 

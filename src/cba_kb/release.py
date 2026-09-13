@@ -339,7 +339,7 @@ def prepare(
     ids=[e['id'] for e in entries]
     if len(ids)!=len(set(ids)) or status_id in ids:
         raise ValueError('Duplicate target or status overlaps payload')
-    if release_id.startswith('v1.5.4') and closure is None:
+    if release_id.startswith(('v1.5.4', 'v1.6.1')) and closure is None:
         raise ValueError('CANONICAL_CLOSURE_REQUIRED')
     if environment not in {'sandbox', 'production'}:
         raise ValueError('Unknown release environment')
@@ -765,7 +765,7 @@ def security_preflight(root, plan):
                 path.read_bytes(),
                 labels.get(path.resolve(), str(path.relative_to(root))),
             )
-    if plan['release_id'].startswith('v1.5.4') and not plan.get('closure'):
+    if plan['release_id'].startswith(('v1.5.4', 'v1.6.1')) and not plan.get('closure'):
         raise ValueError('CANONICAL_CLOSURE_REQUIRED')
     if plan.get('environment') == 'production':
         code_commit = (
@@ -815,8 +815,8 @@ def freeze_closure(drive, root, plan):
     entries = {entry.get('logical_key'): entry for entry in plan['entries']}
     document_keys = set(closure['documents'])
     legacy_documents = {'readme', 'index', 'context_card', 'version'}
-    current_documents = legacy_documents | {'current_version_doc'}
-    expected_controls = 7 if document_keys == current_documents else 6
+    current_documents = {'readme', 'index', 'context_card', 'current_version_doc'}
+    expected_controls = 6
     if len(entries) != len(plan['entries']) or None in entries or len(controls) != expected_controls or not controls <= set(entries):
         raise ValueError('CLOSURE_CONTROL_COVERAGE')
     if document_keys not in (legacy_documents, current_documents):

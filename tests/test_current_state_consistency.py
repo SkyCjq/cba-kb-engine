@@ -176,3 +176,36 @@ def test_v161_migration_is_idempotent_and_conflicts_fail_closed():
 def test_non_v161_current_version_lookup_remains_strict():
     with pytest.raises(ValueError, match='CURRENT_VERSION_DOC_MISSING'):
         current_version_document([legacy_version_row()], release_id='v1.6.0-1')
+
+
+def test_v161_current_surface_set_excludes_legacy_version():
+    status, reg, docs = state_documents()
+    status['current_release_id'] = 'v1.6.1-1'
+    reg['registry_release_id'] = 'v1.6.1-1'
+    docs = {
+        key: value.replace('v1.5.4-test', 'v1.6.1-1')
+        for key, value in docs.items()
+        if key != 'version'
+    }
+    result = validate_current_state(status, reg, manifest(), docs)
+    assert result['status'] == 'PASS'
+    assert set(result['surfaces']) == {
+        'release_status', 'readme', 'index', 'context_card',
+        'current_version_doc',
+    }
+
+
+def test_v161_stale_current_version_doc_is_pre_mutation_failure():
+    status, reg, docs = state_documents()
+    status['current_release_id'] = 'v1.6.1-1'
+    reg['registry_release_id'] = 'v1.6.1-1'
+    docs = {
+        key: value.replace('v1.5.4-test', 'v1.6.1-1')
+        for key, value in docs.items()
+        if key != 'version'
+    }
+    docs['current_version_doc'] = docs['current_version_doc'].replace(
+        'v1.6.1-1', 'v1.5.4-1',
+    )
+    with pytest.raises(ValueError, match='DRIFT'):
+        validate_current_state(status, reg, manifest(), docs)
