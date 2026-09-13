@@ -48,10 +48,23 @@ def test_typed_sha_provenance_and_equalities():
     with pytest.raises(ReleaseContractError, match="PROVENANCE_EQUALITY"):
         provenance_dag(drift)
 
-    forbidden = role_values()
-    forbidden["release_merge_sha"] = forbidden["release_execution_sha"]
-    with pytest.raises(ReleaseContractError, match="FORBIDDEN_RELEASE_SHA"):
-        provenance_dag(forbidden)
+    production_drift = role_values()
+    production_drift["production_execution_sha"] = "7" * 40
+    with pytest.raises(ReleaseContractError, match="PROVENANCE_EQUALITY"):
+        provenance_dag(production_drift)
+
+    independent = role_values()
+    assert provenance_dag(independent)["roles"]["release_execution_sha"] != (
+        independent["release_merge_sha"]
+    )
+
+    equal_merge = role_values()
+    equal_merge["release_merge_sha"] = equal_merge["release_execution_sha"]
+    value = provenance_dag(equal_merge)
+    assert value["roles"]["release_execution_sha"] == value["roles"]["release_merge_sha"]
+    assert value["nodes"].index("release_execution_sha") != value["nodes"].index(
+        "release_merge_sha"
+    )
 
 
 def test_release_state_machine_is_explicit_and_monotonic():

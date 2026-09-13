@@ -107,12 +107,6 @@ def provenance_dag(roles):
         if normalized[left] is not None and normalized[right] is not None:
             if normalized[left] != normalized[right]:
                 raise ReleaseContractError('PROVENANCE_EQUALITY_MISMATCH')
-    if (
-        normalized['release_execution_sha'] is not None
-        and normalized['release_merge_sha'] is not None
-        and normalized['release_execution_sha'] == normalized['release_merge_sha']
-    ):
-        raise ReleaseContractError('FORBIDDEN_RELEASE_SHA_EQUALITY')
     return {
         'schema_version': 1,
         'roles': normalized,
