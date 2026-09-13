@@ -142,6 +142,41 @@ def test_projection_binds_exact_release_id_and_fails_closed():
         orchestration.project_targets(**inputs)
 
 
+def test_v160_release_spec_uses_post_document_lane_baseline():
+    spec = orchestration._release_spec("v1.6.0-1")
+    assert spec["product_baseline_sha"] == (
+        "0b9c6e062616fc8d4349304ea483afdd917ce181"
+    )
+    inputs = projection_inputs()
+    inputs["release_id"] = "v1.6.0-1"
+    value = orchestration.project_targets(**inputs)
+    assert value["release_id"] == "v1.6.0-1"
+
+
+def test_v160_content_preserving_candidate_marks_v155_as_historical(tmp_path):
+    previous = (
+        b"navigation-marker\n"
+        b"current release: v1.5.5-1\n"
+        b"v1.5.5-1 / COMPLETE\n"
+    )
+    candidate = orchestration._content_preserving_candidate(
+        "entry/README",
+        previous,
+        {
+            "release_id": "v1.6.0-1",
+            "engine_sha": "a" * 40,
+            "active_release_id": "v1.5.5-1",
+        },
+        {"status_id": "status"},
+        {},
+        tmp_path,
+    )
+    assert b"current release: v1.5.5-1" not in candidate
+    assert b"historical release: v1.5.5-1" in candidate
+    assert "v1.5.5-1 / 历史发布".encode() in candidate
+    assert b"navigation-marker" in candidate
+
+
 def test_release_execution_sha_provenance_fails_closed(monkeypatch):
     engine_sha = "b" * 40
 
@@ -560,7 +595,7 @@ def test_freeze_uses_reserved_ids_and_does_not_mutate_remote(
     monkeypatch.setattr(orchestration, "prepare_release", fake_prepare)
     monkeypatch.setattr(
         orchestration, "verify_execution_sha",
-        lambda root, sha: {"head": sha, "clean": True},
+        lambda root, sha, baseline=None: {"head": sha, "clean": True},
     )
     result = orchestration.freeze_plan(
         drive,
@@ -682,7 +717,7 @@ def test_freeze_rejects_release_state_drift(tmp_path, monkeypatch):
     )["allocation"]
     monkeypatch.setattr(
         orchestration, "verify_execution_sha",
-        lambda root, sha: {"head": sha, "clean": True},
+        lambda root, sha, baseline=None: {"head": sha, "clean": True},
     )
     monkeypatch.setattr(
         orchestration, "snapshot",
