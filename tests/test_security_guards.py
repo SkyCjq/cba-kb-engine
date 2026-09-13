@@ -139,3 +139,19 @@ def test_git_tracked_scan_and_credential_free_ci_contract():
                    if step.get('run') == 'python scripts/check_secrets.py --tracked')
     regression = next(i for i, step in enumerate(steps) if step.get('name') == 'Offline regression suite')
     assert scanner < regression
+
+
+def test_document_lane_has_no_remote_scraping_or_private_paths():
+    paths = [
+        ROOT/'src/cba_kb/document_sources.py',
+        ROOT/'src/cba_kb/document_lane.py',
+    ]
+    text = '\n'.join(path.read_text() for path in paths)
+    assert 'requests' not in text
+    assert 'urlopen' not in text
+    assert 'mp.weixin.qq.com' not in text
+    assert '/Users/' not in text
+    sources = paths[0].read_text()
+    assert 'drive.docs.document(file_id)' in sources
+    lane = paths[1].read_text()
+    assert '"canonical_write_allowed": False' in lane
