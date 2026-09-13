@@ -14,6 +14,7 @@ import subprocess
 import yaml
 
 from cba_kb.common import atomic, digest, read, save
+from cba_kb.current_state import current_version_document_migration
 from cba_kb.drive import Drive
 from cba_kb.instance import load_instance
 from cba_kb.native import wrap
@@ -165,6 +166,8 @@ def project_targets(
 ):
     """Project exact target semantics without any remote mutation."""
     _require_release(release_id)
+    migration = current_version_document_migration(manifest_rows, release_id)
+    manifest_rows = migration["manifest"]
     status_by_id = _status_rows(previous_status, previous_targets)
     logical_by_id = _manifest_rows(manifest_rows)
     if set(status_by_id) - set(logical_by_id):
@@ -313,6 +316,10 @@ def project_targets(
         "reserved_policy_target_ids": sorted(reserved_ids),
         "reserved_staging_target_count": len(reserved_ids),
         "release_status_unchanged": True,
+        "control_target_migrations": (
+            [] if migration["report"]["status"] == "NOT_APPLICABLE"
+            else [migration["report"]]
+        ),
         "status_before_hash": status_hash,
         "status_before_meta": status_meta,
         "active_release_id": previous_status.get("current_release_id"),

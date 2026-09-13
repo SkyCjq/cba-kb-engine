@@ -78,26 +78,30 @@ def test_manifest_coverage_requires_exact_sets():
         manifest_coverage(["a", "a"], ["a"], ["a"], ["a"])
 
 
-def test_release_critical_tree_attestation_fails_closed():
-    head = __import__("subprocess").check_output(
-        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
-    ).strip()
-    parent = __import__("subprocess").check_output(
-        ["git", "rev-parse", "HEAD~1"], cwd=ROOT, text=True,
-    ).strip()
+def test_release_critical_tree_attestation_fails_closed(tmp_path):
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    critical = repo / "critical.txt"
+    critical.write_text("one\n")
+    subprocess.run(["git", "add", "critical.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "one"], cwd=repo, check=True)
+    first = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    critical.write_text("two\n")
+    subprocess.run(["git", "add", "critical.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "two"], cwd=repo, check=True)
+    second = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     result = release_critical_tree_attestation(
-        ROOT,
-        head,
-        head,
-        ["requirements/REQ-161-CLOSEOUT-01/task.yaml"],
+        repo, second, second, ["critical.txt"],
     )
     assert result["status"] == "PASS"
-    with pytest.raises(ReleaseContractError, match="TREE_"):
+    with pytest.raises(ReleaseContractError, match="TREE_MISMATCH"):
         release_critical_tree_attestation(
-            ROOT,
-            parent,
-            head,
-            ["requirements/REQ-161-CLOSEOUT-01/task.yaml"],
+            repo, first, second, ["critical.txt"],
         )
 
 

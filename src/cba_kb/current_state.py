@@ -13,6 +13,8 @@ from .common import digest
 BEGIN = '[CBA-KB CURRENT STATE BEGIN]\n'
 END = '[CBA-KB CURRENT STATE END]\n'
 CURRENT_VERSION_DOC = 'CURRENT_VERSION_DOC'
+LEGACY_CURRENT_VERSION_DOC_ID = '1ZebJR9YPKX37cMDdz0xznHDa45at_q65'
+CURRENT_VERSION_DOC_MIGRATION_RELEASE = 'v1.6.1-1'
 CURRENT_DOCUMENT_SURFACES = frozenset({
     'readme', 'index', 'context_card', 'version', 'current_version_doc',
 })
@@ -198,7 +200,73 @@ def validate_current_state(status, registry, manifest, documents, counts=None, b
     }
 
 
-def current_version_document(manifest):
+def current_version_document_migration(manifest, release_id):
+    """Resolve the frozen legacy version document to the stable logical key.
+
+    The migration is intentionally bounded to the v1.6.1 release planning
+    boundary. It keeps the existing Drive object identity and only renames
+    its logical key in a candidate manifest view.
+    """
+    if not isinstance(manifest, list) or any(
+        not isinstance(row, dict) for row in manifest
+    ):
+        raise ValueError('CURRENT_VERSION_DOC_MANIFEST_INVALID')
+    rows = [dict(row) for row in manifest]
+    report = {
+        'status': 'NOT_APPLICABLE',
+        'release_id': release_id,
+        'logical_key': CURRENT_VERSION_DOC,
+        'drive_file_id': None,
+        'existing_object_reused': False,
+        'source_logical_key': None,
+    }
+    if release_id != CURRENT_VERSION_DOC_MIGRATION_RELEASE:
+        return {'manifest': rows, 'report': report}
+    current = [row for row in rows if row.get('uid') == CURRENT_VERSION_DOC]
+    if len(current) > 1:
+        raise ValueError('CURRENT_VERSION_DOC_MANIFEST_DUPLICATE')
+    historical = [
+        row for row in rows
+        if row.get('drive_file_id') == LEGACY_CURRENT_VERSION_DOC_ID
+    ]
+    if current:
+        row = current[0]
+        if row.get('drive_file_id') != LEGACY_CURRENT_VERSION_DOC_ID:
+            raise ValueError('CURRENT_VERSION_DOC_IDENTITY_CONFLICT')
+        if len(historical) != 1 or historical[0] is not row:
+            raise ValueError('CURRENT_VERSION_DOC_IDENTITY_DUPLICATE')
+        report.update({
+            'status': 'ALREADY_MIGRATED',
+            'drive_file_id': LEGACY_CURRENT_VERSION_DOC_ID,
+            'existing_object_reused': True,
+            'source_logical_key': row.get('local_path'),
+        })
+        return {'manifest': rows, 'report': report}
+    if not historical:
+        raise ValueError('CURRENT_VERSION_DOC_LEGACY_IDENTITY_MISSING')
+    if len(historical) > 1:
+        raise ValueError('CURRENT_VERSION_DOC_LEGACY_IDENTITY_DUPLICATE')
+    source = historical[0]
+    index = rows.index(source)
+    migrated = dict(source)
+    migrated['uid'] = CURRENT_VERSION_DOC
+    rows[index] = migrated
+    report.update({
+        'status': 'MIGRATED',
+        'drive_file_id': LEGACY_CURRENT_VERSION_DOC_ID,
+        'existing_object_reused': True,
+        'source_logical_key': source.get('uid') or source.get('local_path'),
+    })
+    return {'manifest': rows, 'report': report}
+
+
+def migrate_current_version_document(manifest, release_id):
+    return current_version_document_migration(manifest, release_id)['manifest']
+
+
+def current_version_document(manifest, *, release_id=None):
+    if release_id == CURRENT_VERSION_DOC_MIGRATION_RELEASE:
+        manifest = migrate_current_version_document(manifest, release_id)
     index = manifest_index(manifest)
     row = index.get(CURRENT_VERSION_DOC)
     if row is None:
