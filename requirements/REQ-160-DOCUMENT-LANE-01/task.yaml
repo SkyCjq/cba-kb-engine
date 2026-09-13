@@ -106,4 +106,16 @@ log_policy: summary_or_failure_only
 local_prepare_command: NOT_IMPLEMENTED
 publish_command: NOT_IMPLEMENTED_FOR_REQ_160
 rollback_command: NOT_IMPLEMENTED_FOR_REQ_160
-implementation_status: IMPLEMENTING
+implementation_status: IMPLEMENTED_CI_PASS_PRECHECK_ENVIRONMENT_BLOCKED
+focused_test_result: PASS_79
+ci_result: PASS
+ci_run_id: 34740853517
+ci_verified_code_commit: 0ea6e3fa49b91865a907e3c84721130218a9646a
+conditional_local_precheck:
+  status: ENVIRONMENT_BLOCKED
+  reason: PRIVATE_DOCUMENT_FIXTURES_MISSING
+  observed:
+    inbox_documents_path: /Users/skychengneo/Agent/CBA_kb_instance/inbox/documents
+    document_count: 0
+  required_before_web_merge_review: true
+  synthetic_substitution_forbidden: true
