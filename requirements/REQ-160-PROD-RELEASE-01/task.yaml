@@ -6,7 +6,7 @@ target_release_id: v1.6.0-1
 previous_release_id: v1.5.5-1
 previous_production_code_sha: 0b9c6e062616fc8d4349304ea483afdd917ce181
 product_candidate_sha: a246fa142187a5f4f420ffebcfdf1480b8bcedd6
-release_execution_sha: TO_FREEZE_AFTER_DELTA_ALIGNMENT
+release_execution_sha: 4fab3d0e8eedc594fae982f12a507fef88958f15
 base_branch: codex/v1.5.2-draft2
 baseline_code_commit: a246fa142187a5f4f420ffebcfdf1480b8bcedd6
 feature_branch: feat/REQ-160-PROD-RELEASE-01
@@ -82,8 +82,8 @@ max_ci_repair_cycles: 3
 execution_mode: CODEX_EXECUTOR
 context_policy: allowlist_only
 log_policy: summary_or_failure_only
-implementation_status: DELTA_ALIGNMENT_PENDING_FINAL_CI
+implementation_status: IMPLEMENTED_FOCUSED_TESTS_PASS_93
 focused_test_result: PASS_93
-ci_result: PENDING
-ci_run_id: null
-ci_verified_code_commit: null
+ci_result: PASS
+ci_run_id: 34743879007
+ci_verified_code_commit: 4fab3d0e8eedc594fae982f12a507fef88958f15
