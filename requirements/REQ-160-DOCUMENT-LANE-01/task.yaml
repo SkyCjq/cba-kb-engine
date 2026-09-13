@@ -116,13 +116,18 @@ log_policy: summary_or_failure_only
 local_prepare_command: NOT_IMPLEMENTED
 publish_command: NOT_IMPLEMENTED_FOR_REQ_160
 rollback_command: NOT_IMPLEMENTED_FOR_REQ_160
-implementation_status: IMPLEMENTED_R3_TESTS_REPAIR_PENDING_CI
+implementation_status: IMPLEMENTED_R3_CI_PASS_PRECHECK_PASS
 focused_test_result: PASS_82
-ci_result: PENDING
-ci_run_id: null
-ci_verified_code_commit: null
+ci_result: PASS
+ci_run_id: 34742978749
+ci_verified_code_commit: 26ce9acc7452d1ac9879e7052e8277c43a45af94
 conditional_local_precheck:
-  status: PENDING_R3_RERUN
+  status: PASS
+  execution_sha: 26ce9acc7452d1ac9879e7052e8277c43a45af94
+  evidence_root: /Users/skychengneo/Agent/CBA_kb_instance/evidence/REQ-160/local-precheck-r3-26ce9ac
+  facts_zero_diff: PASS
+  real_document_corpus: PASS
+  count_reporting: PASS
   previous_r2_status: ENVIRONMENT_BLOCKED
   required_before_web_merge_review: true
   synthetic_substitution_forbidden: true
