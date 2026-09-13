@@ -56,7 +56,19 @@ new code targets=9
 modified code targets=5
 removed code targets=0
 previous active targets=186
-expected final targets=195
+product-candidate final targets=195
+```
+
+The release execution SHA additionally contains this release Requirement,
+task contract, orchestration adaptation and focused release tests. Its exact
+delta and final target count are:
+
+```text
+new code targets=11
+modified code targets=7
+removed code targets=0
+previous active targets=186
+expected final targets=197
 ```
 
 Canonical Facts and compatibility products are carried forward unchanged.
@@ -153,9 +165,9 @@ existing production artifacts.
 ## Prepare acceptance
 
 - projection is deterministic and read-only;
-- only 9 new targets are reserved;
-- all 5 modified targets reuse their active IDs;
-- final target count is 195;
+- only 11 release-execution new targets are reserved;
+- all 7 modified targets reuse their active IDs;
+- final target count is 197;
 - manifest coverage is complete;
 - dependencies are exactly the Private Instance allowlist;
 - rollback coverage is complete;
