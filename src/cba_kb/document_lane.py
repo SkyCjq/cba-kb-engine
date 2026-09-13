@@ -189,6 +189,10 @@ def rights_decision(parsed, *, classification=None, public_export_allowed=None,
     selected_evidence = evidence if evidence is not None else source.get("evidence") or []
     if isinstance(selected_evidence, str):
         selected_evidence = [selected_evidence]
+    elif isinstance(selected_evidence, dict):
+        selected_evidence = [selected_evidence]
+    elif not isinstance(selected_evidence, (list, tuple)):
+        selected_evidence = [selected_evidence]
     selected_evidence = [_jsonable(item) for item in selected_evidence]
     requested = (
         bool(public_export_allowed)
@@ -533,6 +537,7 @@ class DocumentLane:
             evidence=rights_evidence,
         )
         capture = self._capture({**parsed, "capture_channel": channel}, channel)
+        capture["rights"] = rights
         record = {
             "schema_version": SCHEMA_VERSION,
             "doc_id": identifier,
@@ -632,6 +637,7 @@ class DocumentLane:
         }
 
     def _merge_exact(self, root, record, capture, raw):
+        record_path = root / "record.json"
         provenance_path = root / "provenance.json"
         dedup_path = root / "dedup.json"
         try:
@@ -654,10 +660,45 @@ class DocumentLane:
         self._write_capture(root, capture, raw)
         provenance["captures"].append(public)
         provenance["captures"].sort(key=lambda item: item["capture_id"])
+        all_rights = [
+            item.get("rights")
+            for item in provenance["captures"]
+            if isinstance(item.get("rights"), dict)
+        ]
+        classifications = {
+            item.get("classification") for item in all_rights
+        }
+        if "private" in classifications:
+            classification = "private"
+        elif "copyrighted" in classifications:
+            classification = "copyrighted"
+        elif classifications == {"public"}:
+            classification = "public"
+        else:
+            classification = "unknown"
+        evidence = sorted({
+            json.dumps(item, ensure_ascii=False, sort_keys=True)
+            for rights in all_rights
+            for item in rights.get("evidence", [])
+        })
+        rights = {
+            "classification": classification,
+            "public_export_allowed": bool(
+                classification == "public"
+                and evidence
+                and all(
+                    item.get("public_export_allowed") is True
+                    for item in all_rights
+                )
+            ),
+            "evidence": [json.loads(item) for item in evidence],
+        }
+        record["rights"] = rights
         dedup["disposition"] = "exact_merge"
         dedup["capture_ids"] = sorted(
             set(dedup.get("capture_ids", [])) | {capture["capture_id"]}
         )
+        atomic(record_path, canonical_bytes(record))
         atomic(provenance_path, canonical_bytes(provenance))
         atomic(dedup_path, canonical_bytes(dedup))
         return {

@@ -106,11 +106,11 @@ log_policy: summary_or_failure_only
 local_prepare_command: NOT_IMPLEMENTED
 publish_command: NOT_IMPLEMENTED_FOR_REQ_160
 rollback_command: NOT_IMPLEMENTED_FOR_REQ_160
-implementation_status: IMPLEMENTED_CI_PASS_PRECHECK_ENVIRONMENT_BLOCKED
+implementation_status: IMPLEMENTED_PENDING_CI_PRECHECK_ENVIRONMENT_BLOCKED
 focused_test_result: PASS_79
-ci_result: PASS
-ci_run_id: 34740853517
-ci_verified_code_commit: 0ea6e3fa49b91865a907e3c84721130218a9646a
+ci_result: PENDING_RIGHTS_MERGE_FIX
+ci_run_id: null
+ci_verified_code_commit: null
 conditional_local_precheck:
   status: ENVIRONMENT_BLOCKED
   reason: PRIVATE_DOCUMENT_FIXTURES_MISSING

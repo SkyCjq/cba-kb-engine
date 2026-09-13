@@ -185,6 +185,26 @@ def test_rights_taxonomy_and_public_export_guards(tmp_path):
          / "record.json").read_text()
     )
     assert_public_export_allowed(public_record)
+    private_duplicate = write(
+        private.document_input_root / "public-private-copy.txt",
+        "public body\n",
+    )
+    merged = lane.ingest_file(
+        private_duplicate,
+        capture_channel="local_file",
+        captured_at=FIXED_AT,
+        rights_classification="private",
+        public_export_allowed=False,
+        latency_seconds=0.0,
+    )
+    assert merged["doc_id"] == public_result["doc_id"]
+    downgraded = json.loads(
+        (private.document_archive_root / merged["doc_id"] / "record.json").read_text()
+    )
+    assert downgraded["rights"]["classification"] == "private"
+    assert downgraded["rights"]["public_export_allowed"] is False
+    with pytest.raises(RuntimeError, match="PUBLIC_EXPORT_BLOCKED"):
+        assert_public_export_allowed(downgraded)
 
     unsupported = write(
         private.document_input_root / "blocked.md",
