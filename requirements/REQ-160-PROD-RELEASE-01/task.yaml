@@ -1,0 +1,76 @@
+req_id: REQ-160-PROD-RELEASE-01
+requirement_revision_or_hash: r1-20260913-v160-production-prepare
+requirement_artifact: requirements/REQ-160-PROD-RELEASE-01/requirement-r1-20260913.md
+requirement_artifact_sha256: a99dbcbaa14cb29abbaa3b4c560cac398c13052bf520e986c59ba9534f792f44
+target_release_id: v1.6.0-1
+previous_release_id: v1.5.5-1
+previous_production_code_sha: 0b9c6e062616fc8d4349304ea483afdd917ce181
+product_candidate_sha: a246fa142187a5f4f420ffebcfdf1480b8bcedd6
+release_execution_sha: TO_FREEZE_AT_PREPARE
+base_branch: codex/v1.5.2-draft2
+baseline_code_commit: a246fa142187a5f4f420ffebcfdf1480b8bcedd6
+feature_branch: feat/REQ-160-PROD-RELEASE-01
+lane: RELEASE_INFRASTRUCTURE
+release_infrastructure_mode: ON
+production_access: reservation_and_read_only_prepare_only
+publish_allowed: false
+restore_allowed: false
+allowed_paths:
+- requirements/REQ-160-PROD-RELEASE-01/requirement-r1-20260913.md
+- requirements/REQ-160-PROD-RELEASE-01/task.yaml
+- scripts/prepare_production.py
+- tests/test_release_orchestration.py
+focused_tests:
+- tests/test_release.py
+- tests/test_release_orchestration.py
+must_not_change:
+- src/cba_kb/release.py
+- src/cba_kb/drive.py
+- src/cba_kb/transport.py
+- src/cba_kb/native.py
+- canonical business facts
+- published fact products
+- production manifest before publish
+- release_status before publish
+- reservation semantics
+- rollback semantics
+- .github/workflows/offline-tests.yml
+- requirements.lock
+- config/taxonomy.yaml
+release_critical_fixtures:
+- production_authority_snapshot
+- release_id_collision_check
+- exact_target_delta
+- dependency_binding
+- status_before_snapshot
+- rollback_coverage
+- facts_zero_diff
+production_authority:
+  current_release_id: v1.5.5-1
+  state: COMPLETE
+  previous_code_sha: 0b9c6e062616fc8d4349304ea483afdd917ce181
+  active_targets: 186
+  policy_targets: 186
+  reservations: 0
+  dependencies: 2
+  manifest_rows: 186
+  release_id_collision: false
+expected_delta:
+  new_code_targets: 9
+  modified_code_targets: 5
+  removed_code_targets: 0
+  expected_final_targets: 195
+release_commands:
+  prepare_script: scripts/prepare_production.py
+  project: project
+  reserve: reserve-staging
+  freeze: freeze
+  publish: WEB_GO_ONLY_NOT_EXECUTED
+  rollback: WEB_GO_ONLY_NOT_EXECUTED
+full_regression_owner: github_actions
+max_ci_repair_cycles: 3
+execution_mode: CODEX_EXECUTOR
+context_policy: allowlist_only
+log_policy: summary_or_failure_only
+implementation_status: IMPLEMENTED_FOCUSED_TESTS_PASS_93_PENDING_CI
+focused_test_result: PASS_93

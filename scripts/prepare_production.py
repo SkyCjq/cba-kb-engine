@@ -1,4 +1,4 @@
-"""Fail-closed v1.5.5 release orchestration: project, reserve, freeze.
+"""Fail-closed production release orchestration: project, reserve, freeze.
 
 Only ``reserve-staging`` may mutate Drive. ``project`` and ``freeze`` are
 read-only with respect to remote production objects.
@@ -22,6 +22,14 @@ from cba_kb.release import fingerprint, prepare as prepare_release, snapshot
 
 RELEASE_ID = "v1.5.5-1"
 PRODUCT_BASELINE_SHA = "c14a0f2579fcc86e2dc114f0b15d00dd54e9f55e"
+RELEASE_SPECS = {
+    RELEASE_ID: {
+        "product_baseline_sha": PRODUCT_BASELINE_SHA,
+    },
+    "v1.6.0-1": {
+        "product_baseline_sha": "0b9c6e062616fc8d4349304ea483afdd917ce181",
+    },
+}
 FOLDER = "application/vnd.google-apps.folder"
 FORBIDDEN_CODE_PREFIXES = ("workspace/", ".credentials/", ".venv/")
 CONTROL_KEYS = frozenset({
@@ -44,9 +52,15 @@ def _json_hash(value):
     ).encode())
 
 
+def _release_spec(release_id):
+    try:
+        return RELEASE_SPECS[release_id]
+    except KeyError:
+        raise ProjectionError(f"RELEASE_ID_FORBIDDEN:{release_id}") from None
+
+
 def _require_release(release_id):
-    if release_id != RELEASE_ID:
-        raise ProjectionError(f"RELEASE_ID_FORBIDDEN:{release_id}")
+    return _release_spec(release_id)
 
 
 def _private_output(instance, output):
@@ -58,7 +72,11 @@ def _private_output(instance, output):
     return output
 
 
-def verify_execution_sha(engine_root, engine_sha):
+def verify_execution_sha(
+    engine_root,
+    engine_sha,
+    product_baseline_sha=PRODUCT_BASELINE_SHA,
+):
     if not isinstance(engine_sha, str) or not re.fullmatch(
         "[0-9a-f]{40}", engine_sha,
     ):
@@ -76,7 +94,7 @@ def verify_execution_sha(engine_root, engine_sha):
     if subprocess.run(
         [
             "git", "merge-base", "--is-ancestor",
-            PRODUCT_BASELINE_SHA, engine_sha,
+            product_baseline_sha, engine_sha,
         ],
         cwd=engine_root,
         stdout=subprocess.DEVNULL,
@@ -86,7 +104,7 @@ def verify_execution_sha(engine_root, engine_sha):
     return {
         "head": head,
         "clean": True,
-        "product_baseline_sha": PRODUCT_BASELINE_SHA,
+        "product_baseline_sha": product_baseline_sha,
         "baseline_is_ancestor": True,
     }
 
@@ -714,11 +732,25 @@ def _content_preserving_candidate(logical_key, previous, projection, allocation,
             f"## Migration\n\n{migration}\n"
         ).encode()
     preserved = _managed_body(previous)
-    preserved = preserved.replace("当前发布：v1.5.4-1", "历史发布：v1.5.4-1")
-    preserved = preserved.replace("v1.5.4-1 / COMPLETE", "v1.5.4-1 / 历史发布")
-    preserved = preserved.replace(
-        "current release: v1.5.4-1", "historical release: v1.5.4-1",
-    )
+    historical_releases = {
+        projection.get("active_release_id"),
+        "v1.5.4-1",
+    }
+    for previous_release in sorted(
+        release for release in historical_releases if release
+    ):
+        preserved = preserved.replace(
+            f"当前发布：{previous_release}",
+            f"历史发布：{previous_release}",
+        )
+        preserved = preserved.replace(
+            f"{previous_release} / COMPLETE",
+            f"{previous_release} / 历史发布",
+        )
+        preserved = preserved.replace(
+            f"current release: {previous_release}",
+            f"historical release: {previous_release}",
+        )
     return (
         f"# {title}\n\n"
         f"当前发布：{release_id}\n\n"
@@ -742,8 +774,12 @@ def freeze_plan(
     output,
 ):
     """Freeze all candidate bytes and a remote-read-only release plan."""
-    _require_release(release_id)
-    verify_execution_sha(engine_root, projection["engine_sha"])
+    release_spec = _require_release(release_id)
+    verify_execution_sha(
+        engine_root,
+        projection["engine_sha"],
+        release_spec["product_baseline_sha"],
+    )
     validate_reservation(projection, allocation)
     state = validate_release_state(drive, instance, projection, allocation)
     output = Path(output)
@@ -852,7 +888,12 @@ def _load_manifest(raw):
 
 
 def _project_command(args, instance):
-    verify_execution_sha(Path.cwd(), args.engine_sha)
+    release_spec = _require_release(args.release)
+    verify_execution_sha(
+        Path.cwd(),
+        args.engine_sha,
+        release_spec["product_baseline_sha"],
+    )
     production = instance.read_json("production.json")
     runtime = instance.read_json("runtime.json")
     drive = Drive(Path.cwd(), instance)
