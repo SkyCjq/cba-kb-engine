@@ -32,6 +32,22 @@ class Instance:
     real_fixture_root: Path
     data_root: Path
 
+    @property
+    def document_input_root(self):
+        return self.root / "inbox" / "documents"
+
+    @property
+    def document_archive_root(self):
+        return self.data_root / "document_lane" / "archive"
+
+    @property
+    def document_review_root(self):
+        return self.data_root / "document_lane" / "review"
+
+    @property
+    def document_report_root(self):
+        return self.data_root / "document_lane" / "reports"
+
     def config_path(self, name):
         if name not in CONFIG_FILES:
             raise ValueError(f"UNKNOWN_INSTANCE_CONFIG: {name}")

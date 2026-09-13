@@ -33,6 +33,16 @@ def test_instance_is_explicit_external_and_fail_closed(tmp_path):
     external = tmp_path/'instance'; (external/'config').mkdir(parents=True)
     instance = load_instance(engine, external)
     assert instance.root == external.resolve()
+    assert instance.document_input_root == (external/'inbox/documents').resolve()
+    assert instance.document_archive_root == (
+        external/'data/document_lane/archive'
+    ).resolve()
+    assert instance.document_review_root == (
+        external/'data/document_lane/review'
+    ).resolve()
+    assert instance.document_report_root == (
+        external/'data/document_lane/reports'
+    ).resolve()
     with pytest.raises(RuntimeError, match='CONFIG_REQUIRED'):
         instance.read_json('runtime.json')
 

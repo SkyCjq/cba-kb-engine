@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from .common import atomic, digest, read, save
@@ -48,6 +49,25 @@ def main():
     q.add_argument('--lenient-clubs',action='store_true')
     q=sub.add_parser('catalog');q.add_argument('--candidate',type=Path,required=True);q.add_argument('--output',type=Path,required=True)
     q=sub.add_parser('watch');q.add_argument('--output',type=Path,required=True);q.add_argument('--previous-root',type=Path)
+    q=sub.add_parser('document-ingest')
+    q.add_argument('--capture-channel',choices=(
+        'wechat_browser_clip','ima_file_export','local_file','google_drive_doc'))
+    q.add_argument('--source',type=Path)
+    q.add_argument('--drive-id')
+    q.add_argument('--captured-at')
+    q.add_argument('--published-at')
+    q.add_argument('--canonical-url')
+    q.add_argument('--title')
+    q.add_argument('--tag',action='append')
+    q.add_argument('--rights-classification',choices=(
+        'public','copyrighted','private','unknown'))
+    q.add_argument('--public-export-allowed',action='store_true',default=None)
+    q.add_argument('--rights-evidence',action='append')
+    q.add_argument('--latency-seconds',type=float)
+    q=sub.add_parser('document-batch')
+    q.add_argument('--manifest',type=Path,required=True)
+    q.add_argument('--captured-at')
+    q.add_argument('--latency-seconds',type=float)
     q=sub.add_parser('plan'); q.add_argument('--entries',type=Path,required=True); q.add_argument('--release-id',required=True)
     q.add_argument('--status-id',required=True); q.add_argument('--archive-id',required=True)
     q.add_argument('--dependencies',type=Path);q.add_argument('--environment',choices=['sandbox','production'],default='sandbox')
@@ -108,6 +128,55 @@ def main():
             from .source_watcher import run_planned
             instance=private_instance()
             result=run_planned(instance,a.output,previous_root=a.previous_root)
+        elif a.command in {'document-ingest','document-batch'}:
+            from .document_lane import DocumentLane
+            if a.command=='document-ingest' and not a.capture_channel:
+                raise ValueError('DOCUMENT_CAPTURE_CHANNEL_REQUIRED')
+            instance=private_instance()
+            lane=DocumentLane(root,instance)
+            started=time.perf_counter()
+            options={
+                'captured_at':a.captured_at,
+                'latency_seconds':a.latency_seconds,
+            }
+            if a.command=='document-batch':
+                options['latency_seconds'] = (
+                    a.latency_seconds
+                    if a.latency_seconds is not None
+                    else time.perf_counter()-started
+                )
+                result=lane.ingest_batch(
+                    a.manifest,
+                    drive_factory=lambda: Drive(root,instance),
+                    **options,
+                )
+            else:
+                if bool(a.source) == bool(a.drive_id):
+                    raise ValueError('DOCUMENT_EXACTLY_ONE_SOURCE_REQUIRED')
+                if a.source and a.capture_channel not in {
+                    'wechat_browser_clip','ima_file_export','local_file',
+                }:
+                    raise ValueError('DOCUMENT_FILE_CHANNEL_REQUIRED')
+                if a.drive_id and a.capture_channel != 'google_drive_doc':
+                    raise ValueError('DOCUMENT_DRIVE_CHANNEL_REQUIRED')
+                options.update({
+                    'capture_channel':a.capture_channel,
+                    'published_at':a.published_at,
+                    'canonical_url':a.canonical_url,
+                    'title':a.title,
+                    'tags':a.tag,
+                    'rights_classification':a.rights_classification,
+                    'public_export_allowed':a.public_export_allowed,
+                    'rights_evidence':a.rights_evidence,
+                })
+                if options['latency_seconds'] is None:
+                    options['latency_seconds']=time.perf_counter()-started
+                if a.drive_id:
+                    result=lane.ingest_drive_document(
+                        Drive(root,instance),a.drive_id,**options,
+                    )
+                else:
+                    result=lane.ingest_file(a.source,**options)
         elif a.command=='extract':
             from . import facts as definitions
             from .adapters import adapter_for
