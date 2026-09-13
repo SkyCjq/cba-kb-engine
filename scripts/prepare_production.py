@@ -23,7 +23,9 @@ from cba_kb.current_state import (
 from cba_kb.drive import Drive
 from cba_kb.instance import load_instance
 from cba_kb.native import wrap
-from cba_kb.release import fingerprint, prepare as prepare_release, snapshot
+from cba_kb.release import (
+    _inventory, fingerprint, prepare as prepare_release, snapshot,
+)
 
 
 RELEASE_ID = "v1.5.5-1"
@@ -40,6 +42,7 @@ RELEASE_SPECS = {
     },
 }
 FOLDER = "application/vnd.google-apps.folder"
+NATIVE_DOCUMENT = "application/vnd.google-apps.document"
 REGISTRY_KEY = "config/canonical_products.yaml"
 MANIFEST_KEY = "input/manifest.csv"
 CONTEXT_CARD_KEY = "ai/CONTEXT_CARD.md"
@@ -667,6 +670,10 @@ def _candidate_inputs(drive, engine_root, projection, allocation, output):
             "mode": item.get("mode", "binary"),
             "path": str(candidate),
             "change_class": change_class,
+            "before_hash": (
+                digest(previous_by_key[logical_key])
+                if logical_key in previous_by_key else None
+            ),
         }
         if logical_key in new_by_key:
             entry.update({
@@ -872,8 +879,41 @@ def _content_preserving_candidate(logical_key, previous, projection, allocation,
     ).encode()
 
 
-def _build_closure_contract(*, instance, projection, allocation, entries,
-                            state):
+def _evidence_baseline(drive, roots):
+    roots = sorted({root for root in roots if root})
+    if not roots:
+        return []
+    items, _ = _inventory(drive, {
+        "current": [],
+        "history": [],
+        "staging": [],
+        "evidence": roots,
+    })
+    protected = []
+    for item in sorted(
+        (
+            item for item in items
+            if item.get("mimeType") != FOLDER
+        ),
+        key=lambda item: item["id"],
+    ):
+        mode = (
+            "managed_doc"
+            if item.get("mimeType") == NATIVE_DOCUMENT else "binary"
+        )
+        data, _ = snapshot(drive, item["id"], mode)
+        protected.append({
+            "id": item["id"],
+            "name": item["name"],
+            "sha256": digest(data),
+            "mode": mode,
+            "kind": "evidence",
+        })
+    return protected
+
+
+def _build_closure_contract(*, drive, instance, projection, allocation,
+                            entries, state):
     """Build the production closure from actual candidate targets and zones."""
     by_key = {entry["logical_key"]: entry for entry in entries}
     document_keys = {
@@ -907,10 +947,16 @@ def _build_closure_contract(*, instance, projection, allocation, entries,
             entry = by_key[logical_key]
         except KeyError:
             raise ProjectionError("CLOSURE_PROTECTED_TARGET_MISSING") from None
+        before_hash = entry.get("before_hash")
+        if (
+            not isinstance(before_hash, str)
+            or not re.fullmatch("[0-9a-f]{64}", before_hash)
+        ):
+            raise ProjectionError("CLOSURE_PROTECTED_HASH_REQUIRED")
         protected.append({
             "id": entry["id"],
             "name": entry["name"],
-            "sha256": entry["before_hash"],
+            "sha256": before_hash,
             "mode": entry.get("mode", "binary"),
             "kind": kind,
         })
@@ -937,6 +983,10 @@ def _build_closure_contract(*, instance, projection, allocation, entries,
     }
     if not evidence:
         raise ProjectionError("CLOSURE_EVIDENCE_ZONE_MISSING")
+    protected_by_id = {item["id"]: item for item in protected}
+    for item in _evidence_baseline(drive, evidence):
+        protected_by_id.setdefault(item["id"], item)
+    protected = list(protected_by_id.values())
     staging = {
         entry.get("staging_parent") for entry in entries
         if entry.get("staging_parent")
@@ -993,6 +1043,7 @@ def freeze_plan(
     closure = None
     if release_id == "v1.6.1-1":
         closure = _build_closure_contract(
+            drive=drive,
             instance=instance,
             projection=projection,
             allocation=allocation,

@@ -3,7 +3,7 @@ import json
 import pytest
 
 from cba_kb.current_state import (
-    BEGIN, CURRENT_VERSION_DOC, END, consumer_artifacts,
+    BEGIN, CURRENT_VERSION_DOC, END, audit_current_history, consumer_artifacts,
     control_document_identities, current_version_document,
     current_version_document_migration, migrate_current_version_document,
     generate_context_card, read_current_block, render_current_state,
@@ -98,6 +98,33 @@ def test_zero_business_delta_includes_evidence_and_source_registry():
             zero_business_delta(before, after)
     with pytest.raises(ValueError):
         zero_business_delta(before, {})
+
+
+def test_candidate_named_code_mirror_remains_current():
+    docs = manifest() + [{
+        'uid': 'code/scripts/sync_v1_5_2_candidate.py',
+        'drive_file_id': 'code-candidate',
+        'content_hash': 'd' * 64,
+    }]
+    records = [
+        {'id': 'event-file', 'name': 'events', 'parents': ['data']},
+        {'id': 'compat-file', 'name': 'compat', 'parents': ['data']},
+        {
+            'id': 'code-candidate',
+            'name': 'scripts__sync_v1_5_2_candidate.py',
+            'parents': ['scripts'],
+        },
+    ]
+    zones = {
+        'current': ['root', 'data', 'ai', 'scripts'],
+        'history': ['archive'],
+        'staging': ['staging'],
+        'evidence': ['sources'],
+        'folders': {'archive': ['root'], 'sources': ['root']},
+    }
+    assert audit_current_history(
+        records, zones, docs, registry(),
+    )['violations'] == 0
 
 
 def test_five_current_surfaces_share_release_and_code_identity():

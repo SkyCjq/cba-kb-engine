@@ -705,6 +705,12 @@ def test_freeze_uses_reserved_ids_and_does_not_mutate_remote(
     assert [item["id"] for item in captured["dependencies"]] == [
         "fact-dependency-id", "source-registry-dependency-id",
     ]
+    assert all(
+        isinstance(item.get("before_hash"), str)
+        and len(item["before_hash"]) == 64
+        for item in captured["entries"]
+        if not item["logical_key"].startswith("code/")
+    )
     assert {item["id"] for item in captured["dependencies"]} != {
         "master", "registry",
     }
@@ -907,9 +913,15 @@ class ClosureInstance:
         }}
 
 
+class ClosureDrive:
+    def list(self, folder):
+        return []
+
+
 def test_v161_closure_uses_real_roles_protected_targets_and_zones():
     entries = _closure_entries()
     closure = orchestration._build_closure_contract(
+        drive=ClosureDrive(),
         instance=ClosureInstance(),
         projection={'release_id': 'v1.6.1-1', 'engine_sha': 'a' * 40},
         allocation={'staging_id': 'staging'},

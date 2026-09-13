@@ -331,9 +331,12 @@ def audit_current_history(items, zones, manifest, registry):
         key = row.get('uid') or row.get('artifact_key')
         product_roles = roles.get(key, [])
         role = item.get('artifact_role') or row.get('artifact_role')
+        code_mirror = isinstance(key, str) and key.startswith('code/')
         history = (is_history or role in NON_CURRENT
                    or any(p['authority'] == 'historical' for p in product_roles)
-                   or bool(HISTORY_NAME.search(item.get('name', ''))))
+                   or (not code_mirror and bool(
+                       HISTORY_NAME.search(item.get('name', ''))
+                   )))
         if current and history:
             findings.append({'id': item['id'], 'rule_id': 'HISTORICAL_IN_CURRENT'})
         if not current and any(p['authority'] == 'canonical' and p['current_eligible'] for p in product_roles):
