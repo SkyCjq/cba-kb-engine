@@ -740,6 +740,9 @@ class IndexedArchiveDrive(FakeDrive):
         self.downloads.append(fid)
         return super().get(fid)
 
+    def _download(self, fid):
+        return self.get(fid)
+
     def put(self, fid, data, mime):
         if self.on_put:
             self.on_put(fid, data)
@@ -1085,3 +1088,86 @@ def test_previous_snapshot_duplicate_target_rejected(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match='PREVIOUS_SNAPSHOT_INCOMPLETE'):
         release_module.set_status(d, plan, 'PUBLISHING', previous)
     assert not d.calls
+
+
+def test_drive_read_retry_closes_broken_connection(monkeypatch):
+    from types import SimpleNamespace
+    from cba_kb import transport
+    monkeypatch.setattr(transport.time, 'sleep', lambda delay: None)
+    events = []
+    connected = False
+    def close():
+        nonlocal connected
+        events.append('close')
+        connected = True
+    def execute(num_retries):
+        assert num_retries == 0
+        events.append('read')
+        if not connected:
+            raise BrokenPipeError('stale socket')
+        return {'id': 'file', 'mimeType': 'text/plain'}
+    d = Drive.__new__(Drive)
+    d.api = SimpleNamespace(
+        _http=SimpleNamespace(http=SimpleNamespace(close=close)),
+        files=lambda: SimpleNamespace(get=lambda **kwargs: SimpleNamespace(execute=execute)),
+    )
+    assert d.meta('file')['id'] == 'file'
+    assert events == ['read', 'close', 'read']
+
+
+def test_partial_download_retry_discards_partial_buffer(monkeypatch):
+    from types import SimpleNamespace
+    from http.client import IncompleteRead
+    from cba_kb import transport
+    import googleapiclient.http
+    monkeypatch.setattr(transport.time, 'sleep', lambda delay: None)
+    attempts, closed = [], []
+    class Downloader:
+        def __init__(self, stream, request):
+            self.stream = stream
+            attempts.append(stream)
+        def next_chunk(self, num_retries):
+            assert num_retries == 0
+            if len(attempts) == 1:
+                self.stream.write(b'partial')
+                raise IncompleteRead(b'partial')
+            self.stream.write(b'complete')
+            return None, True
+    monkeypatch.setattr(googleapiclient.http, 'MediaIoBaseDownload', Downloader)
+    d = Drive.__new__(Drive)
+    d.api = SimpleNamespace(
+        _http=SimpleNamespace(close=lambda: closed.append(True)),
+        files=lambda: SimpleNamespace(get_media=lambda **kwargs: object()),
+    )
+    assert d._download('file') == b'complete'
+    assert len(attempts) == 2 and attempts[0] is not attempts[1]
+    assert closed == [True]
+
+
+def test_read_retry_is_bounded_and_does_not_reset_for_permanent_error(monkeypatch):
+    from cba_kb import transport
+    monkeypatch.setattr(transport.time, 'sleep', lambda delay: None)
+    attempts, resets = [], []
+    def broken():
+        attempts.append(True)
+        raise BrokenPipeError('bounded')
+    with pytest.raises(BrokenPipeError):
+        transport.retry_read(broken, reset=lambda: resets.append(True))
+    assert len(attempts) == 4 and len(resets) == 3
+    def permanent():
+        raise ValueError('permanent')
+    with pytest.raises(ValueError):
+        transport.retry_read(permanent, reset=lambda: pytest.fail('Permanent error retried'))
+
+
+def test_archive_index_reuses_metadata_but_still_checks_full_content():
+    d = IndexedArchiveDrive()
+    fid = d.ensure('folder', 'key', 'name', 'text/plain', b'expected')
+    index = d.index_cba_keys('folder')
+    d.meta = lambda fid: pytest.fail('Duplicate metadata read for indexed immutable object')
+    assert d.ensure('folder', 'key', 'name', 'text/plain', b'expected', index=index) == fid
+    assert d.downloads == [fid]
+    d.files[fid]['data'] = b'changed'
+    with pytest.raises(RuntimeError, match='Immutable release object differs'):
+        d.ensure('folder', 'key', 'name', 'text/plain', b'expected', index=index)
+    assert len(d.created) == 1
