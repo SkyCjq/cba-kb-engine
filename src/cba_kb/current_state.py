@@ -12,7 +12,11 @@ from .common import digest
 
 BEGIN = '[CBA-KB CURRENT STATE BEGIN]\n'
 END = '[CBA-KB CURRENT STATE END]\n'
-TRANSITIONAL = {'PUBLISHING', 'FAILED', 'ROLLING_BACK'}
+CURRENT_VERSION_DOC = 'CURRENT_VERSION_DOC'
+CURRENT_DOCUMENT_SURFACES = frozenset({
+    'readme', 'index', 'context_card', 'version', 'current_version_doc',
+})
+TRANSITIONAL = {'PUBLISHING', 'VERIFYING', 'FAILED', 'ROLLING_BACK'}
 NON_CURRENT = {'candidate', 'before', 'rollback', 'staging', 'prechange', 'historical', 'historical-only'}
 HISTORY_NAME = re.compile(r'(?i)(?:^|[_. /-])(candidate|before|rollback|staging|prechange|historical)(?:$|[_. /-])')
 IDENTIFIER = re.compile(r'[A-Za-z0-9_.:/-]+\Z')
@@ -143,6 +147,31 @@ def validate_context_card(card, metadata, registry, manifest, counts=None, block
     return {'status': 'PASS', 'utf8_bytes': len(card.encode('utf-8'))}
 
 
+def control_document_identities(status, registry, documents):
+    if status.get('state') not in {'COMPLETE', 'ROLLED_BACK'}:
+        raise ValueError('CURRENT_RELEASE_NOT_READABLE')
+    commit = status.get('code_commit') or status.get('published_code_commit')
+    if status.get('published_code_commit', commit) != commit:
+        raise ValueError('CURRENT_STATE_DRIFT')
+    metadata = target_metadata(
+        status.get('current_release_id'), commit, registry,
+    )
+    required = (
+        CURRENT_DOCUMENT_SURFACES
+        if status.get('current_release_id') == 'v1.6.1-1'
+        else {'readme', 'index', 'context_card', 'version'}
+    )
+    if not required <= set(documents):
+        raise ValueError('CURRENT_DOCUMENT_MISSING')
+    identities = {'release_status': metadata}
+    for surface, text in sorted(documents.items()):
+        if read_current_block(text) != metadata:
+            raise ValueError('CURRENT_STATE_DRIFT')
+        identities[surface] = read_current_block(text)
+    return {'status': 'PASS', 'identities': identities}
+
+
+
 def validate_current_state(status, registry, manifest, documents, counts=None, blockers=None):
     if status.get('state') not in {'COMPLETE', 'ROLLED_BACK'}:
         raise ValueError('CURRENT_RELEASE_NOT_READABLE')
@@ -150,13 +179,31 @@ def validate_current_state(status, registry, manifest, documents, counts=None, b
     if status.get('published_code_commit', commit) != commit:
         raise ValueError('CURRENT_STATE_DRIFT')
     metadata = target_metadata(status.get('current_release_id'), commit, registry)
-    if set(documents) != {'readme', 'index', 'context_card', 'version'}:
+    required = (
+        CURRENT_DOCUMENT_SURFACES
+        if status.get('current_release_id') == 'v1.6.1-1'
+        else {'readme', 'index', 'context_card', 'version'}
+    )
+    if not required <= set(documents):
         raise ValueError('CURRENT_DOCUMENT_MISSING')
     for text in documents.values():
         if read_current_block(text) != metadata:
             raise ValueError('CURRENT_STATE_DRIFT')
     validate_context_card(documents['context_card'], metadata, registry, manifest, counts, blockers)
-    return {'status': 'PASS', 'release_id': metadata['release_id'], 'code_commit': commit}
+    return {
+        'status': 'PASS',
+        'release_id': metadata['release_id'],
+        'code_commit': commit,
+        'surfaces': sorted(['release_status', *CURRENT_DOCUMENT_SURFACES]),
+    }
+
+
+def current_version_document(manifest):
+    index = manifest_index(manifest)
+    row = index.get(CURRENT_VERSION_DOC)
+    if row is None:
+        raise ValueError('CURRENT_VERSION_DOC_MISSING')
+    return row
 
 
 def audit_current_history(items, zones, manifest, registry):

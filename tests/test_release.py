@@ -854,7 +854,8 @@ def test_archive_listing_is_constant_and_complete_before_canonical_write(tmp_pat
 
     def before_put(fid, data):
         journal = read(root / 'journal.json')
-        assert journal['state'] == 'PUBLISHING'
+        expected_state = ('VERIFYING' if fid == 'status' and json.loads(data)['state'] == 'COMPLETE' else 'PUBLISHING')
+        assert journal['state'] == expected_state
         previous = journal['previous_snapshot']
         assert len(previous) == count
         assert {item['original_id'] for item in previous} == {f'target-{i}' for i in range(count)}

@@ -4,12 +4,294 @@ Cross-client exclusion still requires a human-maintained single-writer window.
 Native Docs require explicit managed_doc mode; Sheets byte writes are rejected.
 """
 from pathlib import Path
+import json
+import re
+import subprocess
+import time
 from .common import atomic, child, digest, lock, read, save
 from .transport import stage
 from .current_state import clean
 
 FOLDER = 'application/vnd.google-apps.folder'
 DOC = 'application/vnd.google-apps.document'
+
+RELEASE_STATE_SEQUENCE = (
+    'PROJECTED',
+    'RESERVED',
+    'REPROJECTED',
+    'FROZEN_PLAN',
+    'PREPARED',
+    'ARCHIVING',
+    'ARCHIVE_COMPLETE',
+    'PUBLISHING',
+    'VERIFYING',
+    'COMPLETE',
+)
+RELEASE_STATES = frozenset(RELEASE_STATE_SEQUENCE)
+SHA_ROLES = (
+    'baseline_development_sha',
+    'product_candidate_sha',
+    'release_execution_sha',
+    'reviewed_release_pr_head_sha',
+    'reviewed_ci_head_sha',
+    'release_merge_sha',
+    'production_execution_sha',
+    'release_critical_tree_attestation',
+)
+RETRYABLE = 'RETRYABLE'
+NON_RETRYABLE = 'NON_RETRYABLE'
+RETRYABLE_STATUS = frozenset({408, 429})
+NON_RETRYABLE_TERMS = (
+    'auth', 'permission', 'forbidden', 'unauthorized', 'schema', 'authority',
+    'hash', 'mime', 'semantic drift', 'semantic_drift',
+)
+RETRYABLE_TERMS = (
+    'timeout', 'timed out', 'connection reset', 'broken pipe',
+    'incomplete read', 'remote end closed',
+)
+
+
+class ReleaseContractError(RuntimeError):
+    pass
+
+
+class PreMutationAbort(ReleaseContractError):
+    pass
+
+
+class PartialMutationError(ReleaseContractError):
+    pass
+
+
+def _sha(value, role):
+    if not isinstance(value, str) or not re.fullmatch('[0-9a-f]{40}', value):
+        raise ReleaseContractError(f'{role.upper()}_INVALID')
+    return value
+
+
+def validate_state_transition(current, target):
+    if current not in RELEASE_STATES or target not in RELEASE_STATES:
+        raise ReleaseContractError('RELEASE_STATE_INVALID')
+    current_index = RELEASE_STATE_SEQUENCE.index(current)
+    target_index = RELEASE_STATE_SEQUENCE.index(target)
+    if target_index < current_index:
+        raise ReleaseContractError('RELEASE_STATE_REGRESSION')
+    if target_index > current_index + 1:
+        raise ReleaseContractError('RELEASE_STATE_SKIP')
+    return True
+
+
+def provenance_dag(roles):
+    """Validate typed SHA roles and the frozen provenance relationships."""
+    if not isinstance(roles, dict):
+        raise ReleaseContractError('PROVENANCE_OBJECT_REQUIRED')
+    missing = sorted(set(SHA_ROLES) - set(roles))
+    if missing:
+        raise ReleaseContractError('PROVENANCE_ROLE_MISSING:' + ','.join(missing))
+    normalized = {}
+    for role in SHA_ROLES:
+        value = roles[role]
+        if value in (None, 'TBD', 'runtime'):
+            normalized[role] = None
+        elif role == 'release_critical_tree_attestation':
+            if not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value):
+                raise ReleaseContractError('RELEASE_CRITICAL_TREE_ATTESTATION_INVALID')
+            normalized[role] = value
+        else:
+            normalized[role] = _sha(value, role)
+    equalities = (
+        ('reviewed_release_pr_head_sha', 'reviewed_ci_head_sha'),
+        ('production_execution_sha', 'release_execution_sha'),
+    )
+    for left, right in equalities:
+        if normalized[left] is not None and normalized[right] is not None:
+            if normalized[left] != normalized[right]:
+                raise ReleaseContractError('PROVENANCE_EQUALITY_MISMATCH')
+    if (
+        normalized['release_execution_sha'] is not None
+        and normalized['release_merge_sha'] is not None
+        and normalized['release_execution_sha'] == normalized['release_merge_sha']
+    ):
+        raise ReleaseContractError('FORBIDDEN_RELEASE_SHA_EQUALITY')
+    return {
+        'schema_version': 1,
+        'roles': normalized,
+        'nodes': [
+            'product_candidate_sha',
+            'release_execution_sha',
+            'reviewed_release_pr_head_sha',
+            'release_merge_sha',
+            'production_execution_sha',
+        ],
+        'equalities': [
+            {
+                'left': left,
+                'right': right,
+                'status': 'PASS' if all(normalized[key] for key in (left, right)) else 'TBD',
+            }
+            for left, right in equalities
+        ],
+    }
+
+
+def release_critical_tree_attestation(
+    repo,
+    release_execution_sha,
+    reviewed_release_pr_head_sha,
+    paths,
+):
+    """Prove the release-critical paths are identical at the two frozen heads."""
+    _sha(release_execution_sha, 'release_execution_sha')
+    _sha(reviewed_release_pr_head_sha, 'reviewed_release_pr_head_sha')
+    if not isinstance(paths, (list, tuple)) or not paths:
+        raise ReleaseContractError('TREE_ATTESTATION_PATHS_REQUIRED')
+    normalized_paths = sorted({str(path) for path in paths if str(path)})
+    if not normalized_paths:
+        raise ReleaseContractError('TREE_ATTESTATION_PATHS_REQUIRED')
+
+    def tree(sha):
+        return subprocess.check_output(
+            ['git', 'ls-tree', '-r', '-z', sha, '--', *normalized_paths],
+            cwd=repo,
+        )
+
+    execution_tree = tree(release_execution_sha)
+    reviewed_tree = tree(reviewed_release_pr_head_sha)
+    if not execution_tree or not reviewed_tree:
+        raise ReleaseContractError('TREE_ATTESTATION_PATH_MISSING')
+    if execution_tree != reviewed_tree:
+        raise ReleaseContractError('RELEASE_CRITICAL_TREE_MISMATCH')
+    return {
+        'status': 'PASS',
+        'release_execution_sha': release_execution_sha,
+        'reviewed_release_pr_head_sha': reviewed_release_pr_head_sha,
+        'paths': normalized_paths,
+        'tree_sha256': digest(execution_tree),
+        'attestation_sha256': digest(execution_tree + reviewed_tree),
+    }
+
+
+def manifest_coverage(planned_targets, resolved_targets, manifest_targets,
+                      publish_targets):
+    groups = {
+        'planned': list(planned_targets),
+        'resolved': list(resolved_targets),
+        'manifest': list(manifest_targets),
+        'publish': list(publish_targets),
+    }
+    for values in groups.values():
+        if any(not isinstance(value, str) or not value for value in values):
+            raise ReleaseContractError('MANIFEST_TARGET_INVALID')
+        if len(values) != len(set(values)):
+            raise ReleaseContractError('MANIFEST_DUPLICATE')
+    sets = [set(values) for values in groups.values()]
+    if any(value != sets[0] for value in sets[1:]):
+        raise ReleaseContractError('MANIFEST_COVERAGE_MISMATCH')
+    return {
+        'status': 'PASS',
+        'planned_targets': len(sets[0]),
+        'resolved_targets': len(sets[1]),
+        'manifest_targets': len(sets[2]),
+        'publish_targets': len(sets[3]),
+        'missing': 0,
+        'unexpected': 0,
+        'duplicate': 0,
+        'unresolved': 0,
+    }
+
+
+def classify_remote_error(error):
+    status = getattr(error, 'status', None) or getattr(error, 'status_code', None)
+    try:
+        status = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status = None
+    text = f'{type(error).__name__}:{error}'.lower()
+    if status in RETRYABLE_STATUS or (status is not None and 500 <= status <= 599):
+        return RETRYABLE
+    if any(term in text for term in NON_RETRYABLE_TERMS):
+        return NON_RETRYABLE
+    if any(term in text for term in RETRYABLE_TERMS):
+        return RETRYABLE
+    return NON_RETRYABLE
+
+
+def bounded_read_retry(call, *, attempts=4, base_delay=0.5, sleeper=time.sleep,
+                       reset=None, events=None):
+    if attempts < 1:
+        raise ValueError('READ_RETRY_ATTEMPTS_INVALID')
+    events = events if events is not None else []
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except Exception as exc:
+            classification = classify_remote_error(exc)
+            events.append({
+                'attempt': attempt,
+                'classification': classification,
+                'error_type': type(exc).__name__,
+            })
+            if classification != RETRYABLE or attempt == attempts:
+                raise
+            if reset is not None:
+                reset()
+            sleeper(base_delay * (2 ** (attempt - 1)))
+    raise AssertionError('unreachable')
+
+
+def reconcile_write(*, journal_state, observed_sha256, before_sha256,
+                    after_sha256):
+    if observed_sha256 == after_sha256:
+        return {'decision': 'ALREADY_COMMITTED', 'state': 'VERIFYING'}
+    if observed_sha256 == before_sha256:
+        if journal_state not in {
+            'PUBLISHING', 'VERIFYING', 'FAILED', 'ARCHIVE_COMPLETE',
+        }:
+            raise ReleaseContractError('WRITE_RECONCILIATION_STATE_INVALID')
+        return {'decision': 'RETRY_ALLOWED', 'state': journal_state}
+    raise PartialMutationError('WRITE_RECONCILIATION_UNKNOWN_STATE')
+
+
+def append_archive_checkpoint(root, *, release_execution_sha, release_id,
+                              state, progress, recorded_at):
+    _sha(release_execution_sha, 'release_execution_sha')
+    if state not in RELEASE_STATES:
+        raise ReleaseContractError('ARCHIVE_CHECKPOINT_STATE_INVALID')
+    if not isinstance(recorded_at, str) or not recorded_at:
+        raise ReleaseContractError('ARCHIVE_CHECKPOINT_TIME_REQUIRED')
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        'schema_version': 1,
+        'release_execution_sha': release_execution_sha,
+        'release_id': release_id,
+        'state': state,
+        'progress': progress,
+        'recorded_at': recorded_at,
+    }
+    data = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+    ).encode() + b'\n'
+    with open(root / 'checkpoints.jsonl', 'ab') as stream:
+        stream.write(data)
+        stream.flush()
+        __import__('os').fsync(stream.fileno())
+    return payload
+
+
+def read_archive_checkpoints(root):
+    path = Path(root) / 'checkpoints.jsonl'
+    if not path.exists():
+        return []
+    values = []
+    for line in path.read_text(encoding='utf-8').splitlines():
+        if not line:
+            continue
+        value = json.loads(line)
+        if not isinstance(value, dict) or value.get('schema_version') != 1:
+            raise ReleaseContractError('ARCHIVE_CHECKPOINT_INVALID')
+        values.append(value)
+    return values
 
 
 def payload(drive,entry):
@@ -183,7 +465,12 @@ def archive_namespace(plan):
     if plan.get('environment') == 'production':
         raise ValueError('ARCHIVE_CODE_COMMIT_REQUIRED')
     # Legacy sandbox plans have no execution SHA; isolate them by frozen plan bytes.
-    return 'plan-' + digest(json.dumps(plan, sort_keys=True).encode())
+    return 'plan-' + plan['release_id'] + '-' + digest(json.dumps(plan, sort_keys=True).encode())
+
+
+def archive_namespace_key(plan):
+    """Stable execution identity combines the frozen SHA and release id."""
+    return f'{archive_namespace(plan)}:{plan["release_id"]}'
 
 
 def require_archive_status_unchanged(drive, plan):
@@ -310,7 +597,18 @@ def publish(drive, root, single_writer=False):
         plan,journal=read(root/'plan.json'),read(root/'journal.json')
         security_preflight(root, plan)
         stage('publish',f'release {plan["release_id"]} journal {journal["state"]}')
-        if journal['state'] in ('ROLLED_BACK','ROLLING_BACK'): raise RuntimeError('Create a new plan after rollback')
+        if journal['state'] in ('ROLLED_BACK','ROLLING_BACK'):
+            raise RuntimeError('Create a new plan after rollback')
+        if journal.get('provenance'):
+            provenance_dag(plan['provenance'])
+        if journal.get('release_critical_tree_attestation'):
+            if journal['release_critical_tree_attestation'].get('status') != 'PASS':
+                raise PreMutationAbort('TREE_ATTESTATION_REQUIRED')
+        if journal.get('manifest_coverage'):
+            coverage = journal['manifest_coverage']
+            required = {'planned_targets','resolved_targets','manifest_targets','publish_targets'}
+            if not required <= set(coverage):
+                raise PreMutationAbort('MANIFEST_COVERAGE_REQUIRED')
         if journal['state'] == 'ARCHIVING':
             if journal.get('uploaded') != {} or journal.get('inflight') is not None:
                 raise RuntimeError('ARCHIVING_JOURNAL_INVALID')
@@ -319,7 +617,6 @@ def publish(drive, root, single_writer=False):
         for e in plan['entries']:
             verified_local(root,e,'before'); verified_local(root,e,'candidate')
         if journal['state']=='COMPLETE':
-            import json
             current=json.loads(drive.get(plan['status_id']))
             if current.get('state')!='COMPLETE' or current.get('current_release_id')!=plan['release_id']:
                 raise RuntimeError('Publication status no longer refers to this complete release')
@@ -329,7 +626,7 @@ def publish(drive, root, single_writer=False):
             data,meta=snapshot(drive,e['id'],e.get('mode','binary')); sha=digest(data)
             clean(data, 'readback/' + e['name'])
             scan_native_document(drive, e)
-            if e['id'] in journal['uploaded'] or journal['inflight']==e['id']:
+            if e['id'] in journal.get('uploaded',{}) or journal.get('inflight')==e['id']:
                 if sha==e['after_hash']: continue
                 if sha!=e['before_hash']: raise RuntimeError('Conflict while resuming')
             if fingerprint(meta)!=e['meta'] or sha!=e['before_hash']:
@@ -339,58 +636,117 @@ def publish(drive, root, single_writer=False):
         if plan.get('closure'):
             validate_closure(drive, root, plan, candidate=True)
         stage('publish','preflight passed')
-        import json
-        if journal['state'] not in ('PREPARED', 'ARCHIVING'):
+        state = journal['state']
+        pending_states = {'ARCHIVE_COMPLETE','PUBLISHING','VERIFYING'}
+        if state not in {'PREPARED','ARCHIVING',*pending_states}:
             status=json.loads(drive.get(plan['status_id']))
             untouched_status=digest(drive.get(plan['status_id']))==plan['status_before_hash']
             if not untouched_status and status.get('pending_release_id')!=plan['release_id'] and status.get('current_release_id')!=plan['release_id']:
                 raise RuntimeError('Another publisher changed the release status')
-        if journal['state'] in ('PREPARED', 'ARCHIVING'):
+        previous = journal.get('previous_snapshot')
+        if state in ('PREPARED', 'ARCHIVING'):
+            if state == 'PREPARED':
+                validate_state_transition('PREPARED','ARCHIVING')
             journal.update(state='ARCHIVING', uploaded={}, inflight=None)
             save(root/'journal.json', journal)
-        previous = archive_snapshot(drive, root, plan)
-        validate_previous_snapshot(plan, previous)
+            previous = archive_snapshot(drive, root, plan)
+            validate_previous_snapshot(plan, previous)
+            journal['previous_snapshot']=previous
+            save(root/'journal.json',journal)
+            stage('publish',f'archive snapshot for {len(plan["entries"])} artifacts')
+        else:
+            if not previous:
+                raise PreMutationAbort('ARCHIVE_CHECKPOINT_REQUIRED')
+            validate_previous_snapshot(plan, previous)
+            stage('publish','verified archive checkpoint reused')
         # Dependency/status drift during a long archive must not change canonical status.
         check_dependencies(drive, plan)
-        if journal['state'] == 'ARCHIVING':
+        if state in ('PREPARED', 'ARCHIVING'):
             require_archive_status_unchanged(drive, plan)
-        journal['previous_snapshot']=previous
-        journal['state']='PUBLISHING'; save(root/'journal.json',journal)
-        stage('publish',f'archive snapshot for {len(plan["entries"])} artifacts')
+            validate_state_transition('ARCHIVING','ARCHIVE_COMPLETE')
+            journal['state']='ARCHIVE_COMPLETE'
+            save(root/'journal.json',journal)
+            version_meta = plan.get('status_before_meta') or {}
+            if version_meta.get('modifiedTime'):
+                append_archive_checkpoint(
+                    root/'archive-checkpoints',
+                    release_execution_sha=(
+                        (plan.get('closure') or {}).get('code_commit')
+                        or plan.get('code_commit') or '0' * 40
+                    ),
+                    release_id=plan['release_id'],
+                    state='ARCHIVE_COMPLETE',
+                    progress={'snapshots': len(previous)},
+                    recorded_at=version_meta['modifiedTime'],
+                )
         try:
-            set_status(drive,plan,'PUBLISHING',previous)
+            if state not in {'PUBLISHING','VERIFYING'}:
+                validate_state_transition('ARCHIVE_COMPLETE','PUBLISHING')
+                journal['state']='PUBLISHING'
+                save(root/'journal.json',journal)
+                set_status(drive,plan,'PUBLISHING',previous)
+            else:
+                current_status=json.loads(drive.get(plan['status_id']))
+                if current_status.get('pending_release_id')!=plan['release_id'] and current_status.get('current_release_id')!=plan['release_id']:
+                    raise RuntimeError('Publication status no longer refers to this release')
             for index,e in enumerate(plan['entries'],1):
                 stage('publish',f'{index}/{len(plan["entries"])} {e["name"]}')
                 data=payload(drive,e)
                 if digest(data)==e['after_hash']:
-                    journal['uploaded'][e['id']]=True
+                    journal.setdefault('uploaded',{})[e['id']]=True
                     save(root/'journal.json',journal); continue
                 if digest(data)!=e['before_hash']: raise RuntimeError('Remote changed during publication')
                 journal['inflight']=e['id']; save(root/'journal.json',journal)
                 latest,latest_meta=snapshot(drive,e['id'],e.get('mode','binary'))
                 if digest(latest)!=e['before_hash']:raise RuntimeError('Target changed immediately before write')
-                write_payload(drive,e,verified_local(root,e,'candidate'))
-                clean(payload(drive,e), 'readback/' + e['name'])
-                if digest(payload(drive,e))!=e['after_hash']: raise RuntimeError('Readback mismatch')
-                journal['uploaded'][e['id']]=True; journal['inflight']=None
+                try:
+                    write_payload(drive,e,verified_local(root,e,'candidate'))
+                    clean(payload(drive,e), 'readback/' + e['name'])
+                    if digest(payload(drive,e))!=e['after_hash']:
+                        raise RuntimeError('Readback mismatch')
+                except Exception as exc:
+                    if classify_remote_error(exc) != RETRYABLE:
+                        raise
+                    try:
+                        observed=digest(payload(drive,e))
+                    except Exception:
+                        raise exc
+                    decision=reconcile_write(
+                        journal_state=journal['state'],
+                        observed_sha256=observed,
+                        before_sha256=e['before_hash'],
+                        after_sha256=e['after_hash'],
+                    )
+                    if decision['decision'] != 'ALREADY_COMMITTED':
+                        raise
+                    journal.setdefault('uploaded',{})[e['id']]=True
+                    journal['inflight']=None
+                    save(root/'journal.json',journal)
+                    raise exc
+                journal.setdefault('uploaded',{})[e['id']]=True; journal['inflight']=None
                 save(root/'journal.json',journal)
+            if state == 'PUBLISHING':
+                validate_state_transition('PUBLISHING','VERIFYING')
+            journal['state']='VERIFYING'; save(root/'journal.json',journal)
             verify(drive,root)
             check_dependencies(drive,plan)
             for e in plan['entries']:relocate(drive,e,e.get('publish_parent'))
             if plan.get('closure'):
                 validate_closure(drive, root, plan, candidate=False, relocated=True)
+            validate_state_transition('VERIFYING','COMPLETE')
             set_status(drive,plan,'COMPLETE',previous)
             if plan.get('closure'):
                 validate_closure(drive, root, plan, candidate=False, relocated=True, final=True)
             journal['state']='COMPLETE'; save(root/'journal.json',journal)
             stage('publish','COMPLETE')
         except BaseException:
+            journal['failed_from']=journal.get('state')
             journal['state']='FAILED'; save(root/'journal.json',journal)
-            try: set_status(drive,plan,'FAILED',previous)
-            except Exception: pass  # Local journal/outbox survives network loss.
+            if previous:
+                try: set_status(drive,plan,'FAILED',previous)
+                except Exception: pass
             raise
         return journal
-
 
 def security_preflight(root, plan):
     """Scan every frozen byte, including reports and retained rollback evidence."""
@@ -463,9 +819,13 @@ def freeze_closure(drive, root, plan):
         raise ValueError('BASELINE_REFREEZE_REQUIRED')
     controls = {closure['registry_key'], closure['manifest_key'], *closure['documents'].values()}
     entries = {entry.get('logical_key'): entry for entry in plan['entries']}
-    if len(entries) != len(plan['entries']) or None in entries or len(controls) != 6 or not controls <= set(entries):
+    document_keys = set(closure['documents'])
+    legacy_documents = {'readme', 'index', 'context_card', 'version'}
+    current_documents = legacy_documents | {'current_version_doc'}
+    expected_controls = 7 if document_keys == current_documents else 6
+    if len(entries) != len(plan['entries']) or None in entries or len(controls) != expected_controls or not controls <= set(entries):
         raise ValueError('CLOSURE_CONTROL_COVERAGE')
-    if set(closure['documents']) != {'readme', 'index', 'context_card', 'version'}:
+    if document_keys not in (legacy_documents, current_documents):
         raise ValueError('CLOSURE_DOCUMENT_COVERAGE')
     protected = closure['protected']
     if not isinstance(protected, list) or not protected:
@@ -752,3 +1112,45 @@ def restore(drive, root, single_writer=False):
         journal['state']='ROLLED_BACK'; save(root/'journal.json',journal)
         stage('restore','ROLLED_BACK')
         return journal
+
+
+PERFORMANCE_METRIC_FIELDS = (
+    "normal_codex_calls",
+    "CI_repair_codex_calls",
+    "local_exception_codex_calls",
+    "CI_wall_clock_seconds",
+    "local_prepare_wall_clock_seconds",
+    "publish_wall_clock_seconds",
+    "context_expansion_count",
+    "refreeze_count",
+    "development_sync_count",
+    "web_merge_review_cycles",
+    "WEB05_not_ready_attempts",
+    "contract_semantic_defect_count",
+    "production_resilience_defect_count",
+    "recovery_cycle_count",
+    "pre_mutation_abort_count",
+    "archive_reuse_count",
+    "transport_reconnect_count",
+    "partial_write_failure_count",
+    "rollback_count",
+    "consumer_baseline_failure_layer_counts",
+    "watcher_qualified_cycles",
+)
+
+
+def validate_performance_metrics(metrics):
+    if not isinstance(metrics, dict):
+        raise ReleaseContractError('PERFORMANCE_METRICS_OBJECT_REQUIRED')
+    missing = sorted(set(PERFORMANCE_METRIC_FIELDS) - set(metrics))
+    if missing:
+        raise ReleaseContractError('PERFORMANCE_METRICS_MISSING:' + ','.join(missing))
+    for key in PERFORMANCE_METRIC_FIELDS:
+        value = metrics[key]
+        if value == 'NOT_AVAILABLE':
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ReleaseContractError('PERFORMANCE_METRIC_VALUE_INVALID')
+        if value < 0:
+            raise ReleaseContractError('PERFORMANCE_METRIC_VALUE_INVALID')
+    return {'status': 'PASS', 'metrics': len(PERFORMANCE_METRIC_FIELDS)}

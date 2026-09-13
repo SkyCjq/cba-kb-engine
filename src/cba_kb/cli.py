@@ -68,6 +68,19 @@ def main():
     q.add_argument('--manifest',type=Path,required=True)
     q.add_argument('--captured-at')
     q.add_argument('--latency-seconds',type=float)
+    q=sub.add_parser('consumer-validate')
+    q.add_argument('--config',type=Path,required=True)
+    q=sub.add_parser('consumer-project')
+    q.add_argument('--input',type=Path,required=True)
+    q.add_argument('--output',type=Path,required=True)
+    q.add_argument('--release-id',required=True)
+    q.add_argument('--as-of',required=True)
+    q.add_argument('--provenance',required=True)
+    q=sub.add_parser('qualification-validate')
+    q.add_argument('--ledger',type=Path,required=True)
+    q=sub.add_parser('evidence-verify')
+    q.add_argument('--ledger-root',type=Path,required=True)
+    q.add_argument('--requirement-id',required=True)
     q=sub.add_parser('plan'); q.add_argument('--entries',type=Path,required=True); q.add_argument('--release-id',required=True)
     q.add_argument('--status-id',required=True); q.add_argument('--archive-id',required=True)
     q.add_argument('--dependencies',type=Path);q.add_argument('--environment',choices=['sandbox','production'],default='sandbox')
@@ -177,6 +190,23 @@ def main():
                     )
                 else:
                     result=lane.ingest_file(a.source,**options)
+        elif a.command=='consumer-validate':
+            from .consumer_projection import load_golden_questions, validate_golden_questions
+            result=validate_golden_questions(load_golden_questions(a.config))
+        elif a.command=='consumer-project':
+            from .consumer_projection import project_documents
+            documents=json.loads(a.input.read_text())
+            result={'documents':project_documents(documents,{
+                'release_id':a.release_id,'as_of':a.as_of,
+                'provenance':a.provenance,
+            })}
+            save(a.output,result)
+        elif a.command=='qualification-validate':
+            from .operational_qualification import validate_ledger
+            result=validate_ledger(read(a.ledger))
+        elif a.command=='evidence-verify':
+            from .evidence_ledger import verify_runtime_ledger
+            result=verify_runtime_ledger(a.ledger_root,a.requirement_id)
         elif a.command=='extract':
             from . import facts as definitions
             from .adapters import adapter_for

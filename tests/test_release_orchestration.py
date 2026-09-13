@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from cba_kb.common import digest
-from cba_kb.release import publish
+from cba_kb.release import ReleaseContractError, publish
 from scripts import prepare_production as orchestration
 
 
@@ -140,6 +140,39 @@ def test_projection_binds_exact_release_id_and_fails_closed():
     inputs["release_id"] = "v1.5.5-2"
     with pytest.raises(orchestration.ProjectionError, match="RELEASE_ID_FORBIDDEN"):
         orchestration.project_targets(**inputs)
+
+
+def test_v161_release_spec_and_reprojection_contract():
+    spec = orchestration._release_spec("v1.6.1-1")
+    assert spec["product_baseline_sha"] == (
+        "4fab3d0e8eedc594fae982f12a507fef88958f15"
+    )
+    inputs = projection_inputs()
+    inputs["release_id"] = "v1.6.1-1"
+    projected = orchestration.project_targets(**inputs)
+    assert projected["state"] == "PROJECTED"
+    allocation = {
+        "release_id": "v1.6.1-1",
+        "semantic_delta_signature": projected["semantic_delta_signature"],
+        "reservations": {
+            item["logical_key"]: "reserved-" + str(index)
+            for index, item in enumerate(projected["new_targets"])
+        },
+    }
+    reprojected = orchestration.reproject_targets(projected, allocation)
+    assert reprojected["state"] == "REPROJECTED"
+    assert reprojected["reservation_state"] == "RESERVED"
+    assert projected["state"] == "PROJECTED"
+
+
+def test_manifest_coverage_helper_rejects_any_set_drift():
+    orchestration.validate_manifest_coverage(
+        ["a", "b"], ["b", "a"], ["a", "b"], ["b", "a"],
+    )
+    with pytest.raises(ReleaseContractError, match="MANIFEST_COVERAGE"):
+        orchestration.validate_manifest_coverage(
+            ["a"], ["a"], ["a", "b"], ["a"],
+        )
 
 
 def test_v160_release_spec_uses_post_document_lane_baseline():
