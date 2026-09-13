@@ -4,6 +4,7 @@ Only read-only calls are retried. Writes stay single-attempt so that a lost
 response is resumed through the release journal instead of repeated blindly.
 """
 import json
+import http.client
 import re
 import socket
 import sys
@@ -13,7 +14,8 @@ from datetime import datetime, timezone
 URL_QUERY = re.compile(r'(https?://[^\s?]+)\?[^\s]+')
 SECRET = re.compile(r'(access_token|refresh_token|id_token|client_secret|key|sig|signature)=[^\s&]+')
 TRANSIENT_STATUS = (408, 429, 500, 502, 503, 504)
-TRANSIENT_TYPES = (TimeoutError, ConnectionError, socket.timeout, socket.gaierror)
+TRANSIENT_TYPES = (TimeoutError, ConnectionError, socket.timeout, socket.gaierror,
+                   http.client.IncompleteRead, http.client.RemoteDisconnected)
 
 
 def stage(name, message=''):
@@ -58,7 +60,7 @@ def transient(exception):
     return isinstance(exception, TRANSIENT_TYPES)
 
 
-def retry_read(call, attempts=4, base=0.5, label='drive'):
+def retry_read(call, attempts=4, base=0.5, label='drive', reset=None):
     """Retry a read-only call; the original exception is re-raised when it gives up."""
     for attempt in range(1, attempts + 1):
         try:
@@ -67,6 +69,8 @@ def retry_read(call, attempts=4, base=0.5, label='drive'):
             if attempt == attempts or not transient(exception):
                 stage(f'{label} failed', reason(exception))
                 raise
+            if reset is not None:
+                reset()
             delay = base * 2 ** (attempt - 1)
             stage(f'{label} retry', f'{reason(exception)}; attempt {attempt}/{attempts} in {delay:.1f}s')
             time.sleep(delay)

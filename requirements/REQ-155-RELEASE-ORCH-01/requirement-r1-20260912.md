@@ -1,6 +1,6 @@
 # CBA-KB Requirement - REQ-155-RELEASE-ORCH-01
 
-> Revision: `r5-20260912-archive-snapshot-recovery`
+> Revision: `r6-20260913-archive-read-transport-recovery`
 > Status: `FROZEN_SPEC`
 > Target release: `v1.5.5-1`
 > Product baseline SHA: `c14a0f2579fcc86e2dc114f0b15d00dd54e9f55e`
@@ -118,6 +118,32 @@ preserving attempt-1 dependency failure, reservation deviation, Recovery1
 timeout, its 320 partial children, and no canonical mutation for both failures.
 Publish is forbidden until `RECOVERY2_WEB_GO = GO`. This implementation stage
 ends at a new PR and `READY_FOR_WEB_REVIEW`, without merge or production work.
+
+## R6 transport recovery — user approval 2026-09-13
+
+Recovery2's authorized resume failed with BrokenPipeError during immutable
+archive validation, leaving ARCHIVING, uploaded=0, previous_snapshot=0 and no
+canonical mutation. Its 320 namespaced objects are a partial checkpoint: the
+186-target plan with six native Docs requires 379 archive children, not 320.
+All previous attempts, their plans and archive objects must remain untouched.
+
+The user explicitly approved the transport hotfix, adding
+`src/cba_kb/transport.py` to the implementation allowlist, and completion of
+merge and publication after verification. This revision starts from
+`8318e5ecc2653ce16f71eebdc18b7a4e0657feb4` and changes no business facts.
+
+Retry transient read failures at most four times, closing broken pooled HTTP
+connections before a retry. A partial download must restart in a fresh buffer.
+Never retry a remote write. For immutable archive reuse, validate MIME/parent
+from the current attempt's complete index and still download and hash the full
+content. Remove redundant per-object metadata reads, without manually marking
+snapshots or bypassing previous_snapshot coverage or production drift guards.
+
+Focused tests must cover stale-socket recovery, bounded retries, partial-buffer
+discard, permanent errors, and archive content validation without redundant
+metadata calls, together with the existing release/recovery tests. GitHub
+Actions owns full regression. Preserve all reservations and prior evidence;
+publish only from merged, tested code with matching frozen execution metadata.
 
 ## Project
 

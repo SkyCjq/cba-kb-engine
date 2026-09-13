@@ -42,12 +42,23 @@ class Drive:
         creds=credentials(root, credentials_store=instance.credentials_store if instance else None)
         self.api = build('drive','v3',credentials=creds,cache_discovery=False)
         from .native import NativeDocs
-        self.docs=NativeDocs(build('docs','v1',credentials=creds,cache_discovery=False))
+        docs_api = build('docs','v1',credentials=creds,cache_discovery=False)
+        self.docs=NativeDocs(docs_api)
+        self._read_clients = (self.api, docs_api)
+
+    def _reset_read_connections(self):
+        """Discard broken pooled sockets before retrying a read, never a write."""
+        for api in getattr(self, '_read_clients', (self.api,)):
+            http = getattr(api, '_http', None)
+            http = getattr(http, 'http', http)
+            if http is not None:
+                http.close()
 
     def get_managed_doc(self,file_id):
         if self.meta(file_id)['mimeType']!='application/vnd.google-apps.document':
             raise ValueError('Not a native Doc')
-        return retry_read(lambda: self.docs.get(file_id), label='native doc')
+        return retry_read(lambda: self.docs.get(file_id), label='native doc',
+                          reset=self._reset_read_connections)
 
     def put_managed_doc(self,file_id,content):
         if self.meta(file_id)['mimeType']!='application/vnd.google-apps.document':
@@ -70,7 +81,7 @@ class Drive:
         index = self.index_cba_keys(parent) if index is None else index
         source_mime = self.meta(file_id)['mimeType']
         if key in index:
-            existing = self.meta(index[key]['id'])
+            existing = index[key]
             if existing['mimeType'] != source_mime or parent not in existing.get('parents', []):
                 raise RuntimeError('Existing backup copy MIME/parent mismatch')
             return existing['id']
@@ -82,13 +93,18 @@ class Drive:
 
     def meta(self, file_id):
         return retry_read(lambda: self.api.files().get(fileId=file_id,fields=FIELDS,
-            supportsAllDrives=True).execute(), label='meta')
+            supportsAllDrives=True).execute(num_retries=0), label='meta',
+            reset=self._reset_read_connections)
 
     def get(self, file_id):
-        from googleapiclient.http import MediaIoBaseDownload
         meta = self.meta(file_id)
         if meta['mimeType'].startswith('application/vnd.google-apps.'):
             raise ValueError('Native object requires native adapter; raw download rejected')
+        return self._download(file_id)
+
+    def _download(self, file_id):
+        """Raw content read after MIME has been checked by get or the live index."""
+        from googleapiclient.http import MediaIoBaseDownload
         def download():
             buf = io.BytesIO()
             downloader = MediaIoBaseDownload(buf,self.api.files().get_media(fileId=file_id,supportsAllDrives=True))
@@ -96,7 +112,7 @@ class Drive:
             while not done:
                 _, done = downloader.next_chunk(num_retries=0)
             return buf.getvalue()
-        return retry_read(download, label='download')
+        return retry_read(download, label='download', reset=self._reset_read_connections)
 
     def put(self, file_id, content, mime):
         from googleapiclient.http import MediaIoBaseUpload
@@ -116,7 +132,8 @@ class Drive:
             result = retry_read(lambda: self.api.files().list(
                 q=f"'{parent}' in parents and trashed=false",pageToken=page,
                 pageSize=1000,fields=f'nextPageToken,files({FIELDS},appProperties)',supportsAllDrives=True,
-                includeItemsFromAllDrives=True).execute(num_retries=0), label='list')
+                includeItemsFromAllDrives=True).execute(num_retries=0), label='list',
+                reset=self._reset_read_connections)
             items.extend(result.get('files',[])); page=result.get('nextPageToken')
             if not page: return items
 
@@ -124,11 +141,14 @@ class Drive:
         # Recovery after a successful create with a lost response: same key, no blind duplicate.
         index = self.index_cba_keys(parent) if index is None else index
         if key in index:
-            result=self.meta(index[key]['id'])
+            result=index[key]
             if result['mimeType']!=mime or parent not in result.get('parents', []):
                 raise ValueError('Existing object MIME/parent mismatch')
-            if content is not None and digest(self.get(result['id']))!=digest(content):
-                raise RuntimeError('Immutable release object differs')
+            if content is not None:
+                if mime.startswith('application/vnd.google-apps.'):
+                    raise ValueError('Native object requires native adapter; raw download rejected')
+                if digest(self._download(result['id']))!=digest(content):
+                    raise RuntimeError('Immutable release object differs')
             return result['id']
         from googleapiclient.http import MediaIoBaseUpload
         body={'name':name,'parents':[parent],'mimeType':mime,'appProperties':{'cba_key':key}}

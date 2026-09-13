@@ -1,5 +1,5 @@
 req_id: REQ-155-RELEASE-ORCH-01
-requirement_revision_or_hash: r5-20260912-archive-snapshot-recovery
+requirement_revision_or_hash: r6-20260913-archive-read-transport-recovery
 requirement_artifact: requirements/REQ-155-RELEASE-ORCH-01/requirement-r1-20260912.md
 target_release_id: v1.5.5-1
 product_baseline_sha: c14a0f2579fcc86e2dc114f0b15d00dd54e9f55e
@@ -7,14 +7,15 @@ release_execution_sha: explicit_40_char_head
 previous_release_id: v1.5.4-1
 previous_production_code: e0dea09ccb020b2918cefa311365e8563348f293
 base_branch: codex/v1.5.2-draft2
-baseline_code_commit: b618668b9ceb630c44397c91204052736139d303
-feature_branch: codex/req-155-release-orch-r5-archive-recovery
+baseline_code_commit: 8318e5ecc2653ce16f71eebdc18b7a4e0657feb4
+feature_branch: codex/req-155-release-orch-r6-transport-recovery
 lane: CODE_CONFIG
 allowed_paths:
 - requirements/REQ-155-RELEASE-ORCH-01/requirement-r1-20260912.md
 - requirements/REQ-155-RELEASE-ORCH-01/task.yaml
 - src/cba_kb/release.py
 - src/cba_kb/drive.py
+- src/cba_kb/transport.py
 - tests/test_release.py
 focused_tests:
 - tests/test_release.py
@@ -63,3 +64,14 @@ archive_contract:
   resume_status_guard: frozen_bytes_and_metadata
   previous_snapshot_coverage: exact_unique_target_and_protected_coverage
   write_retries: 0
+transport_recovery:
+  approval: user_explicit_20260913
+  approved_added_path: src/cba_kb/transport.py
+  read_retry_attempts: 4
+  reconnect_before_read_retry: true
+  reused_archive_metadata: current_attempt_complete_index
+  reused_archive_content: full_hash_validation_required
+  preserved_recovery2_execution_sha: 8318e5ecc2653ce16f71eebdc18b7a4e0657feb4
+  preserved_recovery2_partial_children: 320
+  implementation_remote_writes: forbidden
+  completion_authority: user_approved_fix_merge_and_publish_20260913
