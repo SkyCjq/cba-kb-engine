@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+import socket
 
 import pytest
 
@@ -82,6 +83,9 @@ def test_exact_dedup_preserves_each_capture_and_attachment(tmp_path):
     provenance = json.loads((archive / "provenance.json").read_text())
     assert len(provenance["captures"]) == 2
     assert all(item["attachments"] for item in provenance["captures"])
+    dedup = json.loads((archive / "dedup.json").read_text())
+    assert dedup["disposition"] == "exact_merge"
+    assert dedup["near_duplicates"] == []
     before = (archive / "provenance.json").read_bytes()
     again = lane.ingest_file(second, **options)
     assert again["changed"] is False
@@ -138,6 +142,79 @@ def test_near_duplicate_uses_frozen_rule_and_requires_review(tmp_path):
     )
     assert dedup["disposition"] == "review_required"
     assert dedup["near_duplicates"][0]["doc_id"].startswith("doc_")
+
+
+def test_near_duplicate_boundaries_and_repeated_determinism():
+    base = "".join(chr(0x4E00 + index) for index in range(27))
+    boundary = chr(0x5000) + base[1:]
+    at_threshold = near_duplicate(base, boundary)
+    assert at_threshold["jaccard"] == 0.92
+    assert at_threshold["length_ratio"] == 1.0
+    assert at_threshold["candidate"] is True
+
+    below = (
+        "".join(chr(0x6000 + index) for index in range(2))
+        + base[2:]
+    )
+    below_threshold = near_duplicate(base, below)
+    assert below_threshold["jaccard"] < 0.92
+    assert below_threshold["length_ratio"] >= 0.90
+    assert below_threshold["candidate"] is False
+
+    length_boundary = near_duplicate("a" * 99, "a" * 89)
+    assert length_boundary["jaccard"] == 1.0
+    assert length_boundary["length_ratio"] == 0.90
+    assert length_boundary["candidate"] is True
+
+    below_length_boundary = near_duplicate("a" * 99, "a" * 88)
+    assert below_length_boundary["jaccard"] == 1.0
+    assert below_length_boundary["length_ratio"] < 0.90
+    assert below_length_boundary["candidate"] is False
+
+    repeated = [near_duplicate(base, boundary) for _ in range(5)]
+    assert repeated == [at_threshold] * 5
+
+
+def test_ima_export_end_to_end_archives_local_evidence(tmp_path, monkeypatch):
+    private = instance(tmp_path)
+    source = write(
+        private.document_input_root / "ima-export.md",
+        "---\ntitle: Local ima export\n---\nima body\n",
+    )
+    raw = source.read_bytes()
+
+    def network_forbidden(*args, **kwargs):
+        raise AssertionError("ima ingestion must not perform network access")
+
+    monkeypatch.setattr(socket, "create_connection", network_forbidden)
+    result = DocumentLane(ROOT, private).ingest_file(
+        source,
+        capture_channel="ima_file_export",
+        captured_at=FIXED_AT,
+        latency_seconds=0.0,
+    )
+    assert result["status"] == "ACCEPTED"
+    archive = private.document_archive_root / result["doc_id"]
+    for name in (
+        "record.json",
+        "text.txt",
+        "provenance.json",
+        "dedup.json",
+        "raw",
+        "attachments",
+    ):
+        assert (archive / name).exists()
+    record = json.loads((archive / "record.json").read_text())
+    assert record["capture_channel"] == "ima_file_export"
+    assert record["rights"] == {
+        "classification": "unknown",
+        "public_export_allowed": False,
+        "evidence": [],
+    }
+    provenance = json.loads((archive / "provenance.json").read_text())
+    assert len(provenance["captures"]) == 1
+    assert provenance["captures"][0]["parser_name"] == "ima_file"
+    assert (archive / provenance["captures"][0]["raw_path"]).read_bytes() == raw
 
 
 def test_rights_taxonomy_and_public_export_guards(tmp_path):

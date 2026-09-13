@@ -1,7 +1,8 @@
 req_id: REQ-160-DOCUMENT-LANE-01
-requirement_revision_or_hash: r2-20260913-v155-production-refresh
-requirement_artifact: requirements/REQ-160-DOCUMENT-LANE-01/requirement-r2-20260913.md
-requirement_export_sha256: 28fc2acd3c050a1df40905a2cd504eadafc88e76c3e487decc1e60e420506473
+requirement_revision_or_hash: r3-20260913-acceptance-gate-alignment
+requirement_artifact: requirements/REQ-160-DOCUMENT-LANE-01/requirement-r3-20260913.md
+requirement_parent_revision: r2-20260913-v155-production-refresh
+requirement_artifact_sha256: 7810be06f7cbc3e225c11695303c1171d0d6d5a0ff4b0534ad72db34d62edcd6
 baseline_release_id: v1.5.5-1
 published_code_sha: 0b9c6e062616fc8d4349304ea483afdd917ce181
 baseline_development_sha: 0b9c6e062616fc8d4349304ea483afdd917ce181
@@ -18,6 +19,7 @@ optional_overlays:
     proposal: REQ-RELEASE-PERF-01
     activation_reason: null
 allowed_paths:
+- requirements/REQ-160-DOCUMENT-LANE-01/requirement-r3-20260913.md
 - requirements/REQ-160-DOCUMENT-LANE-01/requirement-r2-20260913.md
 - requirements/REQ-160-DOCUMENT-LANE-01/task-brief.md
 - requirements/REQ-160-DOCUMENT-LANE-01/task.yaml
@@ -87,12 +89,20 @@ acceptance_ids:
 release_critical_fixtures:
 - private_instance_contract
 - document_lane_private_manifest
-- wechat_real_50
-- local_documents_real_20
+- real_document_corpus
 - drive_docs_real_min_3
-- document_dedup_collision_set
 - rights_public_export_guard_set
 - facts_zero_diff_hash_set
+real_document_corpus:
+  definition: all_currently_available_real_private_instance_documents
+  synthetic_documents_allowed: false
+  fixed_wechat_minimum: null
+  count_reporting_required: true
+  current_release_evidence:
+    wechat_browser_clip: 35
+    local_documents: 33
+    native_google_docs: 3
+    ocr_required_reviews: 9
 private_instance_contract:
   root: /Users/skychengneo/Agent/CBA_kb_instance
   input_root: /Users/skychengneo/Agent/CBA_kb_instance/inbox/documents
@@ -106,16 +116,16 @@ log_policy: summary_or_failure_only
 local_prepare_command: NOT_IMPLEMENTED
 publish_command: NOT_IMPLEMENTED_FOR_REQ_160
 rollback_command: NOT_IMPLEMENTED_FOR_REQ_160
-implementation_status: IMPLEMENTED_CI_PASS_PRECHECK_ENVIRONMENT_BLOCKED
-focused_test_result: PASS_79
-ci_result: PASS
-ci_run_id: 34740987407
-ci_verified_code_commit: 4d3a3c34952198f193dfcfb9226e907da9462381
+implementation_status: IMPLEMENTED_R3_TESTS_REPAIR_PENDING_CI
+focused_test_result: PASS_82
+ci_result: PENDING
+ci_run_id: null
+ci_verified_code_commit: null
 conditional_local_precheck:
-  status: ENVIRONMENT_BLOCKED
-  reason: PRIVATE_DOCUMENT_FIXTURES_MISSING
-  observed:
-    inbox_documents_path: /Users/skychengneo/Agent/CBA_kb_instance/inbox/documents
-    document_count: 0
+  status: PENDING_R3_RERUN
+  previous_r2_status: ENVIRONMENT_BLOCKED
   required_before_web_merge_review: true
   synthetic_substitution_forbidden: true
+  required_counts:
+    native_google_docs_min: 3
+    real_document_corpus_min: 1

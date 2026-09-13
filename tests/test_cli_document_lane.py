@@ -87,6 +87,41 @@ def test_document_batch_cli_does_not_require_drive_for_local_entries(tmp_path):
     assert len(list((private / "data/document_lane/reports").glob("*.json"))) == 1
 
 
+def test_document_ingest_cli_supports_ima_export_without_network(tmp_path):
+    private = private_instance(tmp_path)
+    source = private / "inbox/documents/ima-export.md"
+    source.write_text("---\ntitle: ima export\n---\nlocal ima body\n")
+    result = command(
+        "--instance-root",
+        str(private),
+        "document-ingest",
+        "--capture-channel",
+        "ima_file_export",
+        "--source",
+        "ima-export.md",
+        "--captured-at",
+        FIXED_AT,
+        "--latency-seconds",
+        "0",
+        env={
+            "CBA_KB_INSTANCE_ROOT": "",
+            "HTTP_PROXY": "http://127.0.0.1:9",
+            "HTTPS_PROXY": "http://127.0.0.1:9",
+            "ALL_PROXY": "http://127.0.0.1:9",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    output = json.loads(result.stdout)
+    archive = Path(output["archive_path"])
+    record = json.loads((archive / "record.json").read_text())
+    assert record["capture_channel"] == "ima_file_export"
+    assert record["rights"]["classification"] == "unknown"
+    assert record["rights"]["public_export_allowed"] is False
+    provenance = json.loads((archive / "provenance.json").read_text())
+    raw = archive / provenance["captures"][0]["raw_path"]
+    assert raw.read_bytes() == source.read_bytes()
+
+
 def test_document_cli_fails_closed_without_private_instance(tmp_path):
     result = command(
         "document-ingest",
