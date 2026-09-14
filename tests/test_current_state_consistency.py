@@ -3,7 +3,7 @@ import json
 import pytest
 
 from cba_kb.current_state import (
-    BEGIN, CURRENT_VERSION_DOC, END, consumer_artifacts,
+    BEGIN, CURRENT_VERSION_DOC, END, audit_current_history, consumer_artifacts,
     control_document_identities, current_version_document,
     current_version_document_migration, migrate_current_version_document,
     generate_context_card, read_current_block, render_current_state,
@@ -100,6 +100,33 @@ def test_zero_business_delta_includes_evidence_and_source_registry():
         zero_business_delta(before, {})
 
 
+def test_candidate_named_code_mirror_remains_current():
+    docs = manifest() + [{
+        'uid': 'code/scripts/sync_v1_5_2_candidate.py',
+        'drive_file_id': 'code-candidate',
+        'content_hash': 'd' * 64,
+    }]
+    records = [
+        {'id': 'event-file', 'name': 'events', 'parents': ['data']},
+        {'id': 'compat-file', 'name': 'compat', 'parents': ['data']},
+        {
+            'id': 'code-candidate',
+            'name': 'scripts__sync_v1_5_2_candidate.py',
+            'parents': ['scripts'],
+        },
+    ]
+    zones = {
+        'current': ['root', 'data', 'ai', 'scripts'],
+        'history': ['archive'],
+        'staging': ['staging'],
+        'evidence': ['sources'],
+        'folders': {'archive': ['root'], 'sources': ['root']},
+    }
+    assert audit_current_history(
+        records, zones, docs, registry(),
+    )['violations'] == 0
+
+
 def test_five_current_surfaces_share_release_and_code_identity():
     status, reg, docs = state_documents()
     result = control_document_identities(status, reg, docs)
@@ -176,3 +203,36 @@ def test_v161_migration_is_idempotent_and_conflicts_fail_closed():
 def test_non_v161_current_version_lookup_remains_strict():
     with pytest.raises(ValueError, match='CURRENT_VERSION_DOC_MISSING'):
         current_version_document([legacy_version_row()], release_id='v1.6.0-1')
+
+
+def test_v161_current_surface_set_excludes_legacy_version():
+    status, reg, docs = state_documents()
+    status['current_release_id'] = 'v1.6.1-1'
+    reg['registry_release_id'] = 'v1.6.1-1'
+    docs = {
+        key: value.replace('v1.5.4-test', 'v1.6.1-1')
+        for key, value in docs.items()
+        if key != 'version'
+    }
+    result = validate_current_state(status, reg, manifest(), docs)
+    assert result['status'] == 'PASS'
+    assert set(result['surfaces']) == {
+        'release_status', 'readme', 'index', 'context_card',
+        'current_version_doc',
+    }
+
+
+def test_v161_stale_current_version_doc_is_pre_mutation_failure():
+    status, reg, docs = state_documents()
+    status['current_release_id'] = 'v1.6.1-1'
+    reg['registry_release_id'] = 'v1.6.1-1'
+    docs = {
+        key: value.replace('v1.5.4-test', 'v1.6.1-1')
+        for key, value in docs.items()
+        if key != 'version'
+    }
+    docs['current_version_doc'] = docs['current_version_doc'].replace(
+        'v1.6.1-1', 'v1.5.4-1',
+    )
+    with pytest.raises(ValueError, match='DRIFT'):
+        validate_current_state(status, reg, manifest(), docs)

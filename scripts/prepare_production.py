@@ -14,11 +14,18 @@ import subprocess
 import yaml
 
 from cba_kb.common import atomic, digest, read, save
-from cba_kb.current_state import current_version_document_migration
+from cba_kb.canonical_registry import load_registry
+from cba_kb.current_state import (
+    END as CURRENT_STATE_END, generate_context_card,
+    current_version_document_migration, replace_current_block,
+    target_metadata,
+)
 from cba_kb.drive import Drive
 from cba_kb.instance import load_instance
 from cba_kb.native import wrap
-from cba_kb.release import fingerprint, prepare as prepare_release, snapshot
+from cba_kb.release import (
+    _inventory, fingerprint, prepare as prepare_release, snapshot,
+)
 
 
 RELEASE_ID = "v1.5.5-1"
@@ -35,15 +42,21 @@ RELEASE_SPECS = {
     },
 }
 FOLDER = "application/vnd.google-apps.folder"
+NATIVE_DOCUMENT = "application/vnd.google-apps.document"
+REGISTRY_KEY = "config/canonical_products.yaml"
+MANIFEST_KEY = "input/manifest.csv"
+CONTEXT_CARD_KEY = "ai/CONTEXT_CARD.md"
 FORBIDDEN_CODE_PREFIXES = ("workspace/", ".credentials/", ".venv/")
 CONTROL_KEYS = frozenset({
     "control/drive_map.yaml",
     "entry/code",
     "entry/README",
     "entry/context",
+    "ai/CONTEXT_CARD.md",
     "CURRENT_VERSION_DOC",
     "derived/INDEX.md",
     "input/manifest.csv",
+    "config/canonical_products.yaml",
 })
 
 
@@ -428,8 +441,17 @@ def validate_release_state(drive, instance, projection, allocation):
     status_ids = {
         item.get("id") for item in (status.get("artifacts") or [])
     }
+    state = status.get("state")
+    readable_state = state == "COMPLETE"
     if (
-        status.get("state") != "COMPLETE"
+        projection.get("release_id") == "v1.6.1-1"
+        and state == "ROLLED_BACK"
+    ):
+        readable_state = (
+            status.get("rolled_back_release_id") == "v1.6.1-1"
+        )
+    if (
+        not readable_state
         or status.get("current_release_id") != allocation.get("active_release_id")
         or status_ids != active_ids
     ):
@@ -440,8 +462,13 @@ def validate_release_state(drive, instance, projection, allocation):
     )
     return {
         "result": "PASS",
+        "state": state,
+        "rolled_back_release_id": status.get("rolled_back_release_id"),
+        "status_sha256": digest(status_raw),
+        "status_meta": fingerprint(status_meta),
         "active_production_target_count": len(active_ids),
         "reserved_staging_target_count": len(allocation["reservations"]),
+        "status": status,
         **reconciliation,
     }
 
@@ -567,6 +594,25 @@ def _candidate_inputs(drive, engine_root, projection, allocation, output):
     item_by_key = {
         key: existing_by_key.get(key) or new_by_key[key] for key in ordered
     }
+    registry = None
+    registry_bytes = None
+    manifest_previous = None
+    if projection["release_id"] == "v1.6.1-1":
+        if REGISTRY_KEY not in item_by_key or MANIFEST_KEY not in item_by_key:
+            raise ProjectionError("CLOSURE_CONTROL_TARGET_MISSING")
+        registry_previous, _ = snapshot(
+            drive, item_by_key[REGISTRY_KEY]["id"],
+            item_by_key[REGISTRY_KEY].get("mode", "binary"),
+        )
+        registry = load_registry(registry_previous)
+        registry["registry_release_id"] = projection["release_id"]
+        registry_bytes = yaml.safe_dump(
+            registry, allow_unicode=True, sort_keys=False,
+        ).encode()
+        manifest_previous, _ = snapshot(
+            drive, item_by_key[MANIFEST_KEY]["id"],
+            item_by_key[MANIFEST_KEY].get("mode", "binary"),
+        )
     data_by_key = {}
     previous_by_key = {}
     for logical_key in ordered:
@@ -584,22 +630,24 @@ def _candidate_inputs(drive, engine_root, projection, allocation, output):
             previous_by_key[logical_key] = previous
             generated_data = _control_candidate(
                 logical_key, previous, projection, allocation, id_by_key,
-                code_hashes, engine_root,
+                code_hashes, engine_root, registry, registry_bytes,
+                manifest_previous,
             )
             generated = generated_data is not None
             data = generated_data if generated else previous
         if generated and item.get("mode") == "managed_doc":
             data = _managed_candidate(data)
         data_by_key[logical_key] = data
-    if "input/manifest.csv" in item_by_key:
-        previous, _ = snapshot(
-            drive, item_by_key["input/manifest.csv"]["id"],
-            "binary",
-        )
-        previous_by_key["input/manifest.csv"] = previous
-        data_by_key["input/manifest.csv"] = _manifest_candidate(
-            previous, projection, allocation, id_by_key, data_by_key,
-            item_by_key,
+    if MANIFEST_KEY in item_by_key:
+        if manifest_previous is None:
+            manifest_previous, _ = snapshot(
+                drive, item_by_key[MANIFEST_KEY]["id"],
+                item_by_key[MANIFEST_KEY].get("mode", "binary"),
+            )
+        previous_by_key[MANIFEST_KEY] = manifest_previous
+        data_by_key[MANIFEST_KEY] = _manifest_candidate(
+            manifest_previous, projection, allocation, id_by_key,
+            data_by_key, item_by_key,
         )
     for index, logical_key in enumerate(ordered):
         item = item_by_key[logical_key]
@@ -622,6 +670,10 @@ def _candidate_inputs(drive, engine_root, projection, allocation, output):
             "mode": item.get("mode", "binary"),
             "path": str(candidate),
             "change_class": change_class,
+            "before_hash": (
+                digest(previous_by_key[logical_key])
+                if logical_key in previous_by_key else None
+            ),
         }
         if logical_key in new_by_key:
             entry.update({
@@ -694,10 +746,13 @@ def _managed_candidate(data):
 
 
 def _control_candidate(logical_key, previous, projection, allocation,
-                       id_by_key, code_hashes, engine_root):
+                       id_by_key, code_hashes, engine_root, registry,
+                       registry_bytes, manifest_bytes):
     release_id = projection["release_id"]
     engine_sha = projection["engine_sha"]
     status_id = allocation["status_id"]
+    if logical_key == REGISTRY_KEY:
+        return registry_bytes if registry_bytes is not None else None
     if logical_key == "control/drive_map.yaml":
         mapping = yaml.safe_load(previous.decode())
         mapping["v1_5_release"] = {
@@ -721,13 +776,23 @@ def _control_candidate(logical_key, previous, projection, allocation,
             for key in sorted(code_hashes)
         )
         return ("\n".join(lines) + "\n").encode()
+    if logical_key == CONTEXT_CARD_KEY:
+        if registry is None or manifest_bytes is None:
+            return None
+        metadata = (
+        target_metadata(release_id, engine_sha, registry)
+        if registry is not None else None
+    )
+        return generate_context_card(
+            metadata, registry, manifest_bytes,
+        ).encode()
     if logical_key in {
         "entry/README", "entry/context", "CURRENT_VERSION_DOC",
         "derived/INDEX.md",
     }:
         return _content_preserving_candidate(
             logical_key, previous, projection, allocation, id_by_key,
-            engine_root,
+            engine_root, registry,
         )
     return None
 
@@ -739,13 +804,20 @@ def _managed_body(data):
         end = text.find("[CBA-KB CURRENT RELEASE END]")
         text = text[start:end if end >= 0 else None]
     history = "以下为迁移前的历史阅读内容；当前回答请以上方发布内容及 MASTER 为准。"
-    return text.replace(history, "").strip()
+    text = text.replace(history, "").strip()
+    if text.endswith(CURRENT_STATE_END.rstrip("\n")):
+        text += "\n"
+    return text
 
 
 def _content_preserving_candidate(logical_key, previous, projection, allocation,
-                                  id_by_key, engine_root):
+                                  id_by_key, engine_root, registry=None):
     release_id = projection["release_id"]
     engine_sha = projection["engine_sha"]
+    metadata = (
+        target_metadata(release_id, engine_sha, registry)
+        if registry is not None else None
+    )
     title = {
         "entry/README": "CBA-KB 发布入口",
         "entry/context": "CBA-KB 当前状态",
@@ -774,6 +846,8 @@ def _content_preserving_candidate(logical_key, previous, projection, allocation,
             f"## Migration\n\n{migration}\n"
         ).encode()
     preserved = _managed_body(previous)
+    if metadata is not None:
+        preserved = replace_current_block(preserved, metadata)
     historical_releases = {
         projection.get("active_release_id"),
         "v1.5.4-1",
@@ -805,6 +879,139 @@ def _content_preserving_candidate(logical_key, previous, projection, allocation,
     ).encode()
 
 
+def _evidence_baseline(drive, roots):
+    roots = sorted({root for root in roots if root})
+    if not roots:
+        return []
+    items, _ = _inventory(drive, {
+        "current": [],
+        "history": [],
+        "staging": [],
+        "evidence": roots,
+    })
+    protected = []
+    for item in sorted(
+        (
+            item for item in items
+            if item.get("mimeType") != FOLDER
+        ),
+        key=lambda item: item["id"],
+    ):
+        mode = (
+            "managed_doc"
+            if item.get("mimeType") == NATIVE_DOCUMENT else "binary"
+        )
+        data, _ = snapshot(drive, item["id"], mode)
+        protected.append({
+            "id": item["id"],
+            "name": item["name"],
+            "sha256": digest(data),
+            "mode": mode,
+            "kind": "evidence",
+        })
+    return protected
+
+
+def _build_closure_contract(*, drive, instance, projection, allocation,
+                            entries, state):
+    """Build the production closure from actual candidate targets and zones."""
+    by_key = {entry["logical_key"]: entry for entry in entries}
+    document_keys = {
+        "readme": "entry/README",
+        "index": "derived/INDEX.md",
+        "context_card": CONTEXT_CARD_KEY,
+        "current_version_doc": "CURRENT_VERSION_DOC",
+    }
+    required = {REGISTRY_KEY, MANIFEST_KEY, *document_keys.values()}
+    if not required <= set(by_key):
+        raise ProjectionError("CLOSURE_CONTROL_TARGET_MISSING")
+    status = state["status"]
+    previous_code_commit = (
+        status.get("code_commit") or status.get("published_code_commit")
+    )
+    if not isinstance(previous_code_commit, str) or not re.fullmatch(
+        "[0-9a-f]{40}", previous_code_commit,
+    ):
+        raise ProjectionError("CLOSURE_PREVIOUS_CODE_REQUIRED")
+    protected_specs = (
+        ("input/MASTER.xlsx", "master"),
+        ("facts/CBA_注册领域_六表.xlsx", "six_table"),
+        ("facts/CBA_球员注册_EVENTS.xlsx", "six_table"),
+        ("facts/CBA_外籍球员注册_SNAPSHOTS.xlsx", "six_table"),
+        ("input/source_registry.csv", "source_registry"),
+        ("evidence/bayi_legacy_context.md", "evidence"),
+    )
+    protected = []
+    for logical_key, kind in protected_specs:
+        try:
+            entry = by_key[logical_key]
+        except KeyError:
+            raise ProjectionError("CLOSURE_PROTECTED_TARGET_MISSING") from None
+        before_hash = entry.get("before_hash")
+        if (
+            not isinstance(before_hash, str)
+            or not re.fullmatch("[0-9a-f]{64}", before_hash)
+        ):
+            raise ProjectionError("CLOSURE_PROTECTED_HASH_REQUIRED")
+        protected.append({
+            "id": entry["id"],
+            "name": entry["name"],
+            "sha256": before_hash,
+            "mode": entry.get("mode", "binary"),
+            "kind": kind,
+        })
+    parents = instance.read_json("import_inventory.json")["parents"]
+    current = {
+        parents["root"], parents["ai"], parents["scripts"],
+        parents["config"], parents["data"],
+    }
+    evidence_keys = {
+        logical_key for logical_key, kind in protected_specs
+        if kind == "evidence"
+    }
+    for logical_key in required | (
+        {item[0] for item in protected_specs} - evidence_keys
+    ):
+        parent = by_key[logical_key].get("publish_parent")
+        if parent and parent != parents["archive"]:
+            current.add(parent)
+    history = {parents["archive"]}
+    evidence = {
+        by_key[logical_key].get("publish_parent")
+        for logical_key in evidence_keys
+        if by_key[logical_key].get("publish_parent")
+    }
+    if not evidence:
+        raise ProjectionError("CLOSURE_EVIDENCE_ZONE_MISSING")
+    protected_by_id = {item["id"]: item for item in protected}
+    for item in _evidence_baseline(drive, evidence):
+        protected_by_id.setdefault(item["id"], item)
+    protected = list(protected_by_id.values())
+    staging = {
+        entry.get("staging_parent") for entry in entries
+        if entry.get("staging_parent")
+    }
+    staging.add(allocation["staging_id"])
+    groups = [current, history, evidence, staging]
+    if sum(len(group) for group in groups) != len(set().union(*groups)):
+        raise ProjectionError("CLOSURE_ZONE_OVERLAP")
+    return {
+        "code_commit": projection["engine_sha"],
+        "previous_code_commit": previous_code_commit,
+        "baseline_release_id": status.get("current_release_id"),
+        "registry_key": REGISTRY_KEY,
+        "manifest_key": MANIFEST_KEY,
+        "documents": document_keys,
+        "zones": {
+            "current": sorted(current),
+            "history": sorted(history),
+            "staging": sorted(staging),
+            "evidence": sorted(evidence),
+        },
+        "protected": protected,
+    }
+
+
 def freeze_plan(
     drive,
     *,
@@ -833,6 +1040,16 @@ def freeze_plan(
     policy = instance.read_json("production.json")
     dependencies = load_production_dependencies(drive, policy)
     outbox = output / "outbox"
+    closure = None
+    if release_id == "v1.6.1-1":
+        closure = _build_closure_contract(
+            drive=drive,
+            instance=instance,
+            projection=projection,
+            allocation=allocation,
+            entries=entries,
+            state=state,
+        )
     plan = prepare_release(
         drive,
         outbox,
@@ -842,6 +1059,7 @@ def freeze_plan(
         allocation["status_id"],
         dependencies,
         carry_forward_artifacts=True,
+        **({"closure": closure} if closure is not None else {}),
         environment="production",
         code_commit=projection["engine_sha"],
     )
@@ -850,6 +1068,8 @@ def freeze_plan(
     }:
         raise ProjectionError("PRODUCTION_DEPENDENCY_BINDING_MISMATCH")
     save(output / "allocation.json", allocation)
+    if closure is not None:
+        save(output / "closure.json", closure)
     save(output / "entries.json", plan["entries"])
     save(output / "target_classification.json", {
         entry["logical_key"]: entry["change_class"] for entry in entries

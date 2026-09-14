@@ -6,6 +6,7 @@ import pytest
 from cba_kb.common import digest
 from cba_kb.release import ReleaseContractError, publish
 from scripts import prepare_production as orchestration
+from test_canonical_registry import manifest as canonical_manifest, registry as canonical_registry
 
 
 RELEASE = "v1.5.5-1"
@@ -225,6 +226,39 @@ def test_v160_content_preserving_candidate_marks_v155_as_historical(tmp_path):
     assert b"historical release: v1.5.5-1" in candidate
     assert "v1.5.5-1 / 历史发布".encode() in candidate
     assert b"navigation-marker" in candidate
+
+
+def test_v161_content_candidate_replaces_native_managed_current_block(tmp_path):
+    from cba_kb.current_state import (
+        read_current_block, render_current_state, target_metadata,
+    )
+    from cba_kb.native import wrap
+
+    registry = canonical_registry()
+    registry["registry_release_id"] = "v1.6.1-1"
+    previous_metadata = target_metadata(
+        "v1.6.1-1", "b" * 40, registry,
+    )
+    previous = wrap(
+        "legacy payload\n" + render_current_state(previous_metadata)
+    ).encode()
+    candidate = orchestration._content_preserving_candidate(
+        "entry/README",
+        previous,
+        {
+            "release_id": "v1.6.1-1",
+            "engine_sha": "a" * 40,
+            "active_release_id": "v1.6.0-1",
+        },
+        {"status_id": "status"},
+        {},
+        tmp_path,
+        registry,
+    )
+    assert read_current_block(candidate.decode()) == target_metadata(
+        "v1.6.1-1", "a" * 40, registry,
+    )
+    assert b"legacy payload" in candidate
 
 
 def test_release_execution_sha_provenance_fails_closed(monkeypatch):
@@ -671,6 +705,12 @@ def test_freeze_uses_reserved_ids_and_does_not_mutate_remote(
     assert [item["id"] for item in captured["dependencies"]] == [
         "fact-dependency-id", "source-registry-dependency-id",
     ]
+    assert all(
+        isinstance(item.get("before_hash"), str)
+        and len(item["before_hash"]) == 64
+        for item in captured["entries"]
+        if not item["logical_key"].startswith("code/")
+    )
     assert {item["id"] for item in captured["dependencies"]} != {
         "master", "registry",
     }
@@ -827,3 +867,194 @@ def test_v161_projection_migrates_version_doc_as_existing_control_target():
         target_keys, target_keys, target_keys, target_keys,
     )['missing'] == 0
     assert [item['status'] for item in value['control_target_migrations']].count('MIGRATED') == 1
+
+
+def _closure_entries():
+    specs = [
+        ('config/canonical_products.yaml', 'config/canonical_products.yaml', 'control'),
+        ('input/manifest.csv', 'manifest.csv', 'control'),
+        ('entry/README', 'README', 'control'),
+        ('derived/INDEX.md', 'INDEX', 'control'),
+        ('ai/CONTEXT_CARD.md', 'CONTEXT_CARD.md', 'control'),
+        ('CURRENT_VERSION_DOC', 'CURRENT_VERSION_DOC.md', 'control'),
+        ('input/MASTER.xlsx', 'MASTER.xlsx', 'master'),
+        ('facts/CBA_注册领域_六表.xlsx', 'six.xlsx', 'six_table'),
+        ('facts/CBA_球员注册_EVENTS.xlsx', 'events.xlsx', 'six_table'),
+        ('facts/CBA_外籍球员注册_SNAPSHOTS.xlsx', 'snapshots.xlsx', 'six_table'),
+        ('input/source_registry.csv', 'source_registry.csv', 'source_registry'),
+        ('evidence/bayi_legacy_context.md', 'bayi.md', 'evidence'),
+    ]
+    rows = []
+    for index, (key, name, _kind) in enumerate(specs):
+        rows.append({
+            'logical_key': key, 'id': f'id-{index}', 'name': name,
+            'mime': 'text/plain', 'mode': 'binary',
+            'before_hash': f'{index:064x}',
+            'publish_parent': (
+                'source-evidence' if key == 'evidence/bayi_legacy_context.md'
+                else 'root' if key not in {
+                    'input/MASTER.xlsx', 'facts/CBA_注册领域_六表.xlsx',
+                    'facts/CBA_球员注册_EVENTS.xlsx',
+                    'facts/CBA_外籍球员注册_SNAPSHOTS.xlsx',
+                }
+                else 'data'
+            ),
+            'staging_parent': 'staging',
+        })
+    return rows
+
+
+class ClosureInstance:
+    def read_json(self, name):
+        assert name == 'import_inventory.json'
+        return {'parents': {
+            'root': 'root', 'ai': 'ai', 'scripts': 'scripts',
+            'config': 'config', 'data': 'data', 'archive': 'archive',
+        }}
+
+
+class ClosureDrive:
+    def list(self, folder):
+        return []
+
+
+def test_v161_closure_uses_real_roles_protected_targets_and_zones():
+    entries = _closure_entries()
+    closure = orchestration._build_closure_contract(
+        drive=ClosureDrive(),
+        instance=ClosureInstance(),
+        projection={'release_id': 'v1.6.1-1', 'engine_sha': 'a' * 40},
+        allocation={'staging_id': 'staging'},
+        entries=entries,
+        state={'status': {
+            'state': 'ROLLED_BACK', 'current_release_id': 'v1.6.0-1',
+            'rolled_back_release_id': 'v1.6.1-1',
+            'code_commit': 'b' * 40,
+        }},
+    )
+    assert closure['documents'] == {
+        'readme': 'entry/README',
+        'index': 'derived/INDEX.md',
+        'context_card': 'ai/CONTEXT_CARD.md',
+        'current_version_doc': 'CURRENT_VERSION_DOC',
+    }
+    assert 'version' not in closure['documents']
+    assert {item['kind'] for item in closure['protected']} >= {
+        'master', 'six_table', 'source_registry', 'evidence',
+    }
+    assert closure['zones']['evidence'] == ['source-evidence']
+    assert closure['previous_code_commit'] == 'b' * 40
+    assert closure['baseline_release_id'] == 'v1.6.0-1'
+
+
+def test_v161_candidate_identity_surfaces_are_generated():
+    registry = canonical_registry()
+    registry['registry_release_id'] = 'v1.6.1-1'
+    registry_bytes = orchestration.yaml.safe_dump(
+        registry, allow_unicode=True, sort_keys=False,
+    ).encode()
+    manifest_bytes = (
+        b'uid,drive_file_id,content_hash\n'
+        b'facts/events.jsonl,event-file,' + b'b' * 64 + b'\n'
+        b'facts/old_events.jsonl,compat-file,' + b'c' * 64 + b'\n'
+    )
+    projection = {
+        'release_id': 'v1.6.1-1', 'engine_sha': 'a' * 40,
+        'active_release_id': 'v1.6.0-1',
+    }
+    allocation = {'status_id': 'status'}
+    for key in ('entry/README', 'derived/INDEX.md', 'CURRENT_VERSION_DOC'):
+        data = orchestration._content_preserving_candidate(
+            key,
+            ('current release: v1.5.4-1\n' if key != 'CURRENT_VERSION_DOC' else '').encode(),
+            projection,
+            allocation,
+            {'entry/README': 'readme', 'derived/INDEX.md': 'index',
+             'CURRENT_VERSION_DOC': 'version'},
+            Path('.'),
+            registry,
+        )
+        block = __import__('cba_kb.current_state', fromlist=['read_current_block']).read_current_block(
+            data.decode(),
+        )
+        assert block['release_id'] == 'v1.6.1-1'
+        assert block['code_commit'] == 'a' * 40
+    context = orchestration._control_candidate(
+        orchestration.CONTEXT_CARD_KEY,
+        b'',
+        projection,
+        allocation,
+        {},
+        {},
+        Path('.'),
+        registry,
+        registry_bytes,
+        manifest_bytes,
+    )
+    assert context is not None
+    block = __import__('cba_kb.current_state', fromlist=['read_current_block']).read_current_block(
+        context.decode(),
+    )
+    assert block['release_id'] == 'v1.6.1-1'
+
+
+def _rollback_state_case():
+    raw = json.dumps({
+        'state': 'ROLLED_BACK', 'current_release_id': 'v1.6.0-1',
+        'rolled_back_release_id': 'v1.6.1-1', 'code_commit': 'b' * 40,
+        'artifacts': [{'id': 'a', 'name': 'a', 'sha256': 'x'}],
+    }, sort_keys=True).encode()
+    meta = {'id': 'status', 'version': '1', 'modifiedTime': 't',
+            'mimeType': 'application/json', 'parents': ['root']}
+    projection = {
+        'release_id': 'v1.6.1-1',
+        'semantic_delta_signature': 'sig',
+        'existing_targets': [{
+            'logical_key': 'input/MASTER.xlsx', 'id': 'a',
+            'mime': 'text/plain', 'mode': 'binary',
+            'allowed_parents': ['data'], 'publish_parent': 'data',
+            'staging_parent': None,
+        }],
+        'new_targets': [],
+    }
+    allocation = {
+        'release_id': 'v1.6.1-1', 'semantic_delta_signature': 'sig',
+        'status_id': 'status', 'active_release_id': 'v1.6.0-1',
+        'reservations': {}, 'status_before_hash': digest(raw),
+        'status_before_meta': meta,
+    }
+    policy = {'targets': {'a': {
+        'mime': 'text/plain', 'mode': 'binary',
+        'allowed_parents': ['data'], 'publish_parent': 'data',
+    }}}
+    return raw, meta, projection, allocation, policy
+
+
+def test_rollback_baseline_reentry_validation(monkeypatch):
+    raw, meta, projection, allocation, policy = _rollback_state_case()
+    monkeypatch.setattr(
+        orchestration, 'snapshot', lambda *args, **kwargs: (raw, meta),
+    )
+    result = orchestration.validate_release_state(
+        object(), type('I', (), {'read_json': lambda self, name: policy})(),
+        projection, allocation,
+    )
+    assert result['state'] == 'ROLLED_BACK'
+    assert result['rolled_back_release_id'] == 'v1.6.1-1'
+    for mutate in (
+        lambda value: value.update(rolled_back_release_id='other'),
+        lambda value: value.update(current_release_id='other'),
+        lambda value: value.update(artifacts=[]),
+    ):
+        status = json.loads(raw)
+        mutate(status)
+        changed = json.dumps(status, sort_keys=True).encode()
+        monkeypatch.setattr(
+            orchestration, 'snapshot', lambda *args, **kwargs: (changed, meta),
+        )
+        with pytest.raises(orchestration.ProjectionError, match='STAGE4_RELEASE_STATE_DRIFT'):
+            orchestration.validate_release_state(
+                object(),
+                type('I', (), {'read_json': lambda self, name: policy})(),
+                projection, allocation,
+            )
