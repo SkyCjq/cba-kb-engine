@@ -76,6 +76,44 @@ def main():
     q.add_argument('--release-id',required=True)
     q.add_argument('--as-of',required=True)
     q.add_argument('--provenance',required=True)
+    q=sub.add_parser('consumer-profile')
+    q.add_argument('--master',type=Path,required=True)
+    q.add_argument('--selectors',type=Path,required=True)
+    q.add_argument('--output',type=Path,required=True)
+    q.add_argument('--release-id',required=True)
+    q.add_argument('--as-of',required=True)
+    q.add_argument('--generator-sha')
+    q.add_argument('--source-master-file-id')
+    q=sub.add_parser('consumer-name-candidates')
+    q.add_argument('--master',type=Path,required=True)
+    q.add_argument('--name',required=True)
+    q.add_argument('--output',type=Path)
+    q=sub.add_parser('consumer-package')
+    q.add_argument('--profile',type=Path,required=True)
+    q.add_argument('--documents',type=Path,required=True)
+    q.add_argument('--sources',type=Path,required=True)
+    q.add_argument('--events',type=Path)
+    q.add_argument('--authorizations',type=Path)
+    q.add_argument('--limits',type=Path)
+    q.add_argument('--output',type=Path,required=True)
+    q.add_argument('--release-id',required=True)
+    q.add_argument('--as-of',required=True)
+    q.add_argument('--provenance',required=True)
+    q=sub.add_parser('consumer-acceptance-validate')
+    q.add_argument('--golden',type=Path,required=True)
+    q.add_argument('--oracle',type=Path)
+    q=sub.add_parser('consumer-acceptance-evaluate')
+    q.add_argument('--golden',type=Path,required=True)
+    q.add_argument('--oracle',type=Path,required=True)
+    q.add_argument('--intakes',type=Path,required=True)
+    q.add_argument('--matrix',type=Path,required=True)
+    q.add_argument('--output',type=Path)
+    q=sub.add_parser('consumer-usage-validate')
+    q.add_argument('--records',type=Path,required=True)
+    q.add_argument('--minimum',type=int,default=10)
+    q.add_argument('--next-step-decision',choices=(
+        'CONTINUE_V1_8','SPLIT_NEW_REQUIREMENT','HOLD_AND_KEEP_USING'))
+    q.add_argument('--output',type=Path)
     q=sub.add_parser('qualification-validate')
     q.add_argument('--ledger',type=Path,required=True)
     q=sub.add_parser('evidence-verify')
@@ -201,6 +239,96 @@ def main():
                 'provenance':a.provenance,
             })}
             save(a.output,result)
+        elif a.command=='consumer-profile':
+            from .player_profile import (
+                build_profile_from_master,
+                load_record_key_selector,
+            )
+            selectors=load_record_key_selector(a.selectors)
+            result=build_profile_from_master(
+                a.master,
+                record_keys=selectors,
+                release_id=a.release_id,
+                as_of=a.as_of,
+                generator_sha=a.generator_sha,
+                source_master_file_id=a.source_master_file_id,
+            )
+            save(a.output,result)
+        elif a.command=='consumer-name-candidates':
+            from .player_profile import discover_exact_name
+            rows,_=inspect(a.master)
+            result=discover_exact_name(rows,a.name)
+            if a.output:
+                save(a.output,result)
+        elif a.command=='consumer-package':
+            from .consumer_package import (
+                build_consumer_payload,
+                build_target_packages,
+                payload_bytes,
+                write_packages,
+            )
+            output=a.output
+            if output.exists() and any(output.iterdir()):
+                raise ValueError('Choose an empty package output directory')
+            profile=read(a.profile)
+            documents=json.loads(a.documents.read_text())
+            sources=json.loads(a.sources.read_text())
+            events=json.loads(a.events.read_text()) if a.events else None
+            authorizations=(
+                json.loads(a.authorizations.read_text())
+                if a.authorizations else []
+            )
+            limits=json.loads(a.limits.read_text()) if a.limits else {}
+            payload=build_consumer_payload(
+                release_scope={
+                    'release_id':a.release_id,
+                    'as_of':a.as_of,
+                    'provenance':a.provenance,
+                },
+                profile=profile,
+                documents=documents,
+                sources=sources,
+                event_spec=events,
+            )
+            packages=build_target_packages(
+                payload,
+                authorizations=authorizations,
+                limits=limits,
+            )
+            atomic(output/'canonical_consumer_payload.json',payload_bytes(payload))
+            result=write_packages(packages,output/'targets')
+            result['output']=str(output)
+        elif a.command=='consumer-acceptance-validate':
+            from .consumer_acceptance import load_golden_v2,validate_golden_v2
+            golden=load_golden_v2(a.golden,a.oracle)
+            oracle=json.loads(a.oracle.read_text()) if a.oracle else None
+            result=validate_golden_v2(golden,oracle)
+        elif a.command=='consumer-acceptance-evaluate':
+            from .consumer_acceptance import (
+                evaluate_consumer_acceptance,
+                load_golden_v2,
+            )
+            golden=load_golden_v2(a.golden,a.oracle)
+            oracle=json.loads(a.oracle.read_text())
+            intakes=read(a.intakes)
+            matrix=read(a.matrix)
+            result=evaluate_consumer_acceptance(
+                golden=golden,
+                oracle=oracle,
+                intakes=intakes,
+                matrix=matrix,
+            )
+            if a.output:
+                save(a.output,result)
+        elif a.command=='consumer-usage-validate':
+            from .consumer_acceptance import validate_usage_gate
+            result=validate_usage_gate(
+                read(a.records),
+                minimum=a.minimum,
+                next_step_decision=a.next_step_decision,
+            )
+            if a.output:
+                save(a.output,result)
         elif a.command=='qualification-validate':
             from .operational_qualification import validate_ledger
             result=validate_ledger(read(a.ledger))
