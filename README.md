@@ -1,6 +1,60 @@
-# CBA-KB Engine v1.5
+# CBA-KB Engine v1.5.4 production release
 
-本地执行，GitHub 管理代码，Drive 保存已发布知识库。当前工程处于部署中，生产仍为 v1.1 FINAL。
+v1.5.5 开发引入 Engine / Private Instance 边界。公开 Engine 只包含代码、schema、
+adapter、validator、synthetic fixture 和 public-safe 配置示例；真实 Drive IDs、source
+registry、production allowlist、凭据、真实 fixture、人工修正与 watcher 原始证据由调用方
+在独立 Private Instance 中维护。需要实例数据的命令通过 `INSTANCE_ROOT` 显式传入，缺失时
+fail closed。官方注册 watcher 只生成 `snapshot → diff → candidate → validation` 复核证据，
+不会把 observed change 自动提升为 business event 或写入 canonical facts。
+
+当前生产发布为 **v1.5.4-1 / COMPLETE**，发布代码提交
+`e0dea09ccb020b2918cefa311365e8563348f293`。171 个生产目标已逐项回读通过；
+`release_status`、README、INDEX、version、Context Card 与
+`canonical_products.yaml` 已统一到同一 release metadata。
+
+本版收口 canonical authority、current/history 边界、secret hard gates 与 legacy
+compatibility lineage。六表事实字节保持不变，仍为
+`46 / 10 / 131 / 244 / 227 / 7`，workbook SHA-256
+`0c9812e5e49f0824b74966f3f3941d8eee3711fdafc19d88774084a83742e66c`。
+legacy EVENTS 与 SNAPSHOTS 分别 73 行，兼容投影全部匹配，unexplained drift 为 0。
+详见 [v1.5.4 生产收尾](docs/v1.5.4-production-closeout-20260912.md)。
+
+读取事实时，赛季登记状态读 MASTER / Snapshot；“什么时候发生什么”读 canonical
+`registration_status_events`；证据追溯读 `10_sources_原始证据`；人工判断读
+`30_notes_人工知识`；AI 导航先读 Context Card 与 manifest。旧
+`CBA_球员注册_EVENTS.xlsx` 只用于兼容与历史审计，不是 current truth。不同 event
+domain 不得直接相加。
+
+历史 v1.5.3 开发与生产记录保留在 [v1.5.3 文档](docs/CBA-KB_v1.5.3.md)。
+
+以下内容记录 v1.5.2 已实现范围的生产发布：
+
+## CBA-KB Engine v1.5.2 (implemented-scope production release)
+
+2026-09-11 用户确认收尾后冻结代码，PNG OCR 不再需要。当前版本按已实现范围使用，未实现功能和 Gemini 未复验结论保留；[最终收尾说明与数据读取规则](docs/v1.5.2-final-closeout-20260911.md) 为本轮收尾入口。该决定不提升为完整 DRAFT-2 或 STABLE。
+
+本地执行，GitHub 管理代码，Drive 保存已发布知识库。实际部署目录为 `/Users/skychengneo/Agent/CBA_kb`，分支 `codex/v1.5.2-deploy`。生产事实现为 **v1.5.2-1**（`release_status` COMPLETE，125 个产出物逐项回读通过），上一版本为 `v1.5.1-2`。
+
+本发布增加了 [CBA_注册领域_六表.xlsx](https://docs.google.com/spreadsheets/d/1_dgbWXOkJeEjGRtEeZ0oOC9e-lqbXZeW/edit)（600 条，SHA-256 `4124c4e6f8e3f62d7353180a5bbd4baca51e3196e2b7fac6b06148042fce2849`），并保留 MASTER、SNAPSHOTS、EVENTS。两张 PNG 按用户决定不在本轮纳入，保持 `DISCOVERED / ocr_deferred`。这是已实现六表范围的正式发布，不是完整 DRAFT-2 或 STABLE；未完成边界见 [实施记录](docs/CBA-KB_v1.5.2.md)。
+
+v1.5.0 已封板并发布（Git tag `v1.5.0`，提交 c4bebec，release_status COMPLETE，76 个产出物回读通过）。v1.5.1 的注册事实扩展继续保留；v1.5.2 已按明确的部分范围完成生产切换。发布记录见 [docs/v1.5.2-deployment-20260911.md](docs/v1.5.2-deployment-20260911.md)。
+
+## v1.5.1 新增
+
+- 赛季感知 club 别名解析（`config/club_aliases.yaml`），未知冠名商在 strict 模式 fail-closed。
+- 三个来源适配器：`midseason_md`、`foreign_xlsx`、`foreign_image`；外援英文名 raw/normalized 双列，球衣号按文本保留，取消注册事件按赛季边界补年份并标记 `date_year_inferred`。
+- 三种 grain 分离的事实产品：国内注册关系 MASTER、`CBA_外籍球员注册_SNAPSHOTS.xlsx`、`CBA_球员注册_EVENTS.xlsx`。
+- CLI `extract` / `facts`，真实来源验收 `make accept`，来源登记提案 `make registry`。
+- 只读 Drive 调用的脱敏诊断、阶段日志与有界重试；`doctor` 输出真实 `production_enabled` 与版本 `1.5.1.dev0`。
+- 生产发布走 `scripts/prepare_v1_5_1.py reserve|freeze` + v1.5 的 `plan → publish --single-writer → verify`；只读依赖已改为冻结输入副本，使 live MASTER/registry 可在同一发布内合法更新。
+
+## 已发布产物（20_data）
+
+- `CBA_2017-2027_国内球员注册_MASTER.xlsx`：3,465 条 = 3,451 基线 + 14 条八一中转关系。
+- [CBA_外籍球员注册_SNAPSHOTS.xlsx](https://drive.google.com/file/d/1avAxhNUTgm14MIdkgkHhia6_adSDGwLD/view)：73 条快照（2024-2025）。
+- [CBA_球员注册_EVENTS.xlsx](https://drive.google.com/file/d/1WtE63GIQxYPUBsfcRlhKCH8lJgyTZeGF/view)：73 条事件（59 条外援取消注册 + 14 条八一中转）。
+- [CBA_注册领域_六表.xlsx](https://docs.google.com/spreadsheets/d/1_dgbWXOkJeEjGRtEeZ0oOC9e-lqbXZeW/edit)：600 条，六标签页，覆盖已实现注册域范围。
+- 发布状态：https://drive.google.com/file/d/1FQmbZIJxCkTkpr6ovKh5-CoBbpT0YMwV/view ；当前为 `v1.5.2-1 / COMPLETE`。
 
 ## 已实现
 
@@ -32,7 +86,7 @@ build 要求代码已提交且工作树干净，输出目录必须是新目录�
 
 ## 部署门禁
 
-生产写入目前禁用：尚需真实 OAuth 沙盒演练、完整发布清单与两 AI 验收。
+生产写入只能通过 `config/production.json` 的完整白名单、冻结依赖、`plan --environment production`、`publish --single-writer` 和独立 `verify` 执行。
 低层普通文件发布器不接受 native Docs/Sheets。CLI 只允许 runtime.json 中配置的沙盒直接子对象，不能靠填写生产 ID 绕过。
 不要直接运行 legacy/upload_drive.py；旧按名上传流程不是 v1.5 发布通道。
 

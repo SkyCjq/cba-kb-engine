@@ -1,6 +1,50 @@
-# v1.5 实施记录
+# v1.5 实施与部署记录
 
-日期：2026-09-10。状态：IN_PROGRESS，未上线。
+## v1.5.4 实际部署（2026-09-12）
+
+当前生产为 `v1.5.4-1 / COMPLETE`，上一发布为 `v1.5.3-2`，
+`pending_release_id=null`。发布代码提交为
+`e0dea09ccb020b2918cefa311365e8563348f293`，171 个目标全部完成上传、
+迁移和独立回读。
+
+- 事实零差异：MASTER SHA-256 `185cf58d...d588`，六表 SHA-256
+  `0c9812e5...e66c`，计数 `46 / 10 / 131 / 244 / 227 / 7`。
+- 兼容性：SNAPSHOTS 73/73、EVENTS 73/73，87 条映射边，missing、unexpected
+  extra、unexplained drift 均为 0。
+- Current state：README、INDEX、version、Context Card、registry 全部指向
+  `v1.5.4-1`；Context Card 为 1727 UTF-8 bytes。
+- 安全：Git/CI/Local preflight/readback secret gates PASS；真实凭据未进入 Git、
+  Drive、reports 或 Context Card。
+- 回归：`298 passed, 0 skipped`；rollback snapshot 包含 171 个 before 和
+  187 个 archive 快照。
+- Bayi evidence 已恢复为 `evidence/bayi_legacy_context.md`，位于
+  `10_sources_原始证据`，SHA-256
+  `d7272639a8503f60c3608e7ad914c891e3bda455994968b305027fdbe3994781`。
+
+详细链接、CI 与 rollback 信息见
+[v1.5.4 production closeout](v1.5.4-production-closeout-20260912.md)。
+
+## v1.5.3 历史开发状态（2026-09-11）
+
+当前生产仍为 `v1.5.2-2 / COMPLETE`，未执行 v1.5.3 production publish。
+`codex/v1.5.3-event-closure` 已建立只读候选链路：六表候选为
+`46 / 10 / 131 / 244 / 227 / 7`，legacy EVENTS 73 行对账为 87 edges，
+未映射 0、未解释冲突 0，罗汉琛 relationship signal 存在。候选明确
+`production_eligible=false`；详细边界见 [v1.5.3 实施记录](CBA-KB_v1.5.3.md)。
+
+## v1.5.2 DRAFT-2 实际部署（2026-09-11）
+
+维护状态：`CODE_FROZEN_BY_USER`。用户确认 PNG OCR 不需要，收尾后不再调整代码；其余未实施范围和 Gemini 未复验结论保留为已知限制。最终审计、范围决定和消费规则见 [最终收尾说明](v1.5.2-final-closeout-20260911.md)。`COMPLETE` 仅指已实现范围的发布事务完成。
+
+- 生产发布：`v1.5.2-1 / COMPLETE`，发布代码提交 `0d28fb8`，125 个产出物独立回读通过；上一发布为 `v1.5.1-2`。
+- 实际部署：`/Users/skychengneo/Agent/CBA_kb`，分支 `codex/v1.5.2-deploy`，运行版本 `1.5.2.dev0`。
+- 部署验证：发布前完整测试 **91 passed, 1 skipped**；真实来源重新生成六表工作簿，工作簿 SHA-256 为 `4124c4e6f8e3f62d7353180a5bbd4baca51e3196e2b7fac6b06148042fce2849`。
+- Drive 同步：600 条候选已同步为 [r3 Sheet](https://docs.google.com/spreadsheets/d/1PxOd9NJAwdYb-ay9aKR1zoKGyGucxHKBsHMfa0CAHXs/edit)，官方 XLSX 导出逐格回读一致；实施记录与验收 JSON 已保存到 `40_ai_投喂与索引`。
+- 生产产物：[CBA_注册领域_六表.xlsx](https://docs.google.com/spreadsheets/d/1_dgbWXOkJeEjGRtEeZ0oOC9e-lqbXZeW/edit) 已进入 `20_data`，六表 600 条；MASTER、SNAPSHOTS、EVENTS 原 ID 保留。
+- 生产边界：验收对象仍明确 `production_eligible=false`，表示只接受已实现六表范围，不代表完整 DRAFT-2。PNG、窗口生命周期、八一/MASTER 合并、媒体快照、旧取消事件合并和原生 Sheet 权威源集成仍未完成。
+- 发布证据：[发布报告](https://drive.google.com/file/d/1vXjEfH8M8aXlLXJqw4pjUec9ejUIZko2/view)、[验收 JSON](https://drive.google.com/file/d/1qJS-Tr1r5XEYbNIwrfiYOMNVqcf8Km-4/view)、[release_status](https://drive.google.com/file/d/1FQmbZIJxCkTkpr6ovKh5-CoBbpT0YMwV/view)。
+
+以下为 v1.5.0 建设阶段的历史记录，不代表当前生产状态。
 
 已核对 live MASTER：3,451 行、20 列、单 MASTER tab、3,451 唯一键；source_registry 89 来源。详细哈希和赛季数见 baseline_2026-09-10.json。
 数据内容保持原字节不变，1,019 条官方 API 行以官网 URL 追溯，未补造 source_file_id。

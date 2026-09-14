@@ -1,0 +1,38 @@
+{
+  "kind": "audit_source_discrepancies",
+  "release_id": "v1.5.2-1",
+  "recorded_at": "2026-09-11",
+  "audit_only": true,
+  "records_imported": 0,
+  "schema_changed": false,
+  "note": "仅用于查询审计差异，不是新增事实记录，不改变已发布工作簿或 source_registry。英文名用于定位来源条目，不是永久身份键。",
+  "items": [
+    {
+      "id": "jersey-source-difference-james-nunnally-2024-2025",
+      "player_name_en_raw": "JAMES NUNNALLY",
+      "season": "2024-2025",
+      "field": "jersey_number",
+      "observations": [
+        {"source_file_id": "16H0cxiItoSlGALeHce-E06pD_a3RFAmd", "location": "F16", "raw_value": 0, "cell_number_format": "General", "legacy_export_value": "0"},
+        {"source_file_id": "1eGrMDep9YMfPNy66M6-6Jwm9iYaF_gQj", "location": "frozen Markdown line 500", "raw_value": "00", "six_table_export_value": "00"}
+      ],
+      "disposition": "PRESERVE_EACH_SOURCE_LITERAL",
+      "cross_source_resolution": "NOT_RESOLVED",
+      "reason": "原始 XLSX 无可证实的 00 格式；合并 MD 明写 00。保留各自来源，不声称两者已统一或已核验官方球衣号码。"
+    },
+    {
+      "id": "jersey-source-difference-cameron-oliver-2024-2025",
+      "player_name_en_raw": "CAMERON OLIVER",
+      "season": "2024-2025",
+      "field": "jersey_number",
+      "observations": [
+        {"source_file_id": "16H0cxiItoSlGALeHce-E06pD_a3RFAmd", "location": "F57", "raw_value": 0, "cell_number_format": "General", "legacy_export_value": "0"},
+        {"source_file_id": "1eGrMDep9YMfPNy66M6-6Jwm9iYaF_gQj", "location": "frozen Markdown line 541", "raw_value": "00", "six_table_export_value": "00"}
+      ],
+      "disposition": "PRESERVE_EACH_SOURCE_LITERAL",
+      "cross_source_resolution": "NOT_RESOLVED",
+      "reason": "外部审阅方已撤回要求将 XLSX 0 改成 00 的建议；代码冻结后继续保留来源差异，不补造事实。"
+    }
+  ],
+  "review_url": "https://drive.google.com/file/d/1q8T0PLMwuO7XhqI0_5sAOE8tpwVf2GnK/view"
+}

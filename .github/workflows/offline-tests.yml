@@ -1,0 +1,49 @@
+name: Offline tests
+
+on:
+  push:
+    branches: ['codex/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Tracked secret and credential guard
+        run: python scripts/check_secrets.py --tracked
+      - run: python -m pip install -r requirements.lock
+      - name: Public Engine boundary and watcher synthetic tests
+        run: |
+          python -m pytest -q \
+            tests/test_engine_instance_boundary.py \
+            tests/test_ingestion_kernel.py \
+            tests/test_source_watcher.py \
+            tests/test_cli_instance_config.py \
+            tests/test_catalog_instance_boundary.py
+      - name: PNG exclusion regression
+        run: python -m pytest -q tests/test_source_exclusions.py
+      - name: v1.5.3 event closure controls
+        run: |
+          python -m pytest -q tests/test_event_closure.py
+          python -m pytest -q \
+            tests/test_event_closure.py::test_event_closure_is_deterministic \
+            tests/test_build_facts.py::test_xlsx_writer_is_deterministic
+      - name: v1.5.3 registration semantics
+        run: python -m pytest -q tests/test_registration_domain.py tests/test_draft2_regressions.py
+      - name: Offline regression suite
+        env:
+          CBA_KB_SOURCE_POLICY_JSON: '{"excluded_drive_ids":[]}'
+        run: |
+          python -m pytest -q -rs \
+            --deselect tests/test_prepare_v1_5_2.py::test_v1_5_2_registry_proposal_is_complete

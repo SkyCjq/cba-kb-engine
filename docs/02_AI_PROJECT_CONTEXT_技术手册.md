@@ -1,4 +1,28 @@
-# CBA-KB AI PROJECT CONTEXT — v1.1 FINAL
+# CBA-KB AI PROJECT CONTEXT — current routing
+
+> **as_of:** 2026-09-11
+>
+> **current production:** `v1.5.2-2 / COMPLETE`
+>
+> **development:** `v1.5.3.dev0 / candidate, not production`
+
+## Current query routing
+
+- 某赛季或某公示时点的登记状态：读取 MASTER / Snapshot。
+- 什么时候发生什么：读取 canonical `registration_status_events`。
+- 为什么这么判断：读取 `10_sources_原始证据` 及事实行的 provenance。
+- 人工解释、推导和待核实研究：读取 `30_notes_人工知识`。
+- 快速导航和语义阅读：读取 `40_ai_投喂与索引`，不把派生正文当精确计数来源。
+- 旧 `CBA_球员注册_EVENTS.xlsx`：只用于兼容和历史审计，不是 current truth。
+- 不同 `event_domain` 不得直接相加；明确询问全部 event records 时，必须同时给出分域计数。
+- `registration_method_official` 与 `research_movement_label` 不得互换。
+- `auto_validated` 不等于 official / human verified；空值不是零。
+
+v1.5.3 的候选控制、对账结果、命令和发布边界见
+[`CBA-KB_v1.5.3.md`](CBA-KB_v1.5.3.md)。以下 v1.1 章节保留为历史基线说明；
+若与当前 Drive `release_status` 或 v1.5.3 文档冲突，以当前 live state 和最新版本记录为准。
+
+# CBA-KB AI PROJECT CONTEXT — v1.1 FINAL historical baseline
 
 > **as_of:** 2026-09-09 15:00 UTC  
 > **production baseline:** CBA-KB v1.1 — CLOSED / STABLE  
@@ -194,4 +218,3 @@ MASTER file ID：`1Nb4-4rrySjKW7GSA_PLh1SCkPgW9kJtc`，MIME 为 XLSX；更新时
 v1.5 将增加发布清单、失败恢复、release_status 与简短上下文入口；这些在实施验收前不是现有能力。各 AI 仍通过获授权的 Drive 工具读取，不能要求访问本地部署目录。跨产品刷新需实测，不因 file ID 不变就宣称自动刷新。
 
 [完整 v1.5 方案与验收条件](https://drive.google.com/file/d/1App5yvwH7s9oLyjdVdUea1us233P5VgV/view)。
-

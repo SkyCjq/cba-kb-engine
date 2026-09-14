@@ -57,6 +57,9 @@ from typing import Any, Iterable
 
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / 'src'))
+from cba_kb.source_policy import excluded_from_current
+
 HERE = Path(__file__).resolve().parent
 CONFIG_DIR = ROOT / "60_config_配置与词表"
 DEFAULT_MAP = CONFIG_DIR / "drive_map.yaml"
@@ -302,6 +305,8 @@ def register_source(
     current_parent_id: str | None = None,
 ) -> dict[str, str]:
     """Upsert one source by Drive file ID without downgrading imported/verified state."""
+    if excluded_from_current(item):
+        raise ValueError(f"Source {item['id']} is excluded from current processing")
     indexes = registry_index(rows)
     existing = (
         dict(rows[indexes[item["id"]]])
@@ -475,7 +480,8 @@ def all_inbox_files(service, inbox_id: str) -> list[dict[str, Any]]:
             record = dict(item)
             record["relative_path"] = item["name"]
             output.append(record)
-    return sorted(output, key=lambda record: record["relative_path"])
+    return sorted((record for record in output if not excluded_from_current(record)),
+                  key=lambda record: record["relative_path"])
 
 
 def ensure_folder(service, parent_id: str, name: str) -> str:
@@ -868,7 +874,8 @@ def main() -> None:
     inbox_id = config["folders"]["inbox"]["drive_id"]
     sources_id = config["folders"]["sources"]["drive_id"]
     registry_path = Path(args.source_registry)
-    registry = load_source_registry(registry_path)
+    registry = [row for row in load_source_registry(registry_path)
+                if not excluded_from_current(row)]
 
     # Only archive modes request Drive mutation capability.
     service = drive_service(

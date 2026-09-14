@@ -1,0 +1,228 @@
+requirement_id: REQ-161-CLOSEOUT-01
+version: v1.6.1
+status: FROZEN_SPEC
+revision: r1.1-20260913-v161-stage1-freeze-bookkeeping-fix
+lane: CODE_CONFIG
+
+target_release_id: v1.6.1-1
+baseline_release_id: v1.6.0-1
+baseline_production_execution_sha: 4fab3d0e8eedc594fae982f12a507fef88958f15
+base_branch: codex/v1.5.2-draft2
+baseline_development_sha: 80451930765442512d87db50621319bf94f39c26
+feature_branch: feat/REQ-161-CLOSEOUT-01
+
+execution_mode: CODEX_EXECUTOR
+release_infrastructure_mode: true
+production_access: forbidden_during_stage_2
+full_regression_owner: github_actions
+
+optional_overlays:
+  release_performance:
+    enabled: true
+    proposal: REQ-RELEASE-PERF-01
+    activation_reason:
+      - H
+      - J
+
+runtime_evidence_ledger: /Users/skychengneo/Agent/CBA_kb_instance/evidence/REQ-161-CLOSEOUT-01/runtime-ledger/
+
+typed_sha_roles:
+  baseline_development_sha: 80451930765442512d87db50621319bf94f39c26
+  product_candidate_sha: TBD
+  release_execution_sha: TBD
+  reviewed_release_pr_head_sha: TBD
+  reviewed_ci_head_sha: TBD
+  release_merge_sha: TBD
+  production_execution_sha: TBD
+  release_critical_tree_attestation: TBD
+
+provenance_dag:
+  - product_candidate_sha
+  - release_execution_sha
+  - reviewed_release_pr_head_sha
+  - release_merge_sha
+  - production_execution_sha
+
+provenance_equalities:
+  - reviewed_release_pr_head_sha == reviewed_ci_head_sha
+  - production_execution_sha == release_execution_sha
+
+forbidden_equalities:
+  - release_execution_sha == release_merge_sha
+
+release_state_machine:
+  - PROJECTED
+  - RESERVED
+  - REPROJECTED
+  - FROZEN_PLAN
+  - PREPARED
+  - ARCHIVING
+  - ARCHIVE_COMPLETE
+  - PUBLISHING
+  - VERIFYING
+  - COMPLETE
+
+canonical_mutation_boundary: before release_status enters PUBLISHING and before the first canonical target write
+pre_mutation_abort_inputs:
+  - authority
+  - manifest
+  - archive
+  - provenance
+  - tree_attestation
+
+manifest_coverage_contract:
+  required_equal_sets:
+    - planned_targets
+    - resolved_targets
+    - manifest_targets
+    - publish_targets
+  missing: 0
+  unexpected: 0
+  duplicate: 0
+  unresolved: 0
+
+archive_contract:
+  namespace_key:
+    - release_execution_sha
+    - release_id
+  progress: append_only
+  immutable_reuse: verified_hash_required
+  resume: idempotent
+  mismatch: fail_closed
+
+remote_io_contract:
+  retryable:
+    - 408
+    - 429
+    - 5xx
+    - timeout
+    - connection_reset
+    - broken_pipe
+    - incomplete_read
+  non_retryable:
+    - auth
+    - permission
+    - schema
+    - authority
+    - hash
+    - mime
+    - semantic_drift
+  read_policy: bounded_exponential_backoff_with_fresh_connection
+  write_policy: no_blind_retry_journal_readback_reconcile_first
+
+expected_business_delta: 0
+
+allowed_paths:
+  - requirements/REQ-161-CLOSEOUT-01/requirement-r1-20260913.md
+  - requirements/REQ-161-CLOSEOUT-01/task-brief.md
+  - requirements/REQ-161-CLOSEOUT-01/task.yaml
+  - Makefile
+  - config/consumer_golden_questions_v1.yaml
+  - src/cba_kb/cli.py
+  - src/cba_kb/current_state.py
+  - src/cba_kb/release.py
+  - src/cba_kb/consumer_projection.py
+  - src/cba_kb/evidence_ledger.py
+  - src/cba_kb/operational_qualification.py
+  - scripts/prepare_production.py
+  - tests/test_consumer_projection.py
+  - tests/test_release_evidence.py
+  - tests/test_operational_qualification.py
+  - tests/test_current_state_consistency.py
+  - tests/test_release.py
+  - tests/test_release_orchestration.py
+  - tests/test_source_watcher.py
+  - tests/test_cli_instance_config.py
+  - tests/test_engine_instance_boundary.py
+  - tests/test_security_guards.py
+
+focused_tests:
+  - tests/test_consumer_projection.py
+  - tests/test_release_evidence.py
+  - tests/test_operational_qualification.py
+  - tests/test_current_state_consistency.py
+  - tests/test_release.py
+  - tests/test_release_orchestration.py
+  - tests/test_source_watcher.py
+  - tests/test_cli_instance_config.py
+  - tests/test_engine_instance_boundary.py
+  - tests/test_security_guards.py
+
+must_not_change:
+  - v1.7 Project Evolution Roadmap requirements
+  - v1.7 Exit Criteria
+  - v1.7 MCP Trigger
+  - src/cba_kb/facts.py
+  - src/cba_kb/build_facts.py
+  - src/cba_kb/registration_domain.py
+  - src/cba_kb/event_closure.py
+  - src/cba_kb/document_lane.py
+  - src/cba_kb/source_watcher.py
+  - src/cba_kb/adapters/cba_registration.py
+  - src/cba_kb/aliases.py
+  - src/cba_kb/drive.py
+  - src/cba_kb/transport.py
+  - config/canonical_products.yaml
+  - config/club_aliases.yaml
+  - config/taxonomy.yaml
+  - .github/workflows/offline-tests.yml
+  - requirements.lock
+  - canonical business-fact bytes and published fact products
+  - source_registry business/source semantics
+  - Document Lane immutable raw/archive semantics
+  - Snapshot/Event/Transaction/Stats/Claim semantic boundaries
+  - unknown-date and unknown-fact fail-closed semantics
+
+release_critical_fixtures:
+  - id: live_release_status_v1.6.0-1
+    drive_id: 1FQmbZIJxCkTkpr6ovKh5-CoBbpT0YMwV
+    required: true
+  - id: live_manifest_current
+    drive_id: 1OsaC9ZQRC8pljd6VRMtub2YOVIv1QYKl
+    required: true
+  - id: production_private_policy_snapshot
+    source: private_instance_production_json
+    required: true
+  - id: current_control_documents
+    required: true
+  - id: facts_zero_diff_hash_set
+    required: true
+  - id: document_lane_private_archive_manifest
+    required: true
+  - id: consumer_projection_rights_guard_set
+    required: true
+  - id: event_coverage_source_set
+    required: true
+  - id: watcher_r5_source_contract
+    required: true
+  - id: watcher_7_cycle_operational_ledger
+    required_for: project_closed
+  - id: credential_revocation_attestation
+    required_for: project_closed
+  - id: offsite_backup_restore_attestation
+    required_for: project_closed
+  - id: repository_policy_snapshot
+    required_for: project_closed
+
+canonical_requirement:
+  docx_sha256: 690e6c243c4fdb5ccad60bc6c9b7e5d115cf08705aa7488427d4ec3dd37aafea
+  markdown_derivative_sha256: 2398f25447cfb74ef27f4df0bb6e7354ea6bb377bb755097ad5a9aadb5419d12
+  git_snapshot: requirements/REQ-161-CLOSEOUT-01/requirement-r1-20260913.md
+
+stage_2_boundaries:
+  implementation: allowed
+  focused_tests: allowed
+  github_development_sync: allowed
+  production_mutation: forbidden
+  production_publish: forbidden
+  production_restore: forbidden
+  merge_readiness_self_approval: forbidden
+
+stop_conditions:
+  - BASELINE_DRIFT
+  - ALLOWLIST_MISMATCH
+  - FROZEN_CONTRACT_CONFLICT
+  - SOURCE_CONTRACT_DRIFT
+  - PRODUCTION_AUTHORITY_DRIFT
+  - DIRTY_OR_DIVERGED_UNEXPLAINED
+

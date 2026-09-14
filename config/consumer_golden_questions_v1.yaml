@@ -1,0 +1,84 @@
+schema_version: 1
+version: v1
+frozen_at: "2026-09-13"
+questions:
+  - id: gq01
+    category: deterministic_exact
+    question: What is the target release id?
+    expected_answer: v1.6.1-1
+    expected_schema: {type: string, enum: [v1.6.1-1]}
+    answer_version: v1
+    frozen: true
+  - id: gq02
+    category: deterministic_exact
+    question: What is the stable current version logical key?
+    expected_answer: CURRENT_VERSION_DOC
+    expected_schema: {type: string, enum: [CURRENT_VERSION_DOC]}
+    answer_version: v1
+    frozen: true
+  - id: gq03
+    category: deterministic_exact
+    question: How many golden questions are frozen in version v1?
+    expected_answer: 10
+    expected_schema: {type: integer, const: 10}
+    answer_version: v1
+    frozen: true
+  - id: gq04
+    category: deterministic_exact
+    question: Which status means a consumer check was not run?
+    expected_answer: NOT_TESTED
+    expected_schema: {type: string, enum: [PASS, FAIL, NOT_TESTED]}
+    answer_version: v1
+    frozen: true
+  - id: gq05
+    category: provenance
+    question: Which SHA role must equal reviewed_ci_head_sha?
+    expected_answer: reviewed_release_pr_head_sha
+    expected_schema: {type: string, enum: [reviewed_release_pr_head_sha]}
+    answer_version: v1
+    frozen: true
+  - id: gq06
+    category: provenance
+    question: Which SHA role must equal production_execution_sha?
+    expected_answer: release_execution_sha
+    expected_schema: {type: string, enum: [release_execution_sha]}
+    answer_version: v1
+    frozen: true
+  - id: gq07
+    category: provenance
+    question: Is release_execution_sha required to equal release_merge_sha?
+    expected_answer: false
+    expected_schema: {type: boolean, const: false}
+    answer_version: v1
+    frozen: true
+  - id: gq08
+    category: cross_source_synthesis
+    question: Which fields must every rights-aware document projection contain?
+    expected_answer:
+      [doc_id, availability, rights, body_status, source_ref,
+       release_id, as_of, provenance]
+    expected_schema:
+      type: array
+      items: {type: string}
+      contains: [doc_id, availability, rights, body_status, source_ref]
+    answer_version: v1
+    frozen: true
+  - id: gq09
+    category: cross_source_synthesis
+    question: Which fields define deterministic event coverage?
+    expected_answer:
+      [season, team, covered, unresolved, critical_gap, source_status, as_of]
+    expected_schema:
+      type: array
+      items: {type: string}
+      contains:
+        [season, team, covered, unresolved, critical_gap, source_status, as_of]
+    answer_version: v1
+    frozen: true
+  - id: gq10
+    category: unknown_gap
+    question: What happens when document rights are unknown?
+    expected_answer: BLOCKED
+    expected_schema: {type: string, enum: [BLOCKED]}
+    answer_version: v1
+    frozen: true

@@ -1,0 +1,126 @@
+req_id: REQ-154-CANONSEC-02-COMPATMAP-01
+title: Evidence-backed compatibility projection closure
+parent_req_id: REQ-154-CANONSEC-01
+status: IMPLEMENTED_CI_PASS
+lane: CODE_CONFIG
+base_branch: codex/v1.5.2-draft2
+baseline_commit: a3af8eab75841b34a3633ddda51c09950da2459c
+feature_branch: codex/req-154-compatmap-01
+production_access: forbidden
+publish_allowed: false
+must_not_change:
+  - production_facts
+  - release_status
+  - README_INDEX_current_state
+  - Drive_50_scripts_until_LOCAL_01_authorized
+  - unknown_dates_or_fields
+  - REQ-154-CANONSEC-01_history
+allowed_paths:
+  - config/canonical_products.yaml
+  - src/cba_kb/canonical_registry.py
+  - src/cba_kb/release.py
+  - tests/test_compatibility_lineage.py
+  - tests/test_canonical_registry.py
+  - requirements/REQ-154-CANONSEC-02-COMPATMAP-01/task.yaml
+evidence:
+  report: workspace/LOCAL-02/reconciliation/compatibility-reconciliation-report.json
+  foreign_report: workspace/LOCAL-02/reconciliation/legacy_foreign_snapshots-strict.json
+  event_summary: workspace/LOCAL-02/reconciliation/legacy_registration_events-strict.json
+  event_edges: workspace/LOCAL-02/reconciliation/v1.5.3-event-reconciliation.csv
+  live_freeze: workspace/live-freeze-20260912-retry1/snapshot.json
+  annotation_freeze: workspace/live-evidence-20260912/snapshot.json
+foreign_snapshot_mapping:
+  legacy_rows: 73
+  canonical_rows: 244
+  cardinality:
+    zero: 0
+    one: 73
+    many: 0
+  missing_rows: 0
+  extra_canonical_rows: 171
+  evidence_backed_translation:
+    status_at_snapshot:
+      legacy: registered_in_chinese
+      canonical: registered
+      evidence:
+        - src/cba_kb/adapters/foreign.py:141
+        - src/cba_kb/registration_domain.py:624
+        - docs/requirements/V1_5_1_THIRD_PARTY_REVIEW.md:285
+  explained_legacy_renderings:
+    - legacy_snapshot_key: 2024-2025|2025-03-31|zhejiang_guangsha|JAMES NUNNALLY|美国
+      field: jersey_number
+      legacy: "0"
+      canonical: "00"
+    - legacy_snapshot_key: 2024-2025|2025-03-31|liaoning_shenyang_sansheng|CAMERON OLIVER|美国
+      field: jersey_number
+      legacy: "0"
+      canonical: "00"
+  required_behavior: retain_canonical_00_and_preserve_only_the_two_source_verified_legacy_numeric_0_renderings
+  storage_evidence:
+    - Original source XLSX Sheet1!F16 is numeric 0 with General format.
+    - Original source XLSX Sheet1!F57 is numeric 0 with General format.
+  display_evidence:
+    - season-aware club_aliases.yaml records both 广州朗钛海本 and 广州朗肽海本
+    - GEORGE KELL III and GEORGE KELL Ⅲ have the same normalized key; raw source spelling is preserved
+legacy_event_mapping:
+  legacy_rows: 73
+  mapping_edges: 87
+  exact_match_rows: 59
+  canonical_split_rows: 14
+  missing_rows: 0
+  unexplained_conflicts: 0
+  canonical_event_rows: 131
+  canonical_event_rows_referenced: 73
+  canonical_event_rows_extra: 58
+  domestic_relationship_rows: 46
+  domestic_relationship_rows_referenced: 14
+  domestic_relationship_rows_extra: 32
+  required_behavior: preserve_explicit_reconciliation_edges_and_never_reverse_write
+  legacy_annotation_policy:
+    artifact_key: evidence/bayi_legacy_context.md
+    source_id: 1C8BpmY_MMjFGnSOdllRsnVWlwPdfKViV
+    field: club_announcement_date
+    observed_rows: 14
+    canonical_date_values: null
+    behavior: preserve_exact_original_source_annotation_in_legacy_view_only
+    canonical_fact_update: forbidden
+    event_date_substitution: forbidden
+    missing_evidence: fail_closed
+    conflicting_canonical_value: fail_closed
+scope_rationale:
+  release.py: load annotation rows only from hash-pinned protected evidence for the existing reconciliation gate
+  test_canonical_registry.py: bound the parent requirement audit to its merged commit and verify this follow-up delta separately
+required_changes:
+  - explicit transform-aware projection contract for status and text-preserving jersey values
+  - explicit 0/1/N mapping artifact reference for legacy_registration_events
+  - deterministic reconciliation validator with missing/extra/unexplained drift output
+  - regression fixtures for the two jersey drift rows
+acceptance:
+  - no missing legacy business keys
+  - no unexplained 0/1/N mappings
+  - no inferred dates or fields
+  - deterministic projection and reconciliation
+  - compatibility remains read-only and never canonical input
+  - production GO remains blocked until this follow-up merges and LOCAL-02 reruns
+implementation:
+  commit: a79f6779e6bff0ed25a4495d6a7cbd81536e3b23
+  focused_tests: PASS_91
+  offline_regression:
+    command: python -m pytest -q -rs
+    passed: 297
+    skipped: 0
+    failed: 0
+  release_critical_local_fixtures: PASS_5_OF_5
+  tracked_secret_scan: PASS
+  ci:
+    run_id: 34676021530
+    url: https://github.com/SkyCjq/cba-kb-engine/actions/runs/34676021530
+    conclusion: success
+  execution_state:
+    implementation: IMPLEMENTED_CANDIDATE
+    pr: READY_FOR_REVIEW
+    production: NOT_PRODUCTION
+  next_gate:
+    - merge this follow-up
+    - rerun LOCAL-02 against the merged commit
+    - run WEB-05 production GO / NO-GO

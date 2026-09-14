@@ -1,6 +1,12 @@
 _说明: 受控词表（controlled vocabulary）。自动打标签时只允许从这里选，选不出的一律写 待归类，由人工定期审阅后决定是否扩表。不设这道闸门，三个月后标签体系必然腐化成几百个近义词。
-_版本: '2026-09-08'
+_版本: '2026-09-11'
 season:
+- 2018-2019
+- 2019-2020
+- 2020-2021
+- 2021-2022
+- 2022-2023
+- 2023-2024
 - 2024-2025
 - 2025-2026
 - 2026-2027
@@ -67,11 +73,74 @@ topic:
 - 其他
 source_type:
 - cba_official
+- cbaleague_official_api
+- historical_paddleocr
+- web_cross_checked
 - wechat_mp
 - local_file
 - gdrive
 - obsidian_legacy
 - manual
+player_type:
+- domestic
+- foreign
+event_type:
+- registration_change
+- registration_cancelled
+- free_agent_claim
+- player_swap
+- release_then_claim
+- status_change_only
+- rumor_not_completed
+- usage_suspended
+- usage_activated
+- status_correction
+event_domain:
+- domestic_movement
+- foreign_registration
+- foreign_usage
+- correction
+event_status:
+- confirmed
+- pending
+- uncompleted
+- corrected
+- withdrawn
+- cancelled
+- system_error
+event_date_precision:
+- day
+- month
+- season
+- range
+- approx
+- unknown
+research_movement_label:
+- free_agent_claim
+- player_swap
+- release_then_claim
+- status_change_only
+- rumor_not_completed
+date_status:
+- known
+- pending_evidence
+- unknown
+- not_applicable
+source_authority:
+- A1_official_direct
+- A2_official_mirror
+- B1_authoritative_media_reproduction
+- B2_secondary_cross_check
+- C_unverified
+right_status:
+- exercised
+- continued
+- renewal_completed
+verification_level:
+- official_api
+- human_verified
+- auto_validated
+- needs_review
 status:
 - 待归类
 - 已归类

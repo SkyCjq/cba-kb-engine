@@ -1,0 +1,2004 @@
+{
+  "audited_at": "2026-09-11T04:53:02.899956+00:00",
+  "release_state": {
+    "state": "COMPLETE",
+    "current_release_id": "v1.5.2-1",
+    "pending_release_id": null,
+    "previous_release_id": "v1.5.1-2"
+  },
+  "status_sha256": "57db48756bd2ec4874a862bfad9615a76b000f899354533019f9c4475208502c",
+  "plan_sha256": "a74134a09a4f44a9ecf94f68e74b25954b6d0021295446d91deed688a0355ade",
+  "plan_targets": 125,
+  "current_status_targets": 125,
+  "objects": [
+    {
+      "id": "106NV6lV4mPLNjohMcSLdOyPRct0uOUsx",
+      "name": "source_registry.csv",
+      "mime": "text/csv",
+      "sha256": "c610ff5f759e01506445cf55fa9b879fc112aa8a004017661a5e89dba2745133",
+      "frozen_sha256": "2c0e8a0058b2287605ce2777dd6074be304ddcf942d012c064b6d407f9bf4c74",
+      "status_sha256": "c610ff5f759e01506445cf55fa9b879fc112aa8a004017661a5e89dba2745133",
+      "matches_frozen_plan": false,
+      "matches_live_status": true,
+      "parents": [
+        "1ccYmxy8NKt79pgyhDnyHUE14C6_wsn83"
+      ],
+      "verification_method": "Fresh payload SHA256"
+    },
+    {
+      "id": "11RkG9cIOQMHAF-kdc8Wj1Tw757RJchgR",
+      "name": "tests__test_oauth.py",
+      "mime": "text/plain",
+      "sha256": "cb13ed6c7d85c594fda0771a5a84585c75f803f875b64ffdd2845bc412da444f",
+      "frozen_sha256": "cb13ed6c7d85c594fda0771a5a84585c75f803f875b64ffdd2845bc412da444f",
+      "status_sha256": "cb13ed6c7d85c594fda0771a5a84585c75f803f875b64ffdd2845bc412da444f",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "11fjFYDOqMJwxlQHd0XDh7zLuYv3jtE64",
+      "name": "src__cba_kb__aliases.py",
+      "mime": "text/plain",
+      "sha256": "daf6927a9470b3a663707d088729bd4c846b157d8c0aeb6b4de87165cf782d69",
+      "frozen_sha256": "daf6927a9470b3a663707d088729bd4c846b157d8c0aeb6b4de87165cf782d69",
+      "status_sha256": "daf6927a9470b3a663707d088729bd4c846b157d8c0aeb6b4de87165cf782d69",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "12ThuFKtgOgbsOiGcEL8pzutV_vniIV15",
+      "name": "tests__test_midseason_md.py",
+      "mime": "text/plain",
+      "sha256": "da897d99113484f16f86c475457579ad015c01e98e1b5d1fa4a5135ff6ecd28d",
+      "frozen_sha256": "da897d99113484f16f86c475457579ad015c01e98e1b5d1fa4a5135ff6ecd28d",
+      "status_sha256": "da897d99113484f16f86c475457579ad015c01e98e1b5d1fa4a5135ff6ecd28d",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "12dXxb3A0dvB0d1-8-iKlkdMYdFJ4-9pL",
+      "name": "src__cba_kb__oauth.py",
+      "mime": "text/plain",
+      "sha256": "d61fe82595e819c960651768ef7bda12ba0dabe29ee86bf77e8adf856fced6e2",
+      "frozen_sha256": "d61fe82595e819c960651768ef7bda12ba0dabe29ee86bf77e8adf856fced6e2",
+      "status_sha256": "d61fe82595e819c960651768ef7bda12ba0dabe29ee86bf77e8adf856fced6e2",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "13LUNwVgVhtWSIz1xOdYmsGzH6PrNszWaTz15Pi8Fnag",
+      "name": "CBA_注册_2026-2027",
+      "mime": "application/vnd.google-apps.document",
+      "sha256": "5e83770a960b95cd58b57467681b707a972565cfd26bea89fed69509b96010b7",
+      "frozen_sha256": "5e83770a960b95cd58b57467681b707a972565cfd26bea89fed69509b96010b7",
+      "status_sha256": "5e83770a960b95cd58b57467681b707a972565cfd26bea89fed69509b96010b7",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp"
+      ],
+      "verification_method": "Fresh payload SHA256"
+    },
+    {
+      "id": "140CE6gIUzl9QJIRClAdUZMrG93cxbCdF",
+      "name": "test_process_inbox_v1_1.py",
+      "mime": "text/x-python",
+      "sha256": "9f4d9cdb771b20c2cdaca83e1b8eb1af7145fa4cd6ededb2bfe47581bffa04e7",
+      "frozen_sha256": "9f4d9cdb771b20c2cdaca83e1b8eb1af7145fa4cd6ededb2bfe47581bffa04e7",
+      "status_sha256": "9f4d9cdb771b20c2cdaca83e1b8eb1af7145fa4cd6ededb2bfe47581bffa04e7",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "157nq6tWTqfsCN2o4yhw0Gm2vHUYpkHd7",
+      "name": "requirements.lock",
+      "mime": "text/plain",
+      "sha256": "9dfa4d8f3110ec5192053aa0083c85eb6b0a4b085001ad9e7673282a86cc0d94",
+      "frozen_sha256": "9dfa4d8f3110ec5192053aa0083c85eb6b0a4b085001ad9e7673282a86cc0d94",
+      "status_sha256": "9dfa4d8f3110ec5192053aa0083c85eb6b0a4b085001ad9e7673282a86cc0d94",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "15Bl6drSKwSEW4xaeqjeUfo_OM4Zc-_Hf",
+      "name": "CBA_注册_2018-2019.md",
+      "mime": "text/markdown",
+      "sha256": "cde3985ef5680c848f75ae866fe2a55b7220e8fd60cbb4ef2587fab62e1fcf7e",
+      "frozen_sha256": "cde3985ef5680c848f75ae866fe2a55b7220e8fd60cbb4ef2587fab62e1fcf7e",
+      "status_sha256": "cde3985ef5680c848f75ae866fe2a55b7220e8fd60cbb4ef2587fab62e1fcf7e",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "15FDx3xhinlilz5cOV-YXgMRsQPtiAYOo",
+      "name": "docs__CBA-KB_v1.5.md",
+      "mime": "text/plain",
+      "sha256": "7aa1a93b7f6b44239097bdca2d25a490ba761a2a31eaa01dd47ee1031d85a915",
+      "frozen_sha256": "7aa1a93b7f6b44239097bdca2d25a490ba761a2a31eaa01dd47ee1031d85a915",
+      "status_sha256": "7aa1a93b7f6b44239097bdca2d25a490ba761a2a31eaa01dd47ee1031d85a915",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "16DzFRDlYGVI0VH51kuexjiNdyCt7Uj8-",
+      "name": "process_inbox.py",
+      "mime": "text/x-python",
+      "sha256": "8284640af41770f96d7b4b73d8f018faacb8c962c1d0db5f3a1df2392a60cca9",
+      "frozen_sha256": "8284640af41770f96d7b4b73d8f018faacb8c962c1d0db5f3a1df2392a60cca9",
+      "status_sha256": "8284640af41770f96d7b4b73d8f018faacb8c962c1d0db5f3a1df2392a60cca9",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "175nJL9b2ECBJwwh2RymPwPKeTtcAfIse",
+      "name": "src__cba_kb__build_facts.py",
+      "mime": "text/plain",
+      "sha256": "13617f27997aa68a99851b895e9bf496f341eb2837fddcce8310a24c8547c873",
+      "frozen_sha256": "13617f27997aa68a99851b895e9bf496f341eb2837fddcce8310a24c8547c873",
+      "status_sha256": "13617f27997aa68a99851b895e9bf496f341eb2837fddcce8310a24c8547c873",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "17ToEBMyZpfGocYxd4BwAlLd0mzVyOUEI",
+      "name": "src__cba_kb__adapters__foreign_image.py",
+      "mime": "text/plain",
+      "sha256": "dd1b8530f17e539f14971c109e15dd5d17df0893d1b3ca157419729d68aacf32",
+      "frozen_sha256": "dd1b8530f17e539f14971c109e15dd5d17df0893d1b3ca157419729d68aacf32",
+      "status_sha256": "dd1b8530f17e539f14971c109e15dd5d17df0893d1b3ca157419729d68aacf32",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "18ctHkgfxxa7eDzGFZOeEx_vWiZIowB_a",
+      "name": "docs__CBA-KB_v1.5.1.md",
+      "mime": "text/plain",
+      "sha256": "344ab7bc95fa4f7374308c89cdf2deaf56e53b7fad025e59a333e6230d26dda0",
+      "frozen_sha256": "344ab7bc95fa4f7374308c89cdf2deaf56e53b7fad025e59a333e6230d26dda0",
+      "status_sha256": "344ab7bc95fa4f7374308c89cdf2deaf56e53b7fad025e59a333e6230d26dda0",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "19M-_X8cNzq3g240rbh5UQ5pzVGRhf9J9",
+      "name": "scripts__check_secrets.py",
+      "mime": "text/plain",
+      "sha256": "d4bb9081d5fc38499f2a11d037fb26ab4aa90c37a50864c568f91e8353d21cbe",
+      "frozen_sha256": "d4bb9081d5fc38499f2a11d037fb26ab4aa90c37a50864c568f91e8353d21cbe",
+      "status_sha256": "d4bb9081d5fc38499f2a11d037fb26ab4aa90c37a50864c568f91e8353d21cbe",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "19VRjZcaXDR2MpRQ6wBotOhCToYwKRZ73",
+      "name": "docs__OPERATIONS_V1_5.md",
+      "mime": "text/plain",
+      "sha256": "ff6f89fb82cdeeb3e33855463c5a01214a20800c2404015116731f5ba1003c08",
+      "frozen_sha256": "ff6f89fb82cdeeb3e33855463c5a01214a20800c2404015116731f5ba1003c08",
+      "status_sha256": "ff6f89fb82cdeeb3e33855463c5a01214a20800c2404015116731f5ba1003c08",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1AfOqjCRxUUcUC0VUXwrOPRek5IsUpfix",
+      "name": "config__sandbox.json",
+      "mime": "text/plain",
+      "sha256": "d9f7107d311781a629148a9a101e11c4c5b5a1c7d84f24e59490d9bad4cd71ed",
+      "frozen_sha256": "d9f7107d311781a629148a9a101e11c4c5b5a1c7d84f24e59490d9bad4cd71ed",
+      "status_sha256": "d9f7107d311781a629148a9a101e11c4c5b5a1c7d84f24e59490d9bad4cd71ed",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1AqCZwlSKlZdfR9F0ftG_Dc36gffmz_NLs8v1FS99uu0",
+      "name": "00_README_先读这个",
+      "mime": "application/vnd.google-apps.document",
+      "sha256": "1237cd5a6d0a535ef0ddaa1fc479b9bba6c406667618e62426541dd0c3c129e1",
+      "frozen_sha256": "fe9d6ab2e09e39cd75caaeda6b125a0b0eb5413ab33ceebc3e57b356bff32304",
+      "status_sha256": "fe9d6ab2e09e39cd75caaeda6b125a0b0eb5413ab33ceebc3e57b356bff32304",
+      "matches_frozen_plan": false,
+      "matches_live_status": false,
+      "parents": [
+        "1bQybVHV_RRtZvvFuFhLpM-rXbVsNT2Dq"
+      ],
+      "verification_method": "Fresh payload SHA256"
+    },
+    {
+      "id": "1BVWWRyA3WTCffjZxntme7whEFnbuGqL7",
+      "name": "docs__SETUP_AUTH.md",
+      "mime": "text/plain",
+      "sha256": "eb2cdd1a2b3ce53db1c65cd076306c26b14103193dc2b9a629cc61830fff8a30",
+      "frozen_sha256": "eb2cdd1a2b3ce53db1c65cd076306c26b14103193dc2b9a629cc61830fff8a30",
+      "status_sha256": "eb2cdd1a2b3ce53db1c65cd076306c26b14103193dc2b9a629cc61830fff8a30",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1Ckg-y3Ke4tHxGHPp1dY2A_cO39xzF9u4",
+      "name": "02_AI_PROJECT_CONTEXT_技术手册.md",
+      "mime": "text/markdown",
+      "sha256": "699ecb05040d7b3fe15a5c7ff98433b41844ab56a05c47d45986b084d75eb866",
+      "frozen_sha256": "699ecb05040d7b3fe15a5c7ff98433b41844ab56a05c47d45986b084d75eb866",
+      "status_sha256": "699ecb05040d7b3fe15a5c7ff98433b41844ab56a05c47d45986b084d75eb866",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1bQybVHV_RRtZvvFuFhLpM-rXbVsNT2Dq"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1DSBbzvhHHKDmMQhdVOREbbpuQaUn_P5_",
+      "name": "Makefile",
+      "mime": "text/plain",
+      "sha256": "9607c3a22064ec888f5efe0a5d6de13385b7d27d5af2fc554cb7a5f917c5bcb9",
+      "frozen_sha256": "9607c3a22064ec888f5efe0a5d6de13385b7d27d5af2fc554cb7a5f917c5bcb9",
+      "status_sha256": "9607c3a22064ec888f5efe0a5d6de13385b7d27d5af2fc554cb7a5f917c5bcb9",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1DfdhAY1xpNSCpYZK7D1Ry6gsPI_8aRIZ",
+      "name": "src__cba_kb__catalog.py",
+      "mime": "text/plain",
+      "sha256": "71d3a086fa2af2800742a2a642fbf243459fd831e10795c2a9d85c4ebe41891c",
+      "frozen_sha256": "71d3a086fa2af2800742a2a642fbf243459fd831e10795c2a9d85c4ebe41891c",
+      "status_sha256": "71d3a086fa2af2800742a2a642fbf243459fd831e10795c2a9d85c4ebe41891c",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1FES4xgC_qZh2pdrjyWvlQdMLQYjNtBht4fAZdF197BI",
+      "name": "CBA_注册_2024-2025",
+      "mime": "application/vnd.google-apps.document",
+      "sha256": "5e7b73c965d66fc421a35217d8101454a92b33e4792b6ae8f730a835d421378b",
+      "frozen_sha256": "5e7b73c965d66fc421a35217d8101454a92b33e4792b6ae8f730a835d421378b",
+      "status_sha256": "5e7b73c965d66fc421a35217d8101454a92b33e4792b6ae8f730a835d421378b",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp"
+      ],
+      "verification_method": "Fresh payload SHA256"
+    },
+    {
+      "id": "1FFI-wl8g9YImGe4qanT-Zc1S1hNYvr_u",
+      "name": "docs__02_AI_PROJECT_CONTEXT_技术手册.md",
+      "mime": "text/plain",
+      "sha256": "7750cbaec8183786b0e0c75ed504e3c2b2dd47ffa7547e8a69a41fa9c6d86df0",
+      "frozen_sha256": "7750cbaec8183786b0e0c75ed504e3c2b2dd47ffa7547e8a69a41fa9c6d86df0",
+      "status_sha256": "7750cbaec8183786b0e0c75ed504e3c2b2dd47ffa7547e8a69a41fa9c6d86df0",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1FnirinxVyrMVtGpeFH06iVQ59dCcrb83",
+      "name": "docs__DEPLOYMENT_STATUS.md",
+      "mime": "text/plain",
+      "sha256": "c75371885c43dad6c458bf9ebddbe46de4ab4b2299bf9d1009db2cb397f242d3",
+      "frozen_sha256": "c75371885c43dad6c458bf9ebddbe46de4ab4b2299bf9d1009db2cb397f242d3",
+      "status_sha256": "c75371885c43dad6c458bf9ebddbe46de4ab4b2299bf9d1009db2cb397f242d3",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1FsHkEbGeNSqLqcIqZuoUSzFZTVR6Wyue",
+      "name": "MASTER.csv",
+      "mime": "text/csv",
+      "sha256": "0aafb6a17748f8d13b83736ac22b5ba3d5947a924e1f987d9ba249bcd6879e7f",
+      "frozen_sha256": "0aafb6a17748f8d13b83736ac22b5ba3d5947a924e1f987d9ba249bcd6879e7f",
+      "status_sha256": "0aafb6a17748f8d13b83736ac22b5ba3d5947a924e1f987d9ba249bcd6879e7f",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1GsIZ2YfhOLOhVa_R-K7lQZXpU-ywUlXK",
+      "name": "src__cba_kb__merge.py",
+      "mime": "text/plain",
+      "sha256": "5bcd9c1aa36a9f374e37618b25f061ac84cadd4237b1a85f252a0c678cd8e727",
+      "frozen_sha256": "5bcd9c1aa36a9f374e37618b25f061ac84cadd4237b1a85f252a0c678cd8e727",
+      "status_sha256": "5bcd9c1aa36a9f374e37618b25f061ac84cadd4237b1a85f252a0c678cd8e727",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1IY6CLnwf5vZAS1lo2ELnukLFBWDqk0MU",
+      "name": "src__cba_kb__native.py",
+      "mime": "text/plain",
+      "sha256": "248a1b9a13363937f7a7eef740800d60a119d66b3e5986010938376d21eea34b",
+      "frozen_sha256": "248a1b9a13363937f7a7eef740800d60a119d66b3e5986010938376d21eea34b",
+      "status_sha256": "248a1b9a13363937f7a7eef740800d60a119d66b3e5986010938376d21eea34b",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1Iev88bmtt5pB3wHaSUaTKQfPKT-EveOe",
+      "name": "MASTER.jsonl",
+      "mime": "application/x-ndjson",
+      "sha256": "2e57ec7fe0bd32599b64280c4e7afd490ce9a33412b919b52b640149b16e66bf",
+      "frozen_sha256": "2e57ec7fe0bd32599b64280c4e7afd490ce9a33412b919b52b640149b16e66bf",
+      "status_sha256": "2e57ec7fe0bd32599b64280c4e7afd490ce9a33412b919b52b640149b16e66bf",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1J2eIhQDtGna5F0lMZWhtBH7oBmPWskK6",
+      "name": "docs__V1_5_CLOSEOUT_REVIEW.md",
+      "mime": "text/plain",
+      "sha256": "85343e3457da892bbaa0e455d538324bfd9f1f32aece1b2676154fa5168867ac",
+      "frozen_sha256": "85343e3457da892bbaa0e455d538324bfd9f1f32aece1b2676154fa5168867ac",
+      "status_sha256": "85343e3457da892bbaa0e455d538324bfd9f1f32aece1b2676154fa5168867ac",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1K3TkYFKKe8-0BugGzOpplFaY_PutwG5O",
+      "name": "v1.5.1-gemini-acceptance-prompt.md",
+      "mime": "text/markdown",
+      "sha256": "8d6b4d615b580bfa033ae5e2a6dff79b570370188eac997d63a2b24ed2fa01ca",
+      "frozen_sha256": "8d6b4d615b580bfa033ae5e2a6dff79b570370188eac997d63a2b24ed2fa01ca",
+      "status_sha256": "8d6b4d615b580bfa033ae5e2a6dff79b570370188eac997d63a2b24ed2fa01ca",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1K5Ypi7aK2RQmOjcatKK9oFigIrCe_8iO",
+      "name": "test_fetch_cba_parser.py",
+      "mime": "text/x-python",
+      "sha256": "367d636f6a51643ec9ce830d210b1b2b5ca0fbc9160405c505a2e2b4578b83a8",
+      "frozen_sha256": "367d636f6a51643ec9ce830d210b1b2b5ca0fbc9160405c505a2e2b4578b83a8",
+      "status_sha256": "367d636f6a51643ec9ce830d210b1b2b5ca0fbc9160405c505a2e2b4578b83a8",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1KLxoK3npG468Vj9LH4GnXbWiRIf4sVdE",
+      "name": "src__cba_kb__adapters____init__.py",
+      "mime": "text/plain",
+      "sha256": "f509c16e9ef0b830f80660c0460020f7d461a31432a6636f047ffc1b7fc41061",
+      "frozen_sha256": "f509c16e9ef0b830f80660c0460020f7d461a31432a6636f047ffc1b7fc41061",
+      "status_sha256": "f509c16e9ef0b830f80660c0460020f7d461a31432a6636f047ffc1b7fc41061",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1Kohz-a4GslbYcy5VCfoEO7AcGHoqybgX",
+      "name": "tests__test_master.py",
+      "mime": "text/plain",
+      "sha256": "fa0c401cf99eab0fde1f040b26b7f05723862182f59d9d60086822c5224a252d",
+      "frozen_sha256": "fa0c401cf99eab0fde1f040b26b7f05723862182f59d9d60086822c5224a252d",
+      "status_sha256": "fa0c401cf99eab0fde1f040b26b7f05723862182f59d9d60086822c5224a252d",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1LdaPu_COjjd5uVj9d4LCO_2J2G6-fCE2",
+      "name": "src__cba_kb____init__.py",
+      "mime": "text/plain",
+      "sha256": "7433d5b08e6bbdd534bf9602a94fab2c735c4ec34e44a6b372e6ec2768eb93e9",
+      "frozen_sha256": "7433d5b08e6bbdd534bf9602a94fab2c735c4ec34e44a6b372e6ec2768eb93e9",
+      "status_sha256": "7433d5b08e6bbdd534bf9602a94fab2c735c4ec34e44a6b372e6ec2768eb93e9",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1M77A_7BO4IUgZAHc28YMTTLl9-NGfW88",
+      "name": "validation.json",
+      "mime": "application/json",
+      "sha256": "e4be7f5ddaf3a43dd37be7364c6fc92bb170f7fbc08aae4cb7ab53da6de4d6bb",
+      "frozen_sha256": "e4be7f5ddaf3a43dd37be7364c6fc92bb170f7fbc08aae4cb7ab53da6de4d6bb",
+      "status_sha256": "e4be7f5ddaf3a43dd37be7364c6fc92bb170f7fbc08aae4cb7ab53da6de4d6bb",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1N0yNSeMg0FxctbqEpzMQ3BWYBqQEV4CP",
+      "name": "scripts__prepare_v1_5_1.py",
+      "mime": "text/plain",
+      "sha256": "f752309249c56adbfd6c6c8c074c26bf6e1744e895f49a5db8d3e502895cb80d",
+      "frozen_sha256": "f752309249c56adbfd6c6c8c074c26bf6e1744e895f49a5db8d3e502895cb80d",
+      "status_sha256": "f752309249c56adbfd6c6c8c074c26bf6e1744e895f49a5db8d3e502895cb80d",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1Nb4-4rrySjKW7GSA_PLh1SCkPgW9kJtc",
+      "name": "MASTER.xlsx",
+      "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "sha256": "185cf58d69ced2ba38a1745cdb848ab21288a666d893d3d4bae3a3ddd1c2d588",
+      "frozen_sha256": "185cf58d69ced2ba38a1745cdb848ab21288a666d893d3d4bae3a3ddd1c2d588",
+      "status_sha256": "185cf58d69ced2ba38a1745cdb848ab21288a666d893d3d4bae3a3ddd1c2d588",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1nL4xomHNQInbskeYdqa45hHfleHhExW-"
+      ],
+      "verification_method": "Fresh payload SHA256"
+    },
+    {
+      "id": "1OJJMXy91Qfmb8XiFSytW8MTYR0uK4K6C",
+      "name": "config__taxonomy.yaml",
+      "mime": "text/plain",
+      "sha256": "0b9c57fc86d560c8730c2a536eede7c70cdbfb5529c28a2de2675cbbca70624e",
+      "frozen_sha256": "0b9c57fc86d560c8730c2a536eede7c70cdbfb5529c28a2de2675cbbca70624e",
+      "status_sha256": "0b9c57fc86d560c8730c2a536eede7c70cdbfb5529c28a2de2675cbbca70624e",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1OsaC9ZQRC8pljd6VRMtub2YOVIv1QYKl",
+      "name": "manifest.csv",
+      "mime": "text/csv",
+      "sha256": "7c042016f6f328f21c201607095a6eb2bc13031bd5a3661149f3b30e1580bbfc",
+      "frozen_sha256": "2cd3e7bb25a536c947d0404b0e822cd5f29d55bda765b9f4a083c77488abe6d8",
+      "status_sha256": "2cd3e7bb25a536c947d0404b0e822cd5f29d55bda765b9f4a083c77488abe6d8",
+      "matches_frozen_plan": false,
+      "matches_live_status": false,
+      "parents": [
+        "1ccYmxy8NKt79pgyhDnyHUE14C6_wsn83"
+      ],
+      "verification_method": "Fresh payload SHA256"
+    },
+    {
+      "id": "1OwjOa26nrMqmyzA5ZUoVURN2buBhdIOE",
+      "name": "scripts__propose_source_registry.py",
+      "mime": "text/plain",
+      "sha256": "2b375b6317a7061445d7724a11fd86b799ae9476baddd6375bb827017bed5ee6",
+      "frozen_sha256": "2b375b6317a7061445d7724a11fd86b799ae9476baddd6375bb827017bed5ee6",
+      "status_sha256": "2b375b6317a7061445d7724a11fd86b799ae9476baddd6375bb827017bed5ee6",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1QP0qaCfeCPjasunWISSYnB7sMAzWE4kl",
+      "name": "src__cba_kb__gates.py",
+      "mime": "text/plain",
+      "sha256": "55d83508a1b319c406baf25834798f2165e20a961480324c275710b2c6d57d65",
+      "frozen_sha256": "55d83508a1b319c406baf25834798f2165e20a961480324c275710b2c6d57d65",
+      "status_sha256": "55d83508a1b319c406baf25834798f2165e20a961480324c275710b2c6d57d65",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1QW9Ipp6xVy5gi7qdb2e5sgkuEG2WUFRG",
+      "name": "config__club_aliases.yaml",
+      "mime": "text/plain",
+      "sha256": "b0058223096d126f8ddbc9921905b084b80c44300c84643586b42e0f05d9adc1",
+      "frozen_sha256": "b0058223096d126f8ddbc9921905b084b80c44300c84643586b42e0f05d9adc1",
+      "status_sha256": "b0058223096d126f8ddbc9921905b084b80c44300c84643586b42e0f05d9adc1",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1Qr8CuPOSU8jsZJBnd_R4egJxmbkKkQrJ",
+      "name": "pyproject.toml",
+      "mime": "text/plain",
+      "sha256": "359f28c7037d1b870942d6fbc63bb363151bd9a22a75e83c19e6f3194bd6e842",
+      "frozen_sha256": "359f28c7037d1b870942d6fbc63bb363151bd9a22a75e83c19e6f3194bd6e842",
+      "status_sha256": "359f28c7037d1b870942d6fbc63bb363151bd9a22a75e83c19e6f3194bd6e842",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1TXEUM8jd_kkIV8K7cMLxOX0nuEMfRQMb",
+      "name": "provenance.json",
+      "mime": "application/json",
+      "sha256": "34bf0ccf44bbe59ada529ef5cb1682e379facc7f70655e4ae8c46499ad4634be",
+      "frozen_sha256": "34bf0ccf44bbe59ada529ef5cb1682e379facc7f70655e4ae8c46499ad4634be",
+      "status_sha256": "34bf0ccf44bbe59ada529ef5cb1682e379facc7f70655e4ae8c46499ad4634be",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1ccYmxy8NKt79pgyhDnyHUE14C6_wsn83"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1V5NEoq7Gy3DXtuIJMHPuOAGAE1TAdn9O",
+      "name": "src__cba_kb__master.py",
+      "mime": "text/plain",
+      "sha256": "0c49551a7da4aeac10fd774606f6588aed8726abb4ddd5958f9d55d6ffaf3863",
+      "frozen_sha256": "0c49551a7da4aeac10fd774606f6588aed8726abb4ddd5958f9d55d6ffaf3863",
+      "status_sha256": "0c49551a7da4aeac10fd774606f6588aed8726abb4ddd5958f9d55d6ffaf3863",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1VCfXeFpUB4RXqXb7AbxWLWgbHmMcwyAT",
+      "name": "src__cba_kb__transport.py",
+      "mime": "text/plain",
+      "sha256": "a4e736f11ba1b68d56a86038acf754154e387a71796c180f9785ca02b63df65c",
+      "frozen_sha256": "a4e736f11ba1b68d56a86038acf754154e387a71796c180f9785ca02b63df65c",
+      "status_sha256": "a4e736f11ba1b68d56a86038acf754154e387a71796c180f9785ca02b63df65c",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1ViMWwwttw1U-ly-MpZsolyZg-BMYvxN7",
+      "name": "src__cba_kb__facts.py",
+      "mime": "text/plain",
+      "sha256": "7827f8432752a80195da5467781e387245099317472dae378393f4cbd7960158",
+      "frozen_sha256": "7827f8432752a80195da5467781e387245099317472dae378393f4cbd7960158",
+      "status_sha256": "7827f8432752a80195da5467781e387245099317472dae378393f4cbd7960158",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1Vng3JOfE4Zi9zWbSUj8qhBJeuCU1jXS_LtGV6W_ozS0",
+      "name": "CBA_跨赛季变动",
+      "mime": "application/vnd.google-apps.document",
+      "sha256": "8ff11094b744e971b836cd8f9ad27ce3eb1db989237e994d2fd659fddd23c6cf",
+      "frozen_sha256": "8ff11094b744e971b836cd8f9ad27ce3eb1db989237e994d2fd659fddd23c6cf",
+      "status_sha256": "8ff11094b744e971b836cd8f9ad27ce3eb1db989237e994d2fd659fddd23c6cf",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp"
+      ],
+      "verification_method": "Fresh payload SHA256"
+    },
+    {
+      "id": "1VqnFtMRSlOV9K7eVCAJKQ5HngWMl60MibbopNclxN9c",
+      "name": "INDEX",
+      "mime": "application/vnd.google-apps.document",
+      "sha256": "400613fe6825c7a2cb145e5e9f07af03833a0d9f4b34051e4117c36cbb9f4519",
+      "frozen_sha256": "5015aeb5d7223476ec1547bd55a7ef2f106e849afab0bd149727b0318d084319",
+      "status_sha256": "5015aeb5d7223476ec1547bd55a7ef2f106e849afab0bd149727b0318d084319",
+      "matches_frozen_plan": false,
+      "matches_live_status": false,
+      "parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp"
+      ],
+      "verification_method": "Fresh payload SHA256"
+    },
+    {
+      "id": "1VzDiBayyFJC3QHHaHRhOqovhzgRJAtXx",
+      "name": "tests__test_facts.py",
+      "mime": "text/plain",
+      "sha256": "5d70cdfcad397482c0a0695f6cfbaeebac047ac301ecc06fa786d097c07c46c5",
+      "frozen_sha256": "5d70cdfcad397482c0a0695f6cfbaeebac047ac301ecc06fa786d097c07c46c5",
+      "status_sha256": "5d70cdfcad397482c0a0695f6cfbaeebac047ac301ecc06fa786d097c07c46c5",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1WtE63GIQxYPUBsfcRlhKCH8lJgyTZeGF",
+      "name": "CBA_球员注册_EVENTS.xlsx",
+      "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "sha256": "374472e4d0bb677abed446047b8c1eead3cce6a2291741bfd22d6f52e0be878a",
+      "frozen_sha256": "374472e4d0bb677abed446047b8c1eead3cce6a2291741bfd22d6f52e0be878a",
+      "status_sha256": "374472e4d0bb677abed446047b8c1eead3cce6a2291741bfd22d6f52e0be878a",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1nL4xomHNQInbskeYdqa45hHfleHhExW-"
+      ],
+      "verification_method": "Fresh payload SHA256"
+    },
+    {
+      "id": "1XCr2CaE7bWyrp61dDHa2ungHCizftc62",
+      "name": "legacy__Makefile",
+      "mime": "text/plain",
+      "sha256": "d46061d0caa463e7a821e3e06b024d38ea9e58722d65608ba56a288019701236",
+      "frozen_sha256": "d46061d0caa463e7a821e3e06b024d38ea9e58722d65608ba56a288019701236",
+      "status_sha256": "d46061d0caa463e7a821e3e06b024d38ea9e58722d65608ba56a288019701236",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1XLkpl_pjEKBSrafiVDl8XnVZRpAgqgPt",
+      "name": "src__cba_kb__drive.py",
+      "mime": "text/plain",
+      "sha256": "d85d55c0184cf6b4ed40477b91435712866d31721fd6785dcd75bd8b98773c2c",
+      "frozen_sha256": "d85d55c0184cf6b4ed40477b91435712866d31721fd6785dcd75bd8b98773c2c",
+      "status_sha256": "d85d55c0184cf6b4ed40477b91435712866d31721fd6785dcd75bd8b98773c2c",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1XWNyAwSWqVZ7PU1dwX5OFNBXkUlX6nT-",
+      "name": "tests__test_aliases.py",
+      "mime": "text/plain",
+      "sha256": "457c269c786357a4a1585903c044ff2ced08c80666f8ce5551c48da131397cda",
+      "frozen_sha256": "457c269c786357a4a1585903c044ff2ced08c80666f8ce5551c48da131397cda",
+      "status_sha256": "457c269c786357a4a1585903c044ff2ced08c80666f8ce5551c48da131397cda",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1XyD6MPanDPIK07PUHvkT4X7H799FA1Tl",
+      "name": "src__cba_kb__common.py",
+      "mime": "text/plain",
+      "sha256": "24e828dee637655c90aae760c52a33f70f8f7fa1bff090a0fb1f3aebfc69eee8",
+      "frozen_sha256": "24e828dee637655c90aae760c52a33f70f8f7fa1bff090a0fb1f3aebfc69eee8",
+      "status_sha256": "24e828dee637655c90aae760c52a33f70f8f7fa1bff090a0fb1f3aebfc69eee8",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1YdH40_fpaZeudsNalPgNrmtkzUcaVe3V",
+      "name": "tests__test_foreign_xlsx.py",
+      "mime": "text/plain",
+      "sha256": "5cad32ef715a35a08ffbc7bab7a15128c55cbfe94e6ad65a324ebb14911885f4",
+      "frozen_sha256": "5cad32ef715a35a08ffbc7bab7a15128c55cbfe94e6ad65a324ebb14911885f4",
+      "status_sha256": "5cad32ef715a35a08ffbc7bab7a15128c55cbfe94e6ad65a324ebb14911885f4",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1ZSiLdNwl6gUs__MsokhxpbUmkSGdW0B0",
+      "name": "tests__test_gates.py",
+      "mime": "text/plain",
+      "sha256": "7f10935c76f2ac9ceece4c49fa39a567e17436d6ec1d6295af1cd0c5db3ace03",
+      "frozen_sha256": "7f10935c76f2ac9ceece4c49fa39a567e17436d6ec1d6295af1cd0c5db3ace03",
+      "status_sha256": "7f10935c76f2ac9ceece4c49fa39a567e17436d6ec1d6295af1cd0c5db3ace03",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1Za0Ge6UtpZwnXP5M58ILZ1ug9z_OYNPZ",
+      "name": "CODE_MANIFEST.md",
+      "mime": "text/markdown",
+      "sha256": "fb4e08e97398b7f6b930598128f65a7fc84f7c6fba24cf1b48a909f8e6c14c27",
+      "frozen_sha256": "fb4e08e97398b7f6b930598128f65a7fc84f7c6fba24cf1b48a909f8e6c14c27",
+      "status_sha256": "fb4e08e97398b7f6b930598128f65a7fc84f7c6fba24cf1b48a909f8e6c14c27",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1_ez729CzjKckkzvn4Im3QIviW1KNyWG6",
+      "name": "audit_pdf_text_layers.py",
+      "mime": "text/x-python",
+      "sha256": "34e5b4a41ac108903ff4ca5860cbfaeb5464ceeeb7f5655db1dde061f471d723",
+      "frozen_sha256": "34e5b4a41ac108903ff4ca5860cbfaeb5464ceeeb7f5655db1dde061f471d723",
+      "status_sha256": "34e5b4a41ac108903ff4ca5860cbfaeb5464ceeeb7f5655db1dde061f471d723",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1a5EVjrNIvQquNlbTdGZ8EHr1tg7r8sO1",
+      "name": "CBA_注册_2021-2022.md",
+      "mime": "text/markdown",
+      "sha256": "309e26614d43cbec456b764584bf3be59dffea4d69a8d2289842885f739259c1",
+      "frozen_sha256": "309e26614d43cbec456b764584bf3be59dffea4d69a8d2289842885f739259c1",
+      "status_sha256": "309e26614d43cbec456b764584bf3be59dffea4d69a8d2289842885f739259c1",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1aefDZ5WNQiLoGR1p-bO-sJR9Y5Iuous9",
+      "name": "scripts__accept_v1_5_1.py",
+      "mime": "text/plain",
+      "sha256": "faa8f89af1a673b919e6ff97c48338448525620edb18ba8ed7d4c1d97b63fc4f",
+      "frozen_sha256": "faa8f89af1a673b919e6ff97c48338448525620edb18ba8ed7d4c1d97b63fc4f",
+      "status_sha256": "faa8f89af1a673b919e6ff97c48338448525620edb18ba8ed7d4c1d97b63fc4f",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1avAxhNUTgm14MIdkgkHhia6_adSDGwLD",
+      "name": "CBA_外籍球员注册_SNAPSHOTS.xlsx",
+      "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "sha256": "9d70400bd2998a09e62fbc9df216fd5681410b08451ed62f30823f7e63ee13b4",
+      "frozen_sha256": "9d70400bd2998a09e62fbc9df216fd5681410b08451ed62f30823f7e63ee13b4",
+      "status_sha256": "9d70400bd2998a09e62fbc9df216fd5681410b08451ed62f30823f7e63ee13b4",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1nL4xomHNQInbskeYdqa45hHfleHhExW-"
+      ],
+      "verification_method": "Fresh payload SHA256"
+    },
+    {
+      "id": "1b2GJq6yh5rYENIW46TbdXnZSptHMImkl",
+      "name": "tests__test_native.py",
+      "mime": "text/plain",
+      "sha256": "4ae0a15b589807864f3249de405d4b3033513eff5e351124f55f81317ad1b50d",
+      "frozen_sha256": "4ae0a15b589807864f3249de405d4b3033513eff5e351124f55f81317ad1b50d",
+      "status_sha256": "4ae0a15b589807864f3249de405d4b3033513eff5e351124f55f81317ad1b50d",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1bS6I8W3ExXo17lzgpUpIudsXQWthkJL5",
+      "name": "src__cba_kb__adapters__foreign.py",
+      "mime": "text/plain",
+      "sha256": "8082ac9297630a92a4360cfe12e00373afc1086d6db0d4ffd94ce8c09fb1d8de",
+      "frozen_sha256": "8082ac9297630a92a4360cfe12e00373afc1086d6db0d4ffd94ce8c09fb1d8de",
+      "status_sha256": "8082ac9297630a92a4360cfe12e00373afc1086d6db0d4ffd94ce8c09fb1d8de",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1bdF1OMy3bx1-e3EQPiCWLrXQztkpwUQX",
+      "name": "docs__CBA-KB_v2.1.md",
+      "mime": "text/plain",
+      "sha256": "ce7cae2ac4d2e9c6c6cbc72e433a876ae48b019e3760df9feae7ad0b40a57c28",
+      "frozen_sha256": "ce7cae2ac4d2e9c6c6cbc72e433a876ae48b019e3760df9feae7ad0b40a57c28",
+      "status_sha256": "ce7cae2ac4d2e9c6c6cbc72e433a876ae48b019e3760df9feae7ad0b40a57c28",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1cSW0LUhmDByVauZRS5IYY045Mm7IF6t9",
+      "name": "src__cba_kb__cli.py",
+      "mime": "text/plain",
+      "sha256": "b1e2e69ffe31b9b354d7309c14e9fdce2b064ac27d494c2a6d3d05863970ec57",
+      "frozen_sha256": "b1e2e69ffe31b9b354d7309c14e9fdce2b064ac27d494c2a6d3d05863970ec57",
+      "status_sha256": "b1e2e69ffe31b9b354d7309c14e9fdce2b064ac27d494c2a6d3d05863970ec57",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1dIyI9-A2gAsDeqHHBSgZjJeuZZNe7NyQ",
+      "name": "config__production.json",
+      "mime": "text/plain",
+      "sha256": "77425ec4a05f5becd39986806489cbac9c9a85d89f6fd5a77ef5097e69e6c340",
+      "frozen_sha256": "77425ec4a05f5becd39986806489cbac9c9a85d89f6fd5a77ef5097e69e6c340",
+      "status_sha256": "77425ec4a05f5becd39986806489cbac9c9a85d89f6fd5a77ef5097e69e6c340",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1ee8_PiUnDiBDJf1zpkZ0SUmzl18Z9k0G",
+      "name": "tests__test_build_facts.py",
+      "mime": "text/plain",
+      "sha256": "594c9d5baf51918c42845ba6d11fbbe5a762e89a177790258e7d63597c47086a",
+      "frozen_sha256": "594c9d5baf51918c42845ba6d11fbbe5a762e89a177790258e7d63597c47086a",
+      "status_sha256": "594c9d5baf51918c42845ba6d11fbbe5a762e89a177790258e7d63597c47086a",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1f-HJpc0ddgOZ5pJg46-GsvAC30LFSzG-",
+      "name": "config__runtime.json",
+      "mime": "text/plain",
+      "sha256": "4badb87d6d0bcbb64e5280588e4eb983bc06ef123a9b9310695a2bf69744ef74",
+      "frozen_sha256": "4badb87d6d0bcbb64e5280588e4eb983bc06ef123a9b9310695a2bf69744ef74",
+      "status_sha256": "4badb87d6d0bcbb64e5280588e4eb983bc06ef123a9b9310695a2bf69744ef74",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1fBDkv461HBY6kmXDH9xqQu-5G7fWpX5J",
+      "name": "upload_drive.py",
+      "mime": "text/x-python",
+      "sha256": "2240236b3e4da6593f1a0527cb4aac17b44e7d67201c3305ba72f937af86742f",
+      "frozen_sha256": "2240236b3e4da6593f1a0527cb4aac17b44e7d67201c3305ba72f937af86742f",
+      "status_sha256": "2240236b3e4da6593f1a0527cb4aac17b44e7d67201c3305ba72f937af86742f",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1gfF3OzqpWuvE2bA19FC2eiZEfFe4cGi8",
+      "name": "docs__baseline_2026-09-10.json",
+      "mime": "text/plain",
+      "sha256": "e4fa3342a0c26fa5d008a088057b1ca084c6ae66b56b99146499b5b08944bd68",
+      "frozen_sha256": "e4fa3342a0c26fa5d008a088057b1ca084c6ae66b56b99146499b5b08944bd68",
+      "status_sha256": "e4fa3342a0c26fa5d008a088057b1ca084c6ae66b56b99146499b5b08944bd68",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1gm6ngZWU70W30IfLjiaufzTj5ctWomi6",
+      "name": "CBA_注册_2020-2021.md",
+      "mime": "text/markdown",
+      "sha256": "bde86a037f4d1b1e7c12ef54d0ea69ff378314d010d76f7651dd25b77115de14",
+      "frozen_sha256": "bde86a037f4d1b1e7c12ef54d0ea69ff378314d010d76f7651dd25b77115de14",
+      "status_sha256": "bde86a037f4d1b1e7c12ef54d0ea69ff378314d010d76f7651dd25b77115de14",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1il-cj2PeeKf5b-fI-BFFhhb4puzK47nG",
+      "name": "tests__test_release.py",
+      "mime": "text/plain",
+      "sha256": "c4c49f13cf3e40714ef16d5d12565bb737c47b891927864678f482d9ab6cb5ba",
+      "frozen_sha256": "c4c49f13cf3e40714ef16d5d12565bb737c47b891927864678f482d9ab6cb5ba",
+      "status_sha256": "c4c49f13cf3e40714ef16d5d12565bb737c47b891927864678f482d9ab6cb5ba",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1jt7weu3QIODocx3rcr6GYAaKd40ei77f",
+      "name": "docs__GEMINI_ACCESS_DIAGNOSIS.md",
+      "mime": "text/plain",
+      "sha256": "b6bfbc9b50a6274934f3bbc23eb23518c010cc4fa428b62463e77374975ef821",
+      "frozen_sha256": "b6bfbc9b50a6274934f3bbc23eb23518c010cc4fa428b62463e77374975ef821",
+      "status_sha256": "b6bfbc9b50a6274934f3bbc23eb23518c010cc4fa428b62463e77374975ef821",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1m7QwOz7c5IsCayj2-Iwk0Hjr2wa9E1PM",
+      "name": "scripts__prepare_production.py",
+      "mime": "text/plain",
+      "sha256": "34e0bdb631c098e5223f375ecff1cf106e980df830a3cf36c3dab147553f905a",
+      "frozen_sha256": "34e0bdb631c098e5223f375ecff1cf106e980df830a3cf36c3dab147553f905a",
+      "status_sha256": "34e0bdb631c098e5223f375ecff1cf106e980df830a3cf36c3dab147553f905a",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1mwUdl9BmDX184qgL9GC4Sasgyno1Y7rj",
+      "name": "CBA_注册_2019-2020.md",
+      "mime": "text/markdown",
+      "sha256": "1d2cefdf446183fbf380a6091bfe59500cbcb8a4c63f91ca6e12fb6b037e6650",
+      "frozen_sha256": "1d2cefdf446183fbf380a6091bfe59500cbcb8a4c63f91ca6e12fb6b037e6650",
+      "status_sha256": "1d2cefdf446183fbf380a6091bfe59500cbcb8a4c63f91ca6e12fb6b037e6650",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1nIq2nY8OAi4pCzdHn61kMI07Jt0GMY6t",
+      "name": "CBA_注册_2023-2024.md",
+      "mime": "text/markdown",
+      "sha256": "109ae0e9bdefa384b415745ddb72c87eb8c63ec657cda22a33cfc1427d336174",
+      "frozen_sha256": "109ae0e9bdefa384b415745ddb72c87eb8c63ec657cda22a33cfc1427d336174",
+      "status_sha256": "109ae0e9bdefa384b415745ddb72c87eb8c63ec657cda22a33cfc1427d336174",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1nRHblzBFw3atmnVFUU3_tySxG2LIxbEs",
+      "name": ".gitignore",
+      "mime": "text/plain",
+      "sha256": "f485de35d5e6256b7c28d08e3c7471bff755d22f0c4261e179a13cbeb3675292",
+      "frozen_sha256": "f485de35d5e6256b7c28d08e3c7471bff755d22f0c4261e179a13cbeb3675292",
+      "status_sha256": "f485de35d5e6256b7c28d08e3c7471bff755d22f0c4261e179a13cbeb3675292",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1nUMcXC2tpjVulEnn8acYY3UdxgryFqgF",
+      "name": "config__drive_map.yaml",
+      "mime": "text/plain",
+      "sha256": "7b0a7471c49009ff2f7a51ac0d45c96d273c26dcb81b57974128297f7d2ab229",
+      "frozen_sha256": "7b0a7471c49009ff2f7a51ac0d45c96d273c26dcb81b57974128297f7d2ab229",
+      "status_sha256": "7b0a7471c49009ff2f7a51ac0d45c96d273c26dcb81b57974128297f7d2ab229",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1nrSsz3FMNnyu0m0jrDyEwQhHUVk4LVQ7",
+      "name": "scripts__verify_v1_5_1_sources.py",
+      "mime": "text/plain",
+      "sha256": "f0ccc710086b7fb2e4a9250e77280fb2ab502addd5155e473c04da64851f55ef",
+      "frozen_sha256": "f0ccc710086b7fb2e4a9250e77280fb2ab502addd5155e473c04da64851f55ef",
+      "status_sha256": "f0ccc710086b7fb2e4a9250e77280fb2ab502addd5155e473c04da64851f55ef",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1o2L2gw3O6kVKDRzc1a2frh607IOHenAC",
+      "name": "src__cba_kb__adapters__midseason_md.py",
+      "mime": "text/plain",
+      "sha256": "0c1d2f79852288065fa4491e97c8970b01b857db6a1cea1455d0be72336f9ec9",
+      "frozen_sha256": "0c1d2f79852288065fa4491e97c8970b01b857db6a1cea1455d0be72336f9ec9",
+      "status_sha256": "0c1d2f79852288065fa4491e97c8970b01b857db6a1cea1455d0be72336f9ec9",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1oPqJvv45dLw9pk1DZSbq7C3J-3qlntgb",
+      "name": "src__cba_kb__release.py",
+      "mime": "text/plain",
+      "sha256": "1ce243c294a8958dd6cabfac5b136bf20525972dfde0741eeb8973bedcbcab9d",
+      "frozen_sha256": "1ce243c294a8958dd6cabfac5b136bf20525972dfde0741eeb8973bedcbcab9d",
+      "status_sha256": "1ce243c294a8958dd6cabfac5b136bf20525972dfde0741eeb8973bedcbcab9d",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1ofG_36BzvElRXLnCKaRuFWRsN0U0jxZK",
+      "name": "fetch_cba.py",
+      "mime": "text/x-python",
+      "sha256": "9e10638336fe47678ac70cd31d62b4818a375836b1e5e62ee4d19c2382a7956b",
+      "frozen_sha256": "9e10638336fe47678ac70cd31d62b4818a375836b1e5e62ee4d19c2382a7956b",
+      "status_sha256": "9e10638336fe47678ac70cd31d62b4818a375836b1e5e62ee4d19c2382a7956b",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1p-y9VmwiOFrz3Ut1DubVqgrprEcc4rg0",
+      "name": "src__cba_kb__xlsx.py",
+      "mime": "text/plain",
+      "sha256": "1cd22f435f96d72deac7aca261a5b40ccc2eafa4349cca3d76b442bd2442652e",
+      "frozen_sha256": "1cd22f435f96d72deac7aca261a5b40ccc2eafa4349cca3d76b442bd2442652e",
+      "status_sha256": "1cd22f435f96d72deac7aca261a5b40ccc2eafa4349cca3d76b442bd2442652e",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1p4tBICPi_RzpzEApw959VjtX29IwoYp5",
+      "name": "build_bundles.py",
+      "mime": "text/x-python",
+      "sha256": "a05ae8306f0890cb65dd29acb2ba62a11161909f9f9dbc8e8f078e9704071005",
+      "frozen_sha256": "a05ae8306f0890cb65dd29acb2ba62a11161909f9f9dbc8e8f078e9704071005",
+      "status_sha256": "a05ae8306f0890cb65dd29acb2ba62a11161909f9f9dbc8e8f078e9704071005",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1pBBFCHedDwoiIf1HcusrXWCcpAKt6EVU",
+      "name": "README.md",
+      "mime": "text/plain",
+      "sha256": "60472102b8831b33716ecdb8a1f39f08d8aefa6a7b6f7ef889d7dec33270e916",
+      "frozen_sha256": "60472102b8831b33716ecdb8a1f39f08d8aefa6a7b6f7ef889d7dec33270e916",
+      "status_sha256": "60472102b8831b33716ecdb8a1f39f08d8aefa6a7b6f7ef889d7dec33270e916",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1pa4e2JpAuyalz1h-GNi-ajL7arHn5YiC",
+      "name": "docs__MASTER_MIGRATION_NOTE.md",
+      "mime": "text/plain",
+      "sha256": "dffcaa9cefe0aac84ca5047b241eb927921a5d7903fba323df2c0272259c578f",
+      "frozen_sha256": "dffcaa9cefe0aac84ca5047b241eb927921a5d7903fba323df2c0272259c578f",
+      "status_sha256": "dffcaa9cefe0aac84ca5047b241eb927921a5d7903fba323df2c0272259c578f",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1rDxJzgbBQspuiM21-ZvPeVllccyPqRMj0jLJs7OZy3U",
+      "name": "CBA_注册_2025-2026",
+      "mime": "application/vnd.google-apps.document",
+      "sha256": "ca463200b9e4d587b14d249f48a24abe6a69361ba625758a226c9e90a313f561",
+      "frozen_sha256": "ca463200b9e4d587b14d249f48a24abe6a69361ba625758a226c9e90a313f561",
+      "status_sha256": "ca463200b9e4d587b14d249f48a24abe6a69361ba625758a226c9e90a313f561",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp"
+      ],
+      "verification_method": "Fresh payload SHA256"
+    },
+    {
+      "id": "1rH6k7Z-vQ3GNF29ojf4ScQwczDiJNhQB",
+      "name": "src__cba_kb__adapters__foreign_xlsx.py",
+      "mime": "text/plain",
+      "sha256": "8d85cac961d86c89bba8a2489667b4add2c346a281609ce09db5a5ead8ee8616",
+      "frozen_sha256": "8d85cac961d86c89bba8a2489667b4add2c346a281609ce09db5a5ead8ee8616",
+      "status_sha256": "8d85cac961d86c89bba8a2489667b4add2c346a281609ce09db5a5ead8ee8616",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1rtsMKnFm-cn9jkw8HCxpu-0QhSjHyfp9",
+      "name": "CBA_注册_2017-2018.md",
+      "mime": "text/markdown",
+      "sha256": "09a1c135c81b8aa2e648748c9a589c2110f4b8e208f1b7ed9680b89de2ab4fbe",
+      "frozen_sha256": "09a1c135c81b8aa2e648748c9a589c2110f4b8e208f1b7ed9680b89de2ab4fbe",
+      "status_sha256": "09a1c135c81b8aa2e648748c9a589c2110f4b8e208f1b7ed9680b89de2ab4fbe",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1sav79IJ_57HPA-sf6a-iWTi6rvIfydXm",
+      "name": "docs__SANDBOX_RUNBOOK.md",
+      "mime": "text/plain",
+      "sha256": "b70730d1c51fcaa0e44a851b6f833dd6a76d9122a559486d35d8f61bbfcbc2e0",
+      "frozen_sha256": "b70730d1c51fcaa0e44a851b6f833dd6a76d9122a559486d35d8f61bbfcbc2e0",
+      "status_sha256": "b70730d1c51fcaa0e44a851b6f833dd6a76d9122a559486d35d8f61bbfcbc2e0",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1tHLvjfLj-GxWQ06erqodnJZ5Bmc3HTfy",
+      "name": "ingest_wechat.py",
+      "mime": "text/x-python",
+      "sha256": "7505dfb2583ce20fc0a9fed27ae308af3aca809f8b5259d178dd69a45dcca083",
+      "frozen_sha256": "7505dfb2583ce20fc0a9fed27ae308af3aca809f8b5259d178dd69a45dcca083",
+      "status_sha256": "7505dfb2583ce20fc0a9fed27ae308af3aca809f8b5259d178dd69a45dcca083",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1tgScOrJ082eHeoA0ysFrKihlc3UC5-2_",
+      "name": "classify_notes.py",
+      "mime": "text/x-python",
+      "sha256": "15c0560e69ff767a207198e0bee45ca79c33619cc986616ed1a4d59e9693624b",
+      "frozen_sha256": "15c0560e69ff767a207198e0bee45ca79c33619cc986616ed1a4d59e9693624b",
+      "status_sha256": "15c0560e69ff767a207198e0bee45ca79c33619cc986616ed1a4d59e9693624b",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1u0p3knckyxcfkimrVKGPftmVIp8Zj3Nk",
+      "name": "fixture_6a97f61ed5_20260908T114135Z.json",
+      "mime": "application/json",
+      "sha256": "7549f01299eb8640f3271fc1c4cd777aa3ccdf46c45e810e136d89739fdc2fdb",
+      "frozen_sha256": "7549f01299eb8640f3271fc1c4cd777aa3ccdf46c45e810e136d89739fdc2fdb",
+      "status_sha256": "7549f01299eb8640f3271fc1c4cd777aa3ccdf46c45e810e136d89739fdc2fdb",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1vm2vTQWM0ioMYHW89_S5E4GetPlivqHU",
+      "name": "CBA_注册_2022-2023.md",
+      "mime": "text/markdown",
+      "sha256": "dbd10213694e0006c3a115d9e812ba9725b123ae50c3d168590a862e4d5898d5",
+      "frozen_sha256": "dbd10213694e0006c3a115d9e812ba9725b123ae50c3d168590a862e4d5898d5",
+      "status_sha256": "dbd10213694e0006c3a115d9e812ba9725b123ae50c3d168590a862e4d5898d5",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1y-JlN327UARvZ4A8QN0EDDxg_0oggiUp"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1wXFZ6iAwowVJjqRBIawGpMVk4O_CCy15",
+      "name": "tests__test_common.py",
+      "mime": "text/plain",
+      "sha256": "469d223c8df7ea434fdea4e27b3f532eaac655aec47f8a9fb99581c29005efdf",
+      "frozen_sha256": "469d223c8df7ea434fdea4e27b3f532eaac655aec47f8a9fb99581c29005efdf",
+      "status_sha256": "469d223c8df7ea434fdea4e27b3f532eaac655aec47f8a9fb99581c29005efdf",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1wi_Oyp5DhJBEDiJoWdbMaX9ABoysdzRf",
+      "name": "drive_map.yaml",
+      "mime": "text/yaml",
+      "sha256": "f98d7a6efccf6df3411c21d5e21a23961363a7e9091423672282701c63148952",
+      "frozen_sha256": "f98d7a6efccf6df3411c21d5e21a23961363a7e9091423672282701c63148952",
+      "status_sha256": "f98d7a6efccf6df3411c21d5e21a23961363a7e9091423672282701c63148952",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1ccYmxy8NKt79pgyhDnyHUE14C6_wsn83"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1xUG04aKYZmL1vAGwEbe9x0F5_c07vYI0",
+      "name": "docs__import_inventory.json",
+      "mime": "text/plain",
+      "sha256": "46b2a08c3408d18495631a1c8d78cf4badcffe9325b2ccbc65d78308a5154ac9",
+      "frozen_sha256": "46b2a08c3408d18495631a1c8d78cf4badcffe9325b2ccbc65d78308a5154ac9",
+      "status_sha256": "46b2a08c3408d18495631a1c8d78cf4badcffe9325b2ccbc65d78308a5154ac9",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1xscpYM6eJ2v6TFcNMwFMVLZvJxdyGJF0",
+      "name": "v1.5.1-release-report.md",
+      "mime": "text/markdown",
+      "sha256": "d7327230227155a1aa5780b99e871b9faa6d83044c989a06ac66ff374d7e74e6",
+      "frozen_sha256": "d7327230227155a1aa5780b99e871b9faa6d83044c989a06ac66ff374d7e74e6",
+      "status_sha256": "d7327230227155a1aa5780b99e871b9faa6d83044c989a06ac66ff374d7e74e6",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1GjDMkAYs7JpIrI9_kQduxlqygZmxeb9M"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1yWHhBUl2d20-2CQ7fvMGdM2elO9TjUoI",
+      "name": "tests__test_catalog.py",
+      "mime": "text/plain",
+      "sha256": "eb3af5bad2f50773f92ba4eec40d0389c0bbcf0efa595c06ac78d62dfdb93bcc",
+      "frozen_sha256": "eb3af5bad2f50773f92ba4eec40d0389c0bbcf0efa595c06ac78d62dfdb93bcc",
+      "status_sha256": "eb3af5bad2f50773f92ba4eec40d0389c0bbcf0efa595c06ac78d62dfdb93bcc",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1znlH3s7y_bvC6i6YcL5lbi4JB_0WEiNw",
+      "name": "docs__GEMINI_ACCEPTANCE.md",
+      "mime": "text/plain",
+      "sha256": "95d0ca6135ce8726d71ac25f255cd4e716a3a8f1b05b966e938ebf3e1fb02f0f",
+      "frozen_sha256": "95d0ca6135ce8726d71ac25f255cd4e716a3a8f1b05b966e938ebf3e1fb02f0f",
+      "status_sha256": "95d0ca6135ce8726d71ac25f255cd4e716a3a8f1b05b966e938ebf3e1fb02f0f",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1zol-6kZCekIS_hzWH1Y24L0gxfwLWh8e",
+      "name": "scripts__fetch_inbox_sources.py",
+      "mime": "text/plain",
+      "sha256": "7b7764c674f06b7505fec9ac69372d124dda251492786bc2695ec68aa288e945",
+      "frozen_sha256": "7b7764c674f06b7505fec9ac69372d124dda251492786bc2695ec68aa288e945",
+      "status_sha256": "7b7764c674f06b7505fec9ac69372d124dda251492786bc2695ec68aa288e945",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1hmXXkWSNaWYQoOjSn8yniPh_IRPH4ic9",
+      "name": "config__v1.5.2_registry_proposal.json",
+      "mime": "text/plain",
+      "sha256": "314be603ff462de3bb1d4e9aae24f29779be5fcc3b2e8b96c8e36f9a9e4abf0f",
+      "frozen_sha256": "314be603ff462de3bb1d4e9aae24f29779be5fcc3b2e8b96c8e36f9a9e4abf0f",
+      "status_sha256": "314be603ff462de3bb1d4e9aae24f29779be5fcc3b2e8b96c8e36f9a9e4abf0f",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1Qhga1BIcF_H1Ra4HCx0OX87GT7Z7qPwX",
+      "name": "config__v1.5.2_registry_status.json",
+      "mime": "text/plain",
+      "sha256": "8fb35d39066ef7820dea6c8eb65f9ae0b2f2df0b7b795205b2638edfb18904e4",
+      "frozen_sha256": "8fb35d39066ef7820dea6c8eb65f9ae0b2f2df0b7b795205b2638edfb18904e4",
+      "status_sha256": "8fb35d39066ef7820dea6c8eb65f9ae0b2f2df0b7b795205b2638edfb18904e4",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1q9IVaeQ4x1H40Eu6Xin3p_ExZ5XMOwgZ",
+      "name": "docs__CBA-KB_v1.5.2.md",
+      "mime": "text/plain",
+      "sha256": "ad9eee52ca69423063232e309157427783cef765b0959842d11e5c0ba4292abf",
+      "frozen_sha256": "ad9eee52ca69423063232e309157427783cef765b0959842d11e5c0ba4292abf",
+      "status_sha256": "ad9eee52ca69423063232e309157427783cef765b0959842d11e5c0ba4292abf",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "19PBy0b15_Q32mkCMh6K3tRGMD2wiZxtd",
+      "name": "docs__requirements__CBA-KB_v1.5.1_DRAFT-1.md",
+      "mime": "text/plain",
+      "sha256": "84897047bf05d21fc0e46c03591c445c62a68dfe3295f68c7369dc17822291bc",
+      "frozen_sha256": "84897047bf05d21fc0e46c03591c445c62a68dfe3295f68c7369dc17822291bc",
+      "status_sha256": "84897047bf05d21fc0e46c03591c445c62a68dfe3295f68c7369dc17822291bc",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "16_-qtlZjRQsJRFBMQfYQ6O5a4awrOQFn",
+      "name": "docs__requirements__CBA-KB_v1.5.1_DRAFT-2.md",
+      "mime": "text/plain",
+      "sha256": "538d3bfb58a2c0ab5cff767e6e62d121bf2d43d84c46b7b4319f7dea4bbd0e0b",
+      "frozen_sha256": "538d3bfb58a2c0ab5cff767e6e62d121bf2d43d84c46b7b4319f7dea4bbd0e0b",
+      "status_sha256": "538d3bfb58a2c0ab5cff767e6e62d121bf2d43d84c46b7b4319f7dea4bbd0e0b",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "18SvVoH6YT8wgkinkXN61vIWrM1qBUjeC",
+      "name": "docs__requirements__V1_5_1_THIRD_PARTY_REVIEW.md",
+      "mime": "text/plain",
+      "sha256": "53f7b205582650f1ac3726122111b00a421b1fa651e67a1e16d963181fa231fb",
+      "frozen_sha256": "53f7b205582650f1ac3726122111b00a421b1fa651e67a1e16d963181fa231fb",
+      "status_sha256": "53f7b205582650f1ac3726122111b00a421b1fa651e67a1e16d963181fa231fb",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1azPqgakbfctPxEI8CfxEncIy3433UZNA",
+      "name": "docs__v1.5.2-deployment-20260911.md",
+      "mime": "text/plain",
+      "sha256": "246902e7ca235540398d09c101ec9e88280a7714cb07bb240c12e1063a67e6a6",
+      "frozen_sha256": "246902e7ca235540398d09c101ec9e88280a7714cb07bb240c12e1063a67e6a6",
+      "status_sha256": "246902e7ca235540398d09c101ec9e88280a7714cb07bb240c12e1063a67e6a6",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1MBon8ka1aQZ0HOrXjp92lnGuUVSP2hhl",
+      "name": "docs__v1.5.2_source_registry_proposal.md",
+      "mime": "text/plain",
+      "sha256": "57d32ec1b381273da690e9204cbf424ccec6f1d6f027cc2f7318470fad7f1613",
+      "frozen_sha256": "57d32ec1b381273da690e9204cbf424ccec6f1d6f027cc2f7318470fad7f1613",
+      "status_sha256": "57d32ec1b381273da690e9204cbf424ccec6f1d6f027cc2f7318470fad7f1613",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1q92PCuB0pPrS_WxPWqQlYRat6U_KEJiR",
+      "name": "docs__validation__v1.5.2-drive-sync-20260911.json",
+      "mime": "text/plain",
+      "sha256": "bbd0447ba3fbf04e2487220ed910e4f33d5b860f9fe69225f2d88a1efeebade5",
+      "frozen_sha256": "bbd0447ba3fbf04e2487220ed910e4f33d5b860f9fe69225f2d88a1efeebade5",
+      "status_sha256": "bbd0447ba3fbf04e2487220ed910e4f33d5b860f9fe69225f2d88a1efeebade5",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1Wo7bZkcGfG8CX_xM5G4uMqEgh7joOfRn",
+      "name": "docs__validation__v1.5.2-source-acceptance-20260911.json",
+      "mime": "text/plain",
+      "sha256": "a8a733643051588d4fb5e0a672162e70ffcb7dfe8aa03a4c533cf75d4aad6339",
+      "frozen_sha256": "a8a733643051588d4fb5e0a672162e70ffcb7dfe8aa03a4c533cf75d4aad6339",
+      "status_sha256": "a8a733643051588d4fb5e0a672162e70ffcb7dfe8aa03a4c533cf75d4aad6339",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1xIcqerya95H5KzXxbLWYYkWMYf3CyrY-",
+      "name": "scripts__prepare_v1_5_2.py",
+      "mime": "text/plain",
+      "sha256": "522a345a87c72b722a4574497736fdc93659bd3a79ff2df8b40f91ef40e4c6da",
+      "frozen_sha256": "522a345a87c72b722a4574497736fdc93659bd3a79ff2df8b40f91ef40e4c6da",
+      "status_sha256": "522a345a87c72b722a4574497736fdc93659bd3a79ff2df8b40f91ef40e4c6da",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1ieup5nIGKzTiLCN5ix1hzcSvj7_RK9uS",
+      "name": "scripts__sync_v1_5_2_candidate.py",
+      "mime": "text/plain",
+      "sha256": "a744a93baa07b085491a9fa6d71dfca7bd5415fa91dc90e7f646f7d9a24caa62",
+      "frozen_sha256": "a744a93baa07b085491a9fa6d71dfca7bd5415fa91dc90e7f646f7d9a24caa62",
+      "status_sha256": "a744a93baa07b085491a9fa6d71dfca7bd5415fa91dc90e7f646f7d9a24caa62",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1J55REyszSlr-3vj98FoVE2joPH_a2JEz",
+      "name": "scripts__verify_v1_5_2_sources.py",
+      "mime": "text/plain",
+      "sha256": "6bd981dc685e6f3e60ce6706333e1a1a167a388f04cdad1b1ddf3d24c5e1b26b",
+      "frozen_sha256": "6bd981dc685e6f3e60ce6706333e1a1a167a388f04cdad1b1ddf3d24c5e1b26b",
+      "status_sha256": "6bd981dc685e6f3e60ce6706333e1a1a167a388f04cdad1b1ddf3d24c5e1b26b",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1SdEPVVLD8JCHK6FBPEbCH3r0vQtI3IUK",
+      "name": "src__cba_kb__domain_xlsx.py",
+      "mime": "text/plain",
+      "sha256": "8ae46422dadc591dc45d8180c06fb0e9fb4259a98662354784b81c8ec2aa78ea",
+      "frozen_sha256": "8ae46422dadc591dc45d8180c06fb0e9fb4259a98662354784b81c8ec2aa78ea",
+      "status_sha256": "8ae46422dadc591dc45d8180c06fb0e9fb4259a98662354784b81c8ec2aa78ea",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1ftWZmlgkY3tjRQJQjxm96nX6HUG0HA00",
+      "name": "src__cba_kb__registration_domain.py",
+      "mime": "text/plain",
+      "sha256": "a48a2f29a423be0559855ed15ce4615f42a497c34c7fbf2ff731daa34a40a6c2",
+      "frozen_sha256": "a48a2f29a423be0559855ed15ce4615f42a497c34c7fbf2ff731daa34a40a6c2",
+      "status_sha256": "a48a2f29a423be0559855ed15ce4615f42a497c34c7fbf2ff731daa34a40a6c2",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "18yxcAKMa8D5178-cAMfi8kFBxueylE2W",
+      "name": "tests__test_draft2_regressions.py",
+      "mime": "text/plain",
+      "sha256": "443a69530328073c908cbad113feb67529e65e37ae896fdbb9834c3cecad0fa2",
+      "frozen_sha256": "443a69530328073c908cbad113feb67529e65e37ae896fdbb9834c3cecad0fa2",
+      "status_sha256": "443a69530328073c908cbad113feb67529e65e37ae896fdbb9834c3cecad0fa2",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1RFBN8tYNy_xswXRRco5flxmn1HzRIvtx",
+      "name": "tests__test_prepare_v1_5_2.py",
+      "mime": "text/plain",
+      "sha256": "da815da3cfa983b9b614a187419cf38ed93d6b37f45d86502178a3da6482eb71",
+      "frozen_sha256": "da815da3cfa983b9b614a187419cf38ed93d6b37f45d86502178a3da6482eb71",
+      "status_sha256": "da815da3cfa983b9b614a187419cf38ed93d6b37f45d86502178a3da6482eb71",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1Z8z_4lBzQwDoicNg9xHulznUkofru48r",
+      "name": "tests__test_registration_domain.py",
+      "mime": "text/plain",
+      "sha256": "0162055bbaa318f796d1c529168764b7214614a03d0173a4db5ebc8385751ef8",
+      "frozen_sha256": "0162055bbaa318f796d1c529168764b7214614a03d0173a4db5ebc8385751ef8",
+      "status_sha256": "0162055bbaa318f796d1c529168764b7214614a03d0173a4db5ebc8385751ef8",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1m--9ePFjxnYhUR_kccA_4RYjp6ru0QRv",
+      "name": "tests__test_sync_v1_5_2_candidate.py",
+      "mime": "text/plain",
+      "sha256": "c6d4c893e48c493f4cd7032ff26d8d2e36b8807d37f48a28d8a704ad5f6dc401",
+      "frozen_sha256": "c6d4c893e48c493f4cd7032ff26d8d2e36b8807d37f48a28d8a704ad5f6dc401",
+      "status_sha256": "c6d4c893e48c493f4cd7032ff26d8d2e36b8807d37f48a28d8a704ad5f6dc401",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1oaJW9FDUjmIbFDafpt6aqtlvvzqQYhdC"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    },
+    {
+      "id": "1_dgbWXOkJeEjGRtEeZ0oOC9e-lqbXZeW",
+      "name": "CBA_注册领域_六表.xlsx",
+      "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "sha256": "4124c4e6f8e3f62d7353180a5bbd4baca51e3196e2b7fac6b06148042fce2849",
+      "frozen_sha256": "4124c4e6f8e3f62d7353180a5bbd4baca51e3196e2b7fac6b06148042fce2849",
+      "status_sha256": "4124c4e6f8e3f62d7353180a5bbd4baca51e3196e2b7fac6b06148042fce2849",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1nL4xomHNQInbskeYdqa45hHfleHhExW-"
+      ],
+      "verification_method": "Fresh payload SHA256"
+    },
+    {
+      "id": "1vXjEfH8M8aXlLXJqw4pjUec9ejUIZko2",
+      "name": "v1.5.2-release-report.md",
+      "mime": "text/markdown",
+      "sha256": "1df53f53227be0540913ca05b3946d4d8c21cefe1f334fdb96c945a380119552",
+      "frozen_sha256": "2dbaf8efcfaf5d7d61c7abd7c61b0721f00ebeae5ef9dfb0de02f2947e64159e",
+      "status_sha256": "2dbaf8efcfaf5d7d61c7abd7c61b0721f00ebeae5ef9dfb0de02f2947e64159e",
+      "matches_frozen_plan": false,
+      "matches_live_status": false,
+      "parents": [
+        "1GjDMkAYs7JpIrI9_kQduxlqygZmxeb9M"
+      ],
+      "verification_method": "Fresh payload SHA256"
+    },
+    {
+      "id": "1qJS-Tr1r5XEYbNIwrfiYOMNVqcf8Km-4",
+      "name": "v1.5.2-source-acceptance.json",
+      "mime": "application/json",
+      "sha256": "a8a733643051588d4fb5e0a672162e70ffcb7dfe8aa03a4c533cf75d4aad6339",
+      "frozen_sha256": "a8a733643051588d4fb5e0a672162e70ffcb7dfe8aa03a4c533cf75d4aad6339",
+      "status_sha256": "a8a733643051588d4fb5e0a672162e70ffcb7dfe8aa03a4c533cf75d4aad6339",
+      "matches_frozen_plan": true,
+      "matches_live_status": true,
+      "parents": [
+        "1GjDMkAYs7JpIrI9_kQduxlqygZmxeb9M"
+      ],
+      "verification_method": "Drive MD5 vs frozen bytes; local SHA256"
+    }
+  ],
+  "errors": [],
+  "workbooks": [
+    {
+      "name": "MASTER.xlsx",
+      "sha256": "185cf58d69ced2ba38a1745cdb848ab21288a666d893d3d4bae3a3ddd1c2d588",
+      "tables": [
+        {
+          "sheet": "MASTER",
+          "rows": 3465,
+          "unique_first_column": 3465,
+          "columns": 20
+        }
+      ]
+    },
+    {
+      "name": "CBA_球员注册_EVENTS.xlsx",
+      "sha256": "374472e4d0bb677abed446047b8c1eead3cce6a2291741bfd22d6f52e0be878a",
+      "tables": [
+        {
+          "sheet": "EVENTS",
+          "rows": 73,
+          "unique_first_column": 73,
+          "columns": 31
+        }
+      ]
+    },
+    {
+      "name": "CBA_外籍球员注册_SNAPSHOTS.xlsx",
+      "sha256": "9d70400bd2998a09e62fbc9df216fd5681410b08451ed62f30823f7e63ee13b4",
+      "tables": [
+        {
+          "sheet": "SNAPSHOTS",
+          "rows": 73,
+          "unique_first_column": 73,
+          "columns": 19
+        }
+      ]
+    },
+    {
+      "name": "CBA_注册领域_六表.xlsx",
+      "sha256": "4124c4e6f8e3f62d7353180a5bbd4baca51e3196e2b7fac6b06148042fce2849",
+      "tables": [
+        {
+          "sheet": "domestic_registrations",
+          "rows": 46,
+          "unique_first_column": 46,
+          "columns": 29
+        },
+        {
+          "sheet": "domestic_transaction_windows",
+          "rows": 4,
+          "unique_first_column": 4,
+          "columns": 22
+        },
+        {
+          "sheet": "registration_status_events",
+          "rows": 72,
+          "unique_first_column": 72,
+          "columns": 42
+        },
+        {
+          "sheet": "foreign_registration_snapshots",
+          "rows": 244,
+          "unique_first_column": 244,
+          "columns": 22
+        },
+        {
+          "sheet": "foreign_right_snapshots",
+          "rows": 227,
+          "unique_first_column": 227,
+          "columns": 23
+        },
+        {
+          "sheet": "foreign_right_transactions",
+          "rows": 7,
+          "unique_first_column": 7,
+          "columns": 25
+        }
+      ]
+    }
+  ],
+  "zip_changes_at_original_release": [
+    {
+      "name": "MASTER.xlsx",
+      "size_before": 306602,
+      "size_after": 306589,
+      "changed_members": [
+        "docProps/core.xml"
+      ],
+      "size_delta": -13
+    },
+    {
+      "name": "CBA_球员注册_EVENTS.xlsx",
+      "size_before": 21148,
+      "size_after": 21135,
+      "changed_members": [
+        "docProps/core.xml"
+      ],
+      "size_delta": -13
+    },
+    {
+      "name": "CBA_外籍球员注册_SNAPSHOTS.xlsx",
+      "size_before": 15817,
+      "size_after": 15804,
+      "changed_members": [
+        "docProps/core.xml"
+      ],
+      "size_delta": -13
+    }
+  ],
+  "sources": [
+    {
+      "id": "1dOvVJBVahuyq0L2fI4WRhRy7QJOxdOUR",
+      "name": "CBA_赛季中国内球员人员流动_2019-2026_合并核验总表_v2.md",
+      "parents": [
+        "1TwBbUFzrrHvip51eVnEhL3iMqYqTz7_P"
+      ],
+      "registry": {
+        "business_status": "IMPORTED",
+        "extraction_status": "markdown_extracted",
+        "records_generated": "46 domestic_registrations; 4 domestic_transaction_windows; 53 registration_status_events",
+        "records_imported": "46 domestic_registrations; 4 domestic_transaction_windows; 53 registration_status_events",
+        "current_parent_id": "1TwBbUFzrrHvip51eVnEhL3iMqYqTz7_P"
+      }
+    },
+    {
+      "id": "1eGrMDep9YMfPNy66M6-6Jwm9iYaF_gQj",
+      "name": "CBA_外籍球员优先续约权_交易_注册信息_二次核验完整修正版_2019-2027.md",
+      "parents": [
+        "1TwBbUFzrrHvip51eVnEhL3iMqYqTz7_P"
+      ],
+      "registry": {
+        "business_status": "IMPORTED",
+        "extraction_status": "markdown_extracted",
+        "records_generated": "19 registration_status_events; 244 foreign_registration_snapshots; 227 foreign_priority_right_snapshots; 7 foreign_priority_right_transactions",
+        "records_imported": "19 registration_status_events; 244 foreign_registration_snapshots; 227 foreign_priority_right_snapshots; 7 foreign_priority_right_transactions",
+        "current_parent_id": "1TwBbUFzrrHvip51eVnEhL3iMqYqTz7_P"
+      }
+    },
+    {
+      "id": "16H0cxiItoSlGALeHce-E06pD_a3RFAmd",
+      "name": "2024-2025赛季CBA联赛外籍球员注册信息（3月31日上午10点注册截止）.xlsx",
+      "parents": [
+        "1TwBbUFzrrHvip51eVnEhL3iMqYqTz7_P"
+      ],
+      "registry": {
+        "business_status": "IMPORTED",
+        "extraction_status": "table_extracted",
+        "records_generated": "73 snapshots; 59 events",
+        "records_imported": "73 snapshots; 59 events (v1.5.1 legacy fact products); six-table consolidation pending",
+        "current_parent_id": "1TwBbUFzrrHvip51eVnEhL3iMqYqTz7_P"
+      }
+    },
+    {
+      "id": "1C8BpmY_MMjFGnSOdllRsnVWlwPdfKViV",
+      "name": "八一球员_2021赛季中期转会核验.md",
+      "parents": [
+        "1TwBbUFzrrHvip51eVnEhL3iMqYqTz7_P"
+      ],
+      "registry": {
+        "business_status": "IMPORTED",
+        "extraction_status": "markdown_extracted",
+        "records_generated": "14 domestic; 14 events",
+        "records_imported": "14 domestic; 14 events (v1.5.1 legacy fact products)",
+        "current_parent_id": "1TwBbUFzrrHvip51eVnEhL3iMqYqTz7_P"
+      }
+    },
+    {
+      "id": "1D72_i0dzR9TmeV_XH8KeBr_BTxxwFPIM",
+      "name": "2020-2021赛季CBA联赛外籍球员注册信息.png",
+      "parents": [
+        "1wKERXv7u_BcxSAdPXZpKL_zrv7IcVpPf"
+      ],
+      "registry": {
+        "business_status": "DISCOVERED",
+        "extraction_status": "ocr_deferred",
+        "records_generated": "",
+        "records_imported": "",
+        "current_parent_id": "1wKERXv7u_BcxSAdPXZpKL_zrv7IcVpPf"
+      }
+    },
+    {
+      "id": "1WYVqi94bqVGOLsD7t1nmMXyTMTU4TOlr",
+      "name": "2022-2023赛季CBA联赛外籍球员注册信息（截至4月5日）.png",
+      "parents": [
+        "1wKERXv7u_BcxSAdPXZpKL_zrv7IcVpPf"
+      ],
+      "registry": {
+        "business_status": "DISCOVERED",
+        "extraction_status": "ocr_deferred",
+        "records_generated": "",
+        "records_imported": "",
+        "current_parent_id": "1wKERXv7u_BcxSAdPXZpKL_zrv7IcVpPf"
+      }
+    }
+  ],
+  "candidates": [
+    {
+      "id": "1GT0DqPvjOCkZE83BjChJvltJUo08NyeabX9QVcSrvFQ",
+      "name": "candidate_r1_CBA-KB v1.5.2 候选事实表（六标签页，PNG待补）",
+      "mimeType": "application/vnd.google-apps.spreadsheet",
+      "parents": [
+        "1DVv8-b6vVZMepMqkPffx0KyyTuEoMk-4"
+      ],
+      "version": "9",
+      "webViewLink": "https://docs.google.com/spreadsheets/d/1GT0DqPvjOCkZE83BjChJvltJUo08NyeabX9QVcSrvFQ/edit?usp=drivesdk",
+      "modifiedTime": "2026-09-11T04:23:55.754Z",
+      "size": "39736"
+    },
+    {
+      "id": "1y5Vx2UvBAoUvMGwbXRP1SrUlI_4-fY9j4wTVLYoiLzA",
+      "name": "candidate_r2_CBA-KB v1.5.2 候选事实表（六标签页，PNG待补）",
+      "mimeType": "application/vnd.google-apps.spreadsheet",
+      "parents": [
+        "1DVv8-b6vVZMepMqkPffx0KyyTuEoMk-4"
+      ],
+      "version": "9",
+      "webViewLink": "https://docs.google.com/spreadsheets/d/1y5Vx2UvBAoUvMGwbXRP1SrUlI_4-fY9j4wTVLYoiLzA/edit?usp=drivesdk",
+      "modifiedTime": "2026-09-11T04:24:04.329Z",
+      "size": "37187"
+    },
+    {
+      "id": "1PxOd9NJAwdYb-ay9aKR1zoKGyGucxHKBsHMfa0CAHXs",
+      "name": "candidate_r3_CBA-KB v1.5.2 候选事实表（六标签页，600条，PNG待补）",
+      "mimeType": "application/vnd.google-apps.spreadsheet",
+      "parents": [
+        "1DVv8-b6vVZMepMqkPffx0KyyTuEoMk-4"
+      ],
+      "version": "11",
+      "webViewLink": "https://docs.google.com/spreadsheets/d/1PxOd9NJAwdYb-ay9aKR1zoKGyGucxHKBsHMfa0CAHXs/edit?usp=drivesdk",
+      "modifiedTime": "2026-09-11T04:24:18.254Z",
+      "size": "41443"
+    }
+  ],
+  "r3_semantic_sha256": "102d19d4dbd03231926e428df556f183b440765f4300bd7f0d74450c96a82669",
+  "r3_all_cells_match": true,
+  "status_unchanged_during_read": true,
+  "frozen_plan_matches": 120,
+  "live_status_matches": 121
+}
