@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from .common import atomic, digest
@@ -20,6 +21,16 @@ AUTHORIZATION_FIELDS = frozenset({
     "authorization_basis",
     "frozen_at",
 })
+AUTHORIZED_EVIDENCE_REQUIRED = frozenset({
+    "doc_id",
+    "sha256",
+    "source_ref",
+})
+AUTHORIZED_EVIDENCE_ALLOWED = AUTHORIZED_EVIDENCE_REQUIRED | {
+    "body",
+    "content",
+    "target",
+}
 TARGET_SLUGS = {
     "ChatGPT": "chatgpt",
     "Gemini Notebook": "gemini-notebook",
@@ -227,6 +238,51 @@ def normalize_authorizations(value):
     return normalized
 
 
+def normalize_authorized_evidence(value):
+    if value is None:
+        value = []
+    if isinstance(value, dict):
+        if "authorized_evidence" in value:
+            value = value["authorized_evidence"]
+        elif "doc_id" in value:
+            value = [value]
+        else:
+            value = list(value.values())
+    if not isinstance(value, list):
+        raise ConsumerPackageError("AUTHORIZED_EVIDENCE_LIST_REQUIRED")
+    normalized = {}
+    for item in value:
+        if (
+            not isinstance(item, dict)
+            or not AUTHORIZED_EVIDENCE_REQUIRED <= set(item)
+            or not set(item) <= AUTHORIZED_EVIDENCE_ALLOWED
+        ):
+            raise ConsumerPackageError("AUTHORIZED_EVIDENCE_INVALID")
+        doc_id = _required_text(item["doc_id"], "EVIDENCE_DOC_ID")
+        if doc_id in normalized:
+            raise ConsumerPackageError("AUTHORIZED_EVIDENCE_DUPLICATE")
+        source_ref = _required_text(item["source_ref"], "EVIDENCE_SOURCE_REF")
+        digest_value = _required_text(item["sha256"], "EVIDENCE_SHA256")
+        if not re.fullmatch(r"[0-9a-f]{64}", digest_value):
+            raise ConsumerPackageError("EVIDENCE_SHA256_INVALID")
+        body = item.get("body", item.get("content"))
+        if not isinstance(body, str) or not body:
+            raise ConsumerPackageError("AUTHORIZED_EVIDENCE_BODY_REQUIRED")
+        if digest(body.encode("utf-8")) != digest_value:
+            raise ConsumerPackageError("AUTHORIZED_EVIDENCE_HASH_MISMATCH")
+        target = item.get("target")
+        if target is not None and target not in CONSUMER_TARGETS:
+            raise ConsumerPackageError("AUTHORIZED_EVIDENCE_TARGET_INVALID")
+        normalized[doc_id] = {
+            "doc_id": doc_id,
+            "body": body,
+            "sha256": digest_value,
+            "source_ref": source_ref,
+            "target": target,
+        }
+    return normalized
+
+
 def _json_text(value):
     return canonical_bytes(value).decode("utf-8") + "\n"
 
@@ -235,25 +291,61 @@ def _document_file(projection):
     return f"documents/{projection['doc_id']}.json"
 
 
-def _document_decisions(payload, target, authorizations):
+def _document_decisions(payload, target, authorizations, authorized_evidence):
     packaged = []
     blocked = []
+    evidence = []
     for projection in payload["selected_document_projections"]:
         doc_id = projection["doc_id"]
         rights = projection["rights"]
         authorization = authorizations.get((target, doc_id))
-        if rights == "public" or authorization is not None:
+        item_evidence = authorized_evidence.get(doc_id)
+        if rights == "public":
+            if item_evidence is not None:
+                raise ConsumerPackageError(
+                    "AUTHORIZED_EVIDENCE_FOR_PUBLIC_DOCUMENT",
+                )
             packaged.append(projection)
+        elif authorization is not None:
+            if item_evidence is None:
+                raise ConsumerPackageError("AUTHORIZED_EVIDENCE_MISSING")
+            evidence_target = item_evidence.get("target")
+            if evidence_target not in (None, target):
+                raise ConsumerPackageError("AUTHORIZED_EVIDENCE_TARGET_MISMATCH")
+            packaged.append(projection)
+            evidence.append({
+                **item_evidence,
+                "rights": rights,
+                "public_export_allowed": False,
+                "canonical_projection_sha256": projection["projection_sha256"],
+                "authorization": authorization,
+            })
         else:
+            if item_evidence is not None:
+                raise ConsumerPackageError(
+                    "AUTHORIZED_EVIDENCE_WITHOUT_AUTHORIZATION",
+                )
             blocked.append({
                 "doc_id": doc_id,
                 "rights": rights,
                 "reason": "TARGET_AUTHORIZATION_REQUIRED",
             })
-    return packaged, blocked
+    unexpected = sorted(set(authorized_evidence) - {
+        item["doc_id"] for item in payload["selected_document_projections"]
+    })
+    if unexpected:
+        raise ConsumerPackageError("AUTHORIZED_EVIDENCE_OUT_OF_SCOPE")
+    return packaged, blocked, evidence
 
 
-def _coverage_report(payload, target, packaged, blocked, authorization_count):
+def _coverage_report(
+    payload,
+    target,
+    packaged,
+    blocked,
+    authorization_count,
+    evidence_count,
+):
     declared = 5 + len(payload["selected_document_projections"])
     packaged_items = 5 + len(packaged)
     blocked_items = len(blocked)
@@ -270,6 +362,7 @@ def _coverage_report(payload, target, packaged, blocked, authorization_count):
         "duplicate": 0,
         "silent_truncation": 0,
         "target_authorizations": authorization_count,
+        "authorized_evidence_items": evidence_count,
         "blocked": blocked,
         "status": (
             "PASS"
@@ -285,7 +378,9 @@ def _base_files(payload, target, coverage):
         f"Canonical payload SHA-256: {payload['consumer_payload_sha256']}\n\n"
         "This package is a deterministic projection of the canonical payload. "
         "Unavailable or unauthorized documents remain listed in the coverage "
-        "report; package generation never silently truncates them.\n"
+        "report; package generation never silently truncates them. Any "
+        "target-authorized private evidence is isolated in authorized-evidence/ "
+        "and does not alter the canonical payload or public-export rights.\n"
     )
     return {
         "README.md": readme,
@@ -304,6 +399,7 @@ def _manifest(
     blocked,
     coverage,
     authorization_count,
+    authorized_evidence,
 ):
     entries = [{
         "path": path,
@@ -321,6 +417,19 @@ def _manifest(
         **package_core,
         "package_sha256": package_sha256,
         "target_authorizations": authorization_count,
+        "authorized_evidence": [{
+            "doc_id": item["doc_id"],
+            "target": target,
+            "path": _authorized_evidence_file(item["doc_id"]),
+            "sha256": item["sha256"],
+            "rights": item["rights"],
+            "public_export_allowed": item["public_export_allowed"],
+            "source_ref": item["source_ref"],
+            "authorization": item["authorization"],
+        } for item in sorted(
+            authorized_evidence,
+            key=lambda value: value["doc_id"],
+        )],
         "blocked_items": blocked,
         "coverage": coverage,
     }
@@ -340,28 +449,69 @@ def _with_document_files(base, packaged, sharded):
     return files
 
 
+def _authorized_evidence_file(doc_id):
+    return f"authorized-evidence/{doc_id}.json"
+
+
+def _authorized_evidence_payload(item):
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "TARGET_AUTHORIZED_PRIVATE_EVIDENCE",
+        "doc_id": item["doc_id"],
+        "body": item["body"],
+        "sha256": item["sha256"],
+        "source_ref": item["source_ref"],
+        "rights": item["rights"],
+        "public_export_allowed": item["public_export_allowed"],
+        "canonical_projection_sha256": item["canonical_projection_sha256"],
+        "authorization": item["authorization"],
+    }
+
+
+def _with_authorized_evidence(files, authorized_evidence):
+    result = dict(files)
+    for item in authorized_evidence:
+        result[_authorized_evidence_file(item["doc_id"])] = _json_text(
+            _authorized_evidence_payload(item),
+        )
+    return result
+
+
 def build_target_package(
     payload,
     target,
     *,
     authorizations=None,
+    authorized_evidence=None,
     limits=None,
 ):
     if target not in CONSUMER_TARGETS:
         raise ConsumerPackageError("CONSUMER_TARGET_INVALID")
     normalized = normalize_authorizations(authorizations)
-    packaged, blocked = _document_decisions(payload, target, normalized)
+    evidence = normalize_authorized_evidence(authorized_evidence)
+    packaged, blocked, authorized = _document_decisions(
+        payload,
+        target,
+        normalized,
+        evidence,
+    )
     authorization_count = sum(
         1 for authorization_target, _ in normalized
         if authorization_target == target
     )
     coverage = _coverage_report(
-        payload, target, packaged, blocked, authorization_count,
+        payload,
+        target,
+        packaged,
+        blocked,
+        authorization_count,
+        len(authorized),
     )
     if coverage["status"] != "PASS":
         raise ConsumerPackageError("PACKAGE_COVERAGE_MISMATCH")
     base = _base_files(payload, target, coverage)
     files = _with_document_files(base, packaged, False)
+    files = _with_authorized_evidence(files, authorized)
     limits = limits or {}
     if not isinstance(limits, dict):
         raise ConsumerPackageError("PACKAGE_LIMITS_OBJECT_REQUIRED")
@@ -377,18 +527,32 @@ def build_target_package(
         raise ConsumerPackageError("PACKAGE_MAX_BYTES_INVALID")
     if max_files is not None and len(files) + 1 > max_files:
         files = _with_document_files(base, packaged, True)
+        files = _with_authorized_evidence(files, authorized)
     if max_files is not None and len(files) + 1 > max_files:
         raise ConsumerPackageError("PACKAGE_FILE_LIMIT_EXCEEDED")
     provisional = _manifest(
-        payload, target, files, blocked, coverage, authorization_count,
+        payload,
+        target,
+        files,
+        blocked,
+        coverage,
+        authorization_count,
+        authorized,
     )
     if max_bytes is not None and (
         _package_size(files) + len(_json_text(provisional).encode("utf-8"))
         > max_bytes
     ):
         files = _with_document_files(base, packaged, True)
+        files = _with_authorized_evidence(files, authorized)
         provisional = _manifest(
-            payload, target, files, blocked, coverage, authorization_count,
+            payload,
+            target,
+            files,
+            blocked,
+            coverage,
+            authorization_count,
+            authorized,
         )
     if max_bytes is not None and (
         _package_size(files) + len(_json_text(provisional).encode("utf-8"))
@@ -396,7 +560,13 @@ def build_target_package(
     ):
         raise ConsumerPackageError("PACKAGE_SIZE_LIMIT_EXCEEDED")
     manifest = _manifest(
-        payload, target, files, blocked, coverage, authorization_count,
+        payload,
+        target,
+        files,
+        blocked,
+        coverage,
+        authorization_count,
+        authorized,
     )
     files["package_manifest.json"] = _json_text(manifest)
     return {
@@ -409,17 +579,34 @@ def build_target_package(
     }
 
 
-def build_target_packages(payload, *, authorizations=None, limits=None):
+def build_target_packages(
+    payload,
+    *,
+    authorizations=None,
+    authorized_evidence=None,
+    limits=None,
+):
     auth = normalize_authorizations(authorizations)
+    evidence = normalize_authorized_evidence(authorized_evidence)
     limits = limits or {}
     if not isinstance(limits, dict):
         raise ConsumerPackageError("PACKAGE_LIMITS_OBJECT_REQUIRED")
     packages = {}
     for target in CONSUMER_TARGETS:
+        target_evidence = {
+            doc_id: item
+            for doc_id, item in evidence.items()
+            if item["target"] == target
+            or (
+                item["target"] is None
+                and (target, doc_id) in auth
+            )
+        }
         packages[target] = build_target_package(
             payload,
             target,
             authorizations=list(auth.values()),
+            authorized_evidence=target_evidence,
             limits=limits.get(target, {}),
         )
     hashes = {
@@ -465,6 +652,49 @@ def validate_package(package):
         or coverage.get("silent_truncation") != 0
     ):
         raise ConsumerPackageError("PACKAGE_COVERAGE_MISMATCH")
+    evidence_entries = package["manifest"].get("authorized_evidence", [])
+    if not isinstance(evidence_entries, list):
+        raise ConsumerPackageError("PACKAGE_EVIDENCE_MANIFEST_INVALID")
+    if coverage.get("authorized_evidence_items") != len(evidence_entries):
+        raise ConsumerPackageError("PACKAGE_EVIDENCE_COVERAGE_MISMATCH")
+    canonical_payload = files.get("canonical_consumer_payload.json")
+    if not isinstance(canonical_payload, str):
+        raise ConsumerPackageError("CANONICAL_PAYLOAD_FILE_REQUIRED")
+    evidence_ids = set()
+    for entry in evidence_entries:
+        if not isinstance(entry, dict):
+            raise ConsumerPackageError("PACKAGE_EVIDENCE_MANIFEST_INVALID")
+        doc_id = entry.get("doc_id")
+        if not isinstance(doc_id, str) or not doc_id or doc_id in evidence_ids:
+            raise ConsumerPackageError("PACKAGE_EVIDENCE_ID_INVALID")
+        evidence_ids.add(doc_id)
+        path = entry.get("path")
+        if path != _authorized_evidence_file(doc_id):
+            raise ConsumerPackageError("PACKAGE_EVIDENCE_PATH_MISMATCH")
+        content = files.get(path)
+        if not isinstance(content, str):
+            raise ConsumerPackageError("PACKAGE_EVIDENCE_FILE_MISSING")
+        try:
+            evidence = json.loads(content)
+        except ValueError as exc:
+            raise ConsumerPackageError("PACKAGE_EVIDENCE_FILE_INVALID") from exc
+        if (
+            evidence.get("doc_id") != doc_id
+            or evidence.get("kind") != "TARGET_AUTHORIZED_PRIVATE_EVIDENCE"
+            or evidence.get("rights") not in {
+                "copyrighted", "private", "unknown",
+            }
+            or evidence.get("public_export_allowed") is not False
+            or evidence.get("authorization", {}).get("target")
+            != package["target"]
+            or digest(str(evidence.get("body", "")).encode("utf-8"))
+            != evidence.get("sha256")
+        ):
+            raise ConsumerPackageError("PACKAGE_EVIDENCE_INVALID")
+        if evidence["body"] in canonical_payload:
+            raise ConsumerPackageError(
+                "AUTHORIZED_EVIDENCE_EMBEDDED_IN_CANONICAL_PAYLOAD",
+            )
     return package
 
 

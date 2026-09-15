@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -71,15 +72,26 @@ def test_v17_consumer_cli_is_offline_and_writes_only_explicit_outputs(tmp_path):
     assert json.loads(profile.read_text())["rows"][0]["record_key"] == record_key
 
     documents = tmp_path / "documents.json"
-    documents.write_text(json.dumps([{
-        "doc_id": "doc-public",
-        "rights": "public",
-        "title": "Synthetic public title",
-        "body": "Synthetic public body",
-        "body_status": "AVAILABLE",
-        "source_ref": "source-public",
-        "public_export_allowed": True,
-    }]))
+    documents.write_text(json.dumps([
+        {
+            "doc_id": "doc-public",
+            "rights": "public",
+            "title": "Synthetic public title",
+            "body": "Synthetic public body",
+            "body_status": "AVAILABLE",
+            "source_ref": "source-public",
+            "public_export_allowed": True,
+        },
+        {
+            "doc_id": "doc-private",
+            "rights": "private",
+            "title": "Synthetic private title",
+            "body": "Synthetic private body",
+            "body_status": "AVAILABLE",
+            "source_ref": "source-private",
+            "public_export_allowed": False,
+        },
+    ]))
     sources = tmp_path / "sources.json"
     sources.write_text(json.dumps([
         {"source_id": "source-public", "type": "document"},
@@ -93,6 +105,22 @@ def test_v17_consumer_cli_is_offline_and_writes_only_explicit_outputs(tmp_path):
         "sources": [],
         "as_of": "2026-09-15T00:00:00Z",
     }))
+    evidence_body = "SYNTHETIC TARGET AUTHORIZED EVIDENCE"
+    authorizations = tmp_path / "authorizations.json"
+    authorizations.write_text(json.dumps([{
+        "doc_id": "doc-private",
+        "target": "ChatGPT",
+        "allowed_scope": "private_acceptance",
+        "authorization_basis": "synthetic-test-authorization",
+        "frozen_at": "2026-09-15T00:00:00Z",
+    }]))
+    authorized_evidence = tmp_path / "authorized-evidence.json"
+    authorized_evidence.write_text(json.dumps([{
+        "doc_id": "doc-private",
+        "body": evidence_body,
+        "sha256": hashlib.sha256(evidence_body.encode()).hexdigest(),
+        "source_ref": "synthetic-private-source",
+    }]))
     output = tmp_path / "package-run"
     result = command(
         "consumer-package",
@@ -100,6 +128,8 @@ def test_v17_consumer_cli_is_offline_and_writes_only_explicit_outputs(tmp_path):
         "--documents", str(documents),
         "--sources", str(sources),
         "--events", str(events),
+        "--authorizations", str(authorizations),
+        "--authorized-evidence", str(authorized_evidence),
         "--output", str(output),
         "--release-id", "v1.7.0-synthetic",
         "--as-of", "2026-09-15T00:00:00Z",
@@ -110,8 +140,14 @@ def test_v17_consumer_cli_is_offline_and_writes_only_explicit_outputs(tmp_path):
     report = json.loads(result.stdout)
     assert output.joinpath("canonical_consumer_payload.json").is_file()
     assert output.joinpath("targets/chatgpt/package_manifest.json").is_file()
+    assert output.joinpath(
+        "targets/chatgpt/authorized-evidence/doc-private.json",
+    ).is_file()
     assert output.joinpath("targets/gemini-notebook/README.md").is_file()
     assert output.joinpath("targets/workbuddy/coverage_report.json").is_file()
+    assert not output.joinpath(
+        "targets/gemini-notebook/authorized-evidence/doc-private.json",
+    ).exists()
     assert report["consumer_payload_sha256"] == json.loads(
         output.joinpath("canonical_consumer_payload.json").read_text(),
     )["consumer_payload_sha256"]
