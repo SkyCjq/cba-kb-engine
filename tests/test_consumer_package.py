@@ -9,6 +9,7 @@ from cba_kb.consumer_package import (
     build_consumer_payload,
     build_target_package,
     build_target_packages,
+    payload_bytes,
     validate_package,
 )
 from cba_kb.consumer_projection import project_document
@@ -130,7 +131,7 @@ def test_limits_shard_documents_without_truncation():
             authorized_evidence("doc-private"),
             authorized_evidence("doc-copyright"),
         ],
-        limits={"max_files": 10},
+        limits={"max_files": 11},
     )
     assert "documents/shard-000.json" in package["files"]
     assert any(
@@ -341,3 +342,115 @@ def test_two_authorized_sources_support_cross_source_synthesis_without_truncatio
     assert coverage["duplicate"] == 0
     assert coverage["silent_truncation"] == 0
     validate_package(package)
+
+
+def test_navigation_contract_is_deterministic_complete_and_generic():
+    value = payload()
+    evidence = [
+        authorized_evidence("doc-private"),
+        authorized_evidence("doc-copyright"),
+    ]
+    routes = {
+        "base_files": {
+            "player_profile.json": "player_profile.json.txt",
+            "canonical_consumer_payload.json": (
+                "canonical_consumer_payload.json.txt"
+            ),
+        },
+        "canonical_projection_files": {
+            "doc-private": "doc-private.json.txt",
+            "doc-copyright": "doc-copyright.json.txt",
+        },
+        "authorized_evidence_files": {
+            "doc-private": "evidence01.txt",
+            "doc-copyright": "doc-copyright-authorized-evidence.json.txt",
+        },
+    }
+    authorizations = [
+        authorization("doc-private", "Gemini Notebook"),
+        authorization("doc-copyright", "Gemini Notebook"),
+    ]
+    first = build_target_package(
+        value,
+        "Gemini Notebook",
+        authorizations=authorizations,
+        authorized_evidence=evidence,
+        transport_routes=routes,
+    )
+    second = build_target_package(
+        value,
+        "Gemini Notebook",
+        authorizations=authorizations,
+        authorized_evidence=evidence,
+        transport_routes=routes,
+    )
+    validate_package(first)
+    assert first["files"]["consumer_navigation_contract.json"] == (
+        second["files"]["consumer_navigation_contract.json"]
+    )
+    assert first["package_sha256"] == second["package_sha256"]
+    contract = json.loads(
+        first["files"]["consumer_navigation_contract.json"]
+    )
+    assert contract["schema_version"] == "v1"
+    assert contract["package_generation"] == "v17-navigation-repair-1"
+    assert contract["target"] == "Gemini Notebook"
+    assert contract["canonical_consumer_payload_sha256"] == value[
+        "consumer_payload_sha256"
+    ]
+    assert contract["lookup_contract"]["record_key"]["primary_source"] == (
+        "player_profile.json.txt"
+    )
+    documents = contract["lookup_contract"]["documents"]
+    assert set(documents) == {
+        "doc-public", "doc-private", "doc-copyright",
+    }
+    private = documents["doc-private"]
+    assert private["canonical_projection_file"] == "doc-private.json.txt"
+    assert private["authorized_evidence_file"] == "evidence01.txt"
+    assert private["authorized_evidence_sha256"] == evidence[0]["sha256"]
+    assert private["source_ref"] == evidence[0]["source_ref"]
+    assert private["allowed_scope"] == "package"
+    assert private["rights"] == "private"
+    assert private["public_export_allowed"] is False
+    assert documents["doc-public"]["packaged"] is True
+    assert documents["doc-public"]["authorized_evidence_file"] is None
+    assert contract["identity_policy"] == {
+        "identity_selector": "record_key",
+        "record_key_is_person_identity": False,
+        "same_name_records": "REVIEW_REQUIRED",
+        "automatic_merge": False,
+        "player_uid_policy": "ABSENT",
+        "same_person_assertion_without_independent_evidence": False,
+    }
+    contract_text = json.dumps(contract, ensure_ascii=False)
+    assert "expected_answer" not in contract_text
+    assert "QG01" not in contract_text
+    assert "QG10" not in contract_text
+    assert first["files"]["canonical_consumer_payload.json.txt"] == (
+        payload_bytes(value).decode("utf-8")
+    )
+
+
+def test_navigation_contract_rejects_out_of_scope_or_colliding_routes():
+    value = payload()
+    with pytest.raises(ConsumerPackageError, match="OUT_OF_SCOPE"):
+        build_target_package(
+            value,
+            "ChatGPT",
+            transport_routes={
+                "canonical_projection_files": {
+                    "doc-missing": "missing.json",
+                },
+            },
+        )
+    with pytest.raises(ConsumerPackageError, match="COLLISION"):
+        build_target_package(
+            value,
+            "ChatGPT",
+            transport_routes={
+                "base_files": {
+                    "README.md": "canonical_consumer_payload.json",
+                },
+            },
+        )

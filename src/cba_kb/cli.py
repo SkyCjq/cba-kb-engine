@@ -95,6 +95,7 @@ def main():
     q.add_argument('--events',type=Path)
     q.add_argument('--authorizations',type=Path)
     q.add_argument('--authorized-evidence',type=Path)
+    q.add_argument('--transport-routes',type=Path)
     q.add_argument('--limits',type=Path)
     q.add_argument('--output',type=Path,required=True)
     q.add_argument('--release-id',required=True)
@@ -283,6 +284,10 @@ def main():
                 json.loads(a.authorized_evidence.read_text())
                 if a.authorized_evidence else []
             )
+            transport_routes=(
+                json.loads(a.transport_routes.read_text())
+                if a.transport_routes else {}
+            )
             limits=json.loads(a.limits.read_text()) if a.limits else {}
             payload=build_consumer_payload(
                 release_scope={
@@ -299,6 +304,7 @@ def main():
                 payload,
                 authorizations=authorizations,
                 authorized_evidence=authorized_evidence,
+                transport_routes=transport_routes,
                 limits=limits,
             )
             atomic(output/'canonical_consumer_payload.json',payload_bytes(payload))

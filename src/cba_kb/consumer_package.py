@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .common import atomic, digest
 from .consumer_projection import event_coverage, project_documents
@@ -13,6 +13,8 @@ from .player_profile import validate_profile
 
 SCHEMA_VERSION = 1
 PAYLOAD_VERSION = "v1.7"
+NAVIGATION_SCHEMA_VERSION = "v1"
+PACKAGE_GENERATION = "v17-navigation-repair-1"
 CONSUMER_TARGETS = ("ChatGPT", "Gemini Notebook", "WorkBuddy")
 AUTHORIZATION_FIELDS = frozenset({
     "doc_id",
@@ -31,6 +33,11 @@ AUTHORIZED_EVIDENCE_ALLOWED = AUTHORIZED_EVIDENCE_REQUIRED | {
     "content",
     "target",
 }
+TRANSPORT_ROUTE_FIELDS = frozenset({
+    "base_files",
+    "canonical_projection_files",
+    "authorized_evidence_files",
+})
 TARGET_SLUGS = {
     "ChatGPT": "chatgpt",
     "Gemini Notebook": "gemini-notebook",
@@ -283,12 +290,87 @@ def normalize_authorized_evidence(value):
     return normalized
 
 
+def _normalize_package_path(value, label):
+    value = _required_text(value, label)
+    if "\\" in value:
+        raise ConsumerPackageError(f"{label}_INVALID")
+    path = PurePosixPath(value)
+    if path.is_absolute() or not path.parts or ".." in path.parts:
+        raise ConsumerPackageError(f"{label}_INVALID")
+    return path.as_posix()
+
+
+def normalize_transport_routes(value):
+    if value is None:
+        value = {}
+    if not isinstance(value, dict) or not set(value) <= TRANSPORT_ROUTE_FIELDS:
+        raise ConsumerPackageError("TRANSPORT_ROUTES_INVALID")
+    normalized = {}
+    for field in sorted(TRANSPORT_ROUTE_FIELDS):
+        mapping = value.get(field, {})
+        if not isinstance(mapping, dict):
+            raise ConsumerPackageError(f"TRANSPORT_ROUTES_{field.upper()}_INVALID")
+        normalized[field] = {}
+        for key, physical in mapping.items():
+            key = _required_text(key, f"{field.upper()}_KEY")
+            normalized[field][key] = _normalize_package_path(
+                physical,
+                f"{field.upper()}_PATH",
+            )
+    return normalized
+
+
+def normalize_target_transport_routes(value):
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise ConsumerPackageError("TARGET_TRANSPORT_ROUTES_INVALID")
+    if not set(value) <= set(CONSUMER_TARGETS):
+        raise ConsumerPackageError("TARGET_TRANSPORT_ROUTES_INVALID")
+    return {
+        target: normalize_transport_routes(value.get(target, {}))
+        for target in CONSUMER_TARGETS
+    }
+
+
 def _json_text(value):
     return canonical_bytes(value).decode("utf-8") + "\n"
 
 
-def _document_file(projection):
-    return f"documents/{projection['doc_id']}.json"
+def _base_file(logical, routes):
+    return routes["base_files"].get(logical, logical)
+
+
+def _apply_base_file_routes(files, routes):
+    routed = {}
+    for logical, content in files.items():
+        physical = _base_file(logical, routes)
+        if physical in routed:
+            raise ConsumerPackageError("PACKAGE_FILENAME_COLLISION")
+        routed[physical] = content
+    return routed
+
+
+def _canonical_projection_path(doc_id, routes, sharded):
+    if sharded:
+        return "documents/shard-000.json"
+    return routes["canonical_projection_files"].get(
+        doc_id,
+        f"documents/{doc_id}.json",
+    )
+
+
+def _authorized_evidence_path(doc_id, routes):
+    return routes["authorized_evidence_files"].get(
+        doc_id,
+        f"authorized-evidence/{doc_id}.json",
+    )
+
+
+def _put_package_file(files, path, content):
+    if path in files:
+        raise ConsumerPackageError("PACKAGE_FILENAME_COLLISION")
+    files[path] = content
 
 
 def _document_decisions(payload, target, authorizations, authorized_evidence):
@@ -400,6 +482,11 @@ def _manifest(
     coverage,
     authorization_count,
     authorized_evidence,
+    canonical_paths,
+    authorized_paths,
+    navigation_contract_sha256,
+    navigation_contract_file,
+    canonical_payload_file,
 ):
     entries = [{
         "path": path,
@@ -416,11 +503,15 @@ def _manifest(
     return {
         **package_core,
         "package_sha256": package_sha256,
+        "package_generation": PACKAGE_GENERATION,
+        "navigation_contract_sha256": navigation_contract_sha256,
+        "navigation_contract_file": navigation_contract_file,
+        "canonical_payload_file": canonical_payload_file,
         "target_authorizations": authorization_count,
         "authorized_evidence": [{
             "doc_id": item["doc_id"],
             "target": target,
-            "path": _authorized_evidence_file(item["doc_id"]),
+            "path": authorized_paths.get(item["doc_id"]),
             "sha256": item["sha256"],
             "rights": item["rights"],
             "public_export_allowed": item["public_export_allowed"],
@@ -430,6 +521,7 @@ def _manifest(
             authorized_evidence,
             key=lambda value: value["doc_id"],
         )],
+        "canonical_projection_files": dict(sorted(canonical_paths.items())),
         "blocked_items": blocked,
         "coverage": coverage,
     }
@@ -439,18 +531,26 @@ def _package_size(files):
     return sum(len(value.encode("utf-8")) for value in files.values())
 
 
-def _with_document_files(base, packaged, sharded):
+def _with_document_files(base, packaged, sharded, routes):
     files = dict(base)
     if sharded:
-        files["documents/shard-000.json"] = _json_text(packaged)
+        _put_package_file(
+            files,
+            "documents/shard-000.json",
+            _json_text(packaged),
+        )
     else:
         for projection in packaged:
-            files[_document_file(projection)] = _json_text(projection)
+            _put_package_file(
+                files,
+                _canonical_projection_path(
+                    projection["doc_id"],
+                    routes,
+                    False,
+                ),
+                _json_text(projection),
+            )
     return files
-
-
-def _authorized_evidence_file(doc_id):
-    return f"authorized-evidence/{doc_id}.json"
 
 
 def _authorized_evidence_payload(item):
@@ -468,13 +568,171 @@ def _authorized_evidence_payload(item):
     }
 
 
-def _with_authorized_evidence(files, authorized_evidence):
+def _with_authorized_evidence(files, authorized_evidence, routes):
     result = dict(files)
     for item in authorized_evidence:
-        result[_authorized_evidence_file(item["doc_id"])] = _json_text(
-            _authorized_evidence_payload(item),
+        _put_package_file(
+            result,
+            _authorized_evidence_path(item["doc_id"], routes),
+            _json_text(_authorized_evidence_payload(item)),
         )
     return result
+
+
+def _navigation_contract(
+    payload,
+    target,
+    canonical_paths,
+    authorized_paths,
+    authorized_evidence,
+    routes,
+):
+    evidence_by_id = {
+        item["doc_id"]: item for item in authorized_evidence
+    }
+    documents = {}
+    for projection in payload["selected_document_projections"]:
+        doc_id = projection["doc_id"]
+        evidence = evidence_by_id.get(doc_id)
+        documents[doc_id] = {
+            "canonical_projection_file": canonical_paths.get(doc_id),
+            "authorized_evidence_file": authorized_paths.get(doc_id),
+            "authorized_evidence_sha256": (
+                evidence["sha256"] if evidence is not None else None
+            ),
+            "source_ref": (
+                evidence["source_ref"]
+                if evidence is not None
+                else projection["source_ref"]
+            ),
+            "allowed_scope": (
+                evidence["authorization"]["allowed_scope"]
+                if evidence is not None else None
+            ),
+            "authorization_basis": (
+                evidence["authorization"]["authorization_basis"]
+                if evidence is not None else None
+            ),
+            "rights": projection["rights"],
+            "public_export_allowed": (
+                evidence["public_export_allowed"]
+                if evidence is not None
+                else projection["rights"] == "public"
+            ),
+            "packaged": doc_id in canonical_paths,
+        }
+    return {
+        "schema_version": NAVIGATION_SCHEMA_VERSION,
+        "package_generation": PACKAGE_GENERATION,
+        "target": target,
+        "canonical_consumer_payload_sha256": payload[
+            "consumer_payload_sha256"
+        ],
+        "lookup_contract": {
+            "record_key": {
+                "primary_source": _base_file(
+                    "player_profile.json",
+                    routes,
+                ),
+                "selector": "record_key",
+                "copy_values_exactly": True,
+                "preserve_null": True,
+            },
+            "documents": documents,
+        },
+        "identity_policy": {
+            "identity_selector": "record_key",
+            "record_key_is_person_identity": False,
+            "same_name_records": "REVIEW_REQUIRED",
+            "automatic_merge": False,
+            "player_uid_policy": "ABSENT",
+            "same_person_assertion_without_independent_evidence": False,
+        },
+        "provenance_policy": {
+            "source_ref": "COPY_EXACT_STORED_LOCATOR",
+            "source_url": "COPY_EXACT_STORED_LOCATOR",
+            "source_file_id": "COPY_EXACT_STORED_VALUE",
+            "authorized_evidence_sha256": "COPY_EXACT_CONTENT_SHA256",
+        },
+        "null_policy": {
+            "preserve_canonical_null": True,
+            "never_replace_null_with_guess": True,
+        },
+    }
+
+
+def _assemble_package_files(
+    payload,
+    target,
+    packaged,
+    authorized,
+    coverage,
+    routes,
+    sharded,
+):
+    base = _apply_base_file_routes(
+        _base_files(payload, target, coverage),
+        routes,
+    )
+    files = _with_document_files(base, packaged, sharded, routes)
+    files = _with_authorized_evidence(files, authorized, routes)
+    canonical_paths = {
+        projection["doc_id"]: _canonical_projection_path(
+            projection["doc_id"],
+            routes,
+            sharded,
+        )
+        for projection in packaged
+    }
+    authorized_paths = {
+        item["doc_id"]: _authorized_evidence_path(item["doc_id"], routes)
+        for item in authorized
+    }
+    navigation = _navigation_contract(
+        payload,
+        target,
+        canonical_paths,
+        authorized_paths,
+        authorized,
+        routes,
+    )
+    navigation_content = _json_text(navigation)
+    navigation_path = _base_file("consumer_navigation_contract.json", routes)
+    _put_package_file(files, navigation_path, navigation_content)
+    return (
+        files,
+        canonical_paths,
+        authorized_paths,
+        navigation_path,
+        digest(navigation_content.encode("utf-8")),
+    )
+
+
+def _validate_transport_route_scope(packaged, authorized, routes, sharded):
+    packaged_docs = {item["doc_id"] for item in packaged}
+    authorized_docs = {item["doc_id"] for item in authorized}
+    if set(routes["canonical_projection_files"]) - packaged_docs:
+        raise ConsumerPackageError("TRANSPORT_ROUTES_DOCUMENT_OUT_OF_SCOPE")
+    if set(routes["authorized_evidence_files"]) - authorized_docs:
+        raise ConsumerPackageError("TRANSPORT_ROUTES_EVIDENCE_OUT_OF_SCOPE")
+    allowed_base = {
+        "README.md",
+        "canonical_consumer_payload.json",
+        "player_profile.json",
+        "source_index.json",
+        "event_coverage.json",
+        "coverage_report.json",
+        "consumer_navigation_contract.json",
+    }
+    if set(routes["base_files"]) - allowed_base:
+        raise ConsumerPackageError("TRANSPORT_ROUTES_BASE_OUT_OF_SCOPE")
+    if (
+        sharded
+        and routes["canonical_projection_files"]
+    ):
+        raise ConsumerPackageError(
+            "TRANSPORT_ROUTES_CONFLICT_WITH_PROJECTION_SHARDING",
+        )
 
 
 def build_target_package(
@@ -483,12 +741,14 @@ def build_target_package(
     *,
     authorizations=None,
     authorized_evidence=None,
+    transport_routes=None,
     limits=None,
 ):
     if target not in CONSUMER_TARGETS:
         raise ConsumerPackageError("CONSUMER_TARGET_INVALID")
     normalized = normalize_authorizations(authorizations)
     evidence = normalize_authorized_evidence(authorized_evidence)
+    routes = normalize_transport_routes(transport_routes)
     packaged, blocked, authorized = _document_decisions(
         payload,
         target,
@@ -509,9 +769,22 @@ def build_target_package(
     )
     if coverage["status"] != "PASS":
         raise ConsumerPackageError("PACKAGE_COVERAGE_MISMATCH")
-    base = _base_files(payload, target, coverage)
-    files = _with_document_files(base, packaged, False)
-    files = _with_authorized_evidence(files, authorized)
+    _validate_transport_route_scope(packaged, authorized, routes, False)
+    (
+        files,
+        canonical_paths,
+        authorized_paths,
+        navigation_path,
+        navigation_sha,
+    ) = _assemble_package_files(
+        payload,
+        target,
+        packaged,
+        authorized,
+        coverage,
+        routes,
+        False,
+    )
     limits = limits or {}
     if not isinstance(limits, dict):
         raise ConsumerPackageError("PACKAGE_LIMITS_OBJECT_REQUIRED")
@@ -526,8 +799,22 @@ def build_target_package(
     ):
         raise ConsumerPackageError("PACKAGE_MAX_BYTES_INVALID")
     if max_files is not None and len(files) + 1 > max_files:
-        files = _with_document_files(base, packaged, True)
-        files = _with_authorized_evidence(files, authorized)
+        _validate_transport_route_scope(packaged, authorized, routes, True)
+        (
+            files,
+            canonical_paths,
+            authorized_paths,
+            navigation_path,
+            navigation_sha,
+        ) = _assemble_package_files(
+            payload,
+            target,
+            packaged,
+            authorized,
+            coverage,
+            routes,
+            True,
+        )
     if max_files is not None and len(files) + 1 > max_files:
         raise ConsumerPackageError("PACKAGE_FILE_LIMIT_EXCEEDED")
     provisional = _manifest(
@@ -538,13 +825,32 @@ def build_target_package(
         coverage,
         authorization_count,
         authorized,
+        canonical_paths,
+        authorized_paths,
+        navigation_sha,
+        navigation_path,
+        _base_file("canonical_consumer_payload.json", routes),
     )
     if max_bytes is not None and (
         _package_size(files) + len(_json_text(provisional).encode("utf-8"))
         > max_bytes
     ):
-        files = _with_document_files(base, packaged, True)
-        files = _with_authorized_evidence(files, authorized)
+        _validate_transport_route_scope(packaged, authorized, routes, True)
+        (
+            files,
+            canonical_paths,
+            authorized_paths,
+            navigation_path,
+            navigation_sha,
+        ) = _assemble_package_files(
+            payload,
+            target,
+            packaged,
+            authorized,
+            coverage,
+            routes,
+            True,
+        )
         provisional = _manifest(
             payload,
             target,
@@ -553,6 +859,11 @@ def build_target_package(
             coverage,
             authorization_count,
             authorized,
+            canonical_paths,
+            authorized_paths,
+            navigation_sha,
+            navigation_path,
+            _base_file("canonical_consumer_payload.json", routes),
         )
     if max_bytes is not None and (
         _package_size(files) + len(_json_text(provisional).encode("utf-8"))
@@ -567,6 +878,11 @@ def build_target_package(
         coverage,
         authorization_count,
         authorized,
+        canonical_paths,
+        authorized_paths,
+        navigation_sha,
+        navigation_path,
+        _base_file("canonical_consumer_payload.json", routes),
     )
     files["package_manifest.json"] = _json_text(manifest)
     return {
@@ -574,6 +890,11 @@ def build_target_package(
         "target": target,
         "consumer_payload_sha256": payload["consumer_payload_sha256"],
         "package_sha256": manifest["package_sha256"],
+        "navigation_contract_path": navigation_path,
+        "canonical_payload_file": _base_file(
+            "canonical_consumer_payload.json",
+            routes,
+        ),
         "files": files,
         "manifest": manifest,
     }
@@ -584,10 +905,12 @@ def build_target_packages(
     *,
     authorizations=None,
     authorized_evidence=None,
+    transport_routes=None,
     limits=None,
 ):
     auth = normalize_authorizations(authorizations)
     evidence = normalize_authorized_evidence(authorized_evidence)
+    route_map = normalize_target_transport_routes(transport_routes)
     limits = limits or {}
     if not isinstance(limits, dict):
         raise ConsumerPackageError("PACKAGE_LIMITS_OBJECT_REQUIRED")
@@ -607,6 +930,7 @@ def build_target_packages(
             target,
             authorizations=list(auth.values()),
             authorized_evidence=target_evidence,
+            transport_routes=route_map[target],
             limits=limits.get(target, {}),
         )
     hashes = {
@@ -626,6 +950,8 @@ def validate_package(package):
         "target",
         "consumer_payload_sha256",
         "package_sha256",
+        "navigation_contract_path",
+        "canonical_payload_file",
         "files",
         "manifest",
     }
@@ -657,7 +983,7 @@ def validate_package(package):
         raise ConsumerPackageError("PACKAGE_EVIDENCE_MANIFEST_INVALID")
     if coverage.get("authorized_evidence_items") != len(evidence_entries):
         raise ConsumerPackageError("PACKAGE_EVIDENCE_COVERAGE_MISMATCH")
-    canonical_payload = files.get("canonical_consumer_payload.json")
+    canonical_payload = files.get(package["canonical_payload_file"])
     if not isinstance(canonical_payload, str):
         raise ConsumerPackageError("CANONICAL_PAYLOAD_FILE_REQUIRED")
     evidence_ids = set()
@@ -669,7 +995,7 @@ def validate_package(package):
             raise ConsumerPackageError("PACKAGE_EVIDENCE_ID_INVALID")
         evidence_ids.add(doc_id)
         path = entry.get("path")
-        if path != _authorized_evidence_file(doc_id):
+        if not isinstance(path, str) or not path:
             raise ConsumerPackageError("PACKAGE_EVIDENCE_PATH_MISMATCH")
         content = files.get(path)
         if not isinstance(content, str):
@@ -695,6 +1021,96 @@ def validate_package(package):
             raise ConsumerPackageError(
                 "AUTHORIZED_EVIDENCE_EMBEDDED_IN_CANONICAL_PAYLOAD",
             )
+    navigation_path = package["navigation_contract_path"]
+    navigation_content = files.get(navigation_path)
+    if not isinstance(navigation_content, str):
+        raise ConsumerPackageError("PACKAGE_NAVIGATION_CONTRACT_MISSING")
+    if digest(navigation_content.encode("utf-8")) != package["manifest"].get(
+        "navigation_contract_sha256",
+    ):
+        raise ConsumerPackageError("PACKAGE_NAVIGATION_CONTRACT_HASH_MISMATCH")
+    try:
+        navigation = json.loads(navigation_content)
+    except ValueError as exc:
+        raise ConsumerPackageError("PACKAGE_NAVIGATION_CONTRACT_INVALID") from exc
+    if (
+        navigation.get("schema_version") != NAVIGATION_SCHEMA_VERSION
+        or navigation.get("package_generation") != PACKAGE_GENERATION
+        or navigation.get("target") != package["target"]
+        or navigation.get("canonical_consumer_payload_sha256")
+        != package["consumer_payload_sha256"]
+    ):
+        raise ConsumerPackageError("PACKAGE_NAVIGATION_CONTRACT_INVALID")
+    identity = navigation.get("identity_policy", {})
+    if identity != {
+        "identity_selector": "record_key",
+        "record_key_is_person_identity": False,
+        "same_name_records": "REVIEW_REQUIRED",
+        "automatic_merge": False,
+        "player_uid_policy": "ABSENT",
+        "same_person_assertion_without_independent_evidence": False,
+    }:
+        raise ConsumerPackageError("PACKAGE_IDENTITY_POLICY_INVALID")
+    if (
+        navigation.get("null_policy") != {
+            "preserve_canonical_null": True,
+            "never_replace_null_with_guess": True,
+        }
+        or navigation.get("provenance_policy") != {
+            "source_ref": "COPY_EXACT_STORED_LOCATOR",
+            "source_url": "COPY_EXACT_STORED_LOCATOR",
+            "source_file_id": "COPY_EXACT_STORED_VALUE",
+            "authorized_evidence_sha256": "COPY_EXACT_CONTENT_SHA256",
+        }
+    ):
+        raise ConsumerPackageError("PACKAGE_NAVIGATION_POLICY_INVALID")
+    documents = navigation.get("lookup_contract", {}).get("documents")
+    if not isinstance(documents, dict):
+        raise ConsumerPackageError("PACKAGE_DOCUMENT_NAVIGATION_REQUIRED")
+    payload_doc_ids = {
+        item["doc_id"]
+        for item in json.loads(canonical_payload)[
+            "selected_document_projections"
+        ]
+    }
+    if set(documents) != payload_doc_ids:
+        raise ConsumerPackageError("PACKAGE_DOCUMENT_NAVIGATION_INCOMPLETE")
+    for doc_id, entry in documents.items():
+        canonical_path = entry.get("canonical_projection_file")
+        if canonical_path is not None and not isinstance(
+            files.get(canonical_path), str,
+        ):
+            raise ConsumerPackageError("PACKAGE_DOCUMENT_ROUTE_MISSING")
+        evidence_path = entry.get("authorized_evidence_file")
+        if evidence_path is not None:
+            content = files.get(evidence_path)
+            if not isinstance(content, str):
+                raise ConsumerPackageError("PACKAGE_EVIDENCE_ROUTE_MISSING")
+            evidence = json.loads(content)
+            if (
+                evidence.get("doc_id") != doc_id
+                or evidence.get("sha256")
+                != entry.get("authorized_evidence_sha256")
+                or evidence.get("source_ref") != entry.get("source_ref")
+                or evidence.get("rights") != entry.get("rights")
+                or evidence.get("public_export_allowed")
+                != entry.get("public_export_allowed")
+                or evidence.get("authorization", {}).get("allowed_scope")
+                != entry.get("allowed_scope")
+            ):
+                raise ConsumerPackageError("PACKAGE_EVIDENCE_ROUTE_MISMATCH")
+    navigation_text = json.dumps(navigation, ensure_ascii=False)
+    if any(
+        token in navigation_text
+        for token in (
+            "expected_answer",
+            "correct_answer",
+            "oracle_answer",
+            "QG01",
+            "QG10",
+        )
+    ):
+        raise ConsumerPackageError("PACKAGE_NAVIGATION_ORACLE_LEAKAGE")
     return package
 
 

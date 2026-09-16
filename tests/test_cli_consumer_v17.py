@@ -121,6 +121,17 @@ def test_v17_consumer_cli_is_offline_and_writes_only_explicit_outputs(tmp_path):
         "sha256": hashlib.sha256(evidence_body.encode()).hexdigest(),
         "source_ref": "synthetic-private-source",
     }]))
+    transport_routes = tmp_path / "transport-routes.json"
+    transport_routes.write_text(json.dumps({
+        "ChatGPT": {
+            "base_files": {
+                "player_profile.json": "player_profile.json.txt",
+            },
+            "authorized_evidence_files": {
+                "doc-private": "evidence01.txt",
+            },
+        },
+    }))
     output = tmp_path / "package-run"
     result = command(
         "consumer-package",
@@ -130,6 +141,7 @@ def test_v17_consumer_cli_is_offline_and_writes_only_explicit_outputs(tmp_path):
         "--events", str(events),
         "--authorizations", str(authorizations),
         "--authorized-evidence", str(authorized_evidence),
+        "--transport-routes", str(transport_routes),
         "--output", str(output),
         "--release-id", "v1.7.0-synthetic",
         "--as-of", "2026-09-15T00:00:00Z",
@@ -140,13 +152,17 @@ def test_v17_consumer_cli_is_offline_and_writes_only_explicit_outputs(tmp_path):
     report = json.loads(result.stdout)
     assert output.joinpath("canonical_consumer_payload.json").is_file()
     assert output.joinpath("targets/chatgpt/package_manifest.json").is_file()
+    assert output.joinpath("targets/chatgpt/evidence01.txt").is_file()
     assert output.joinpath(
-        "targets/chatgpt/authorized-evidence/doc-private.json",
+        "targets/chatgpt/player_profile.json.txt",
+    ).is_file()
+    assert output.joinpath(
+        "targets/chatgpt/consumer_navigation_contract.json",
     ).is_file()
     assert output.joinpath("targets/gemini-notebook/README.md").is_file()
     assert output.joinpath("targets/workbuddy/coverage_report.json").is_file()
     assert not output.joinpath(
-        "targets/gemini-notebook/authorized-evidence/doc-private.json",
+        "targets/gemini-notebook/evidence01.txt",
     ).exists()
     assert report["consumer_payload_sha256"] == json.loads(
         output.joinpath("canonical_consumer_payload.json").read_text(),
