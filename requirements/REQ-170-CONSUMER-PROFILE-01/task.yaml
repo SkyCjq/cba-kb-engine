@@ -1,0 +1,199 @@
+req_id: REQ-170-CONSUMER-PROFILE-01
+requirement_revision_or_hash: r2-20260914-v170-final-critical-revision
+requirement_artifact: requirements/REQ-170-CONSUMER-PROFILE-01/requirement-r2-20260914.md
+requirement_artifact_sha256: c2ee6a9eeb061184df82c79ad5e757b0a08d40a3601eebfbe1a17cd6579f87eb
+baseline_release_id: v1.6.1-1
+baseline_code_commit: 81bd581fafbccb602f9ecaf9aaefca4533be69a4
+baseline_development_sha: 4103ce2aaa6dba3e12ca59ff3c9a8da2d2db1538
+baseline_development_tree: aeac4a4e6eaa304b99b39b701e53cacee13ec70f
+base_branch: main
+feature_branch: feat/REQ-170-CONSUMER-PROFILE-01
+lane: CODE_CONFIG
+status: FROZEN_SPEC
+release_infrastructure_mode: 'OFF'
+production_access: forbidden
+publish_allowed: false
+restore_allowed: false
+source_contract_probe:
+  status: N/A
+  reason: no_external_api_official_site_scraping_or_live_schema_dependency
+  invalidating_condition: external_api_auth_api_scraping_or_live_schema_requires_stage1_refreeze
+consumer_intake_precheck:
+  required_at_stage: 4
+  targets:
+  - ChatGPT
+  - Gemini Notebook
+  - WorkBuddy
+  runtime_evidence_only: true
+optional_overlays:
+  release_performance:
+    enabled: false
+    proposal: REQ-RELEASE-PERF-01
+    activation_reason: null
+allowed_paths:
+- requirements/REQ-170-CONSUMER-PROFILE-01/requirement-r2-20260914.md
+- requirements/REQ-170-CONSUMER-PROFILE-01/task-brief.md
+- requirements/REQ-170-CONSUMER-PROFILE-01/task.yaml
+- src/cba_kb/player_profile.py
+- src/cba_kb/consumer_package.py
+- src/cba_kb/consumer_acceptance.py
+- src/cba_kb/cli.py
+- tests/test_player_profile.py
+- tests/test_consumer_package.py
+- tests/test_consumer_acceptance.py
+- tests/test_cli_consumer_v17.py
+focused_tests:
+- tests/test_player_profile.py
+- tests/test_consumer_package.py
+- tests/test_consumer_acceptance.py
+- tests/test_cli_consumer_v17.py
+- tests/test_consumer_projection.py
+- tests/test_master.py
+- tests/test_engine_instance_boundary.py
+- tests/test_security_guards.py
+- tests/test_current_history_separation.py
+- tests/test_document_lane.py::test_rights_taxonomy_and_public_export_guards
+must_not_change:
+- .github/workflows/offline-tests.yml
+- requirements.lock
+- config/consumer_golden_questions_v1.yaml
+- src/cba_kb/consumer_projection.py
+- src/cba_kb/master.py
+- src/cba_kb/release.py
+- src/cba_kb/drive.py
+- src/cba_kb/transport.py
+- src/cba_kb/native.py
+- src/cba_kb/instance.py
+- src/cba_kb/document_lane.py
+- src/cba_kb/document_sources.py
+- src/cba_kb/source_watcher.py
+- src/cba_kb/canonical_registry.py
+- src/cba_kb/current_state.py
+- scripts/prepare_production.py
+- config/production.json
+- config/runtime.json
+- config/sandbox.json
+- config/drive_map.yaml
+- requirements/REQ-161-CLOSEOUT-01/**
+- canonical_facts_event_registration_products
+- source_registry_semantics
+- document_lane_immutable_raw_archive
+- live_release_status_manifest_and_production_target_inventory
+acceptance_ids:
+- A01
+- A02
+- A03
+- A04
+- A05
+- A06
+- A07
+- A08
+- A09
+- A10
+- A11
+- A12
+- A13
+- A14
+- A15
+- A16
+- A17
+- A18
+- A19
+- A20
+- A21
+- A22
+- A23
+- A24
+- A25
+release_critical_fixtures:
+- live_release_status_v1.6.1-1
+- current_master_private_snapshot
+- selected_profile_record_keys
+- target_authorization_manifest
+- selected_document_projection_set
+- consumer_golden_questions_v2
+- consumer_intake_receipts
+- consumer_result_matrix_v2
+- facts_zero_diff_hash_set
+- usage_gate_real_query_log
+consumer_acceptance_contract:
+  version: v2
+  questions_total: 10
+  categories:
+    deterministic_exact: 4
+    source_tracing: 2
+    cross_source_synthesis: 2
+    identity_boundary: 1
+    unknown_gap: 1
+  consumers:
+  - ChatGPT
+  - Gemini Notebook
+  - WorkBuddy
+  expected_result_cells: 30
+  per_consumer_hard_gates:
+    deterministic_exact: 4/4
+    source_tracing: 2/2
+    identity_boundary: 1/1
+    unknown_gap: 1/1
+    overall_min_pass: 9/10
+  aggregate_min_pass: 27/30
+  not_tested_counts_as_pass: false
+  mcp_trigger_failure_layers:
+  - retrieval
+  - aggregation
+  - counting
+profile_contract:
+  source: current_MASTER_read_only
+  selector_authority: explicit_record_key_set_private_instance
+  name_lookup: candidate_discovery_only
+  stable_player_uid: forbidden
+  ambiguity_behavior: REVIEW_REQUIRED
+  sort_order:
+  - season
+  - club_id
+  - record_key
+  unknown_value_inference: forbidden
+  canonical_mutation: forbidden
+package_contract:
+  canonical_payload_sha_required: true
+  same_payload_across_targets: true
+  target_specific_sharding_allowed: true
+  silent_truncation: forbidden
+  coverage_equation: declared_items == packaged_items + explicitly_blocked_items
+  missing: 0
+  unexpected: 0
+  duplicate: 0
+usage_gate:
+  opens_after_consumer_acceptance: true
+  minimum_non_acceptance_real_queries: 10
+  closeout_before_minimum: EXIT_EVIDENCE_PENDING
+  next_step_options:
+  - CONTINUE_V1_8
+  - SPLIT_NEW_REQUIREMENT
+  - HOLD_AND_KEEP_USING
+private_instance_contract:
+  root: /Users/skychengneo/Agent/CBA_kb_instance
+  runtime_evidence_root: /Users/skychengneo/Agent/CBA_kb_instance/evidence/REQ-170-CONSUMER-PROFILE-01/
+  real_fixture_repo_copy: forbidden
+human_runbook:
+  dev_workspace: /Users/skychengneo/Agent/CBA_kb_dev/REQ-170-CONSUMER-PROFILE-01
+  local_runtime_root: /Users/skychengneo/Agent/CBA_kb
+  private_instance_root: /Users/skychengneo/Agent/CBA_kb_instance
+  local_prepare_command: NOT_IMPLEMENTED
+  publish_command: NOT_IMPLEMENTED
+  rollback_command: NOT_IMPLEMENTED
+execution_mode: CODEX_EXECUTOR
+full_regression_owner: github_actions
+required_ci_check: tests
+max_ci_repair_cycles: 3
+context_policy: allowlist_only
+log_policy: summary_or_failure_only
+model_tier: high
+agent_harness: codex
+api_provider: openai
+stage2_authorized: true
+freeze_record:
+  approved_by: user
+  date: '2026-09-14'
+  revision: r2-20260914-v170-final-critical-revision
+  base_sha: 4103ce2aaa6dba3e12ca59ff3c9a8da2d2db1538
