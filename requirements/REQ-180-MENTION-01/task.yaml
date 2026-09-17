@@ -1,0 +1,167 @@
+req_id: REQ-180-MENTION-01
+requirement_md_url: https://drive.google.com/file/d/1jq8k0kJ-ghiKd_yszNkNJGOm6OXakeDO/view?usp=drivesdk
+requirement_revision_or_hash: r2-20260917-v180-mention-baseline-refreeze
+requirement_artifact_sha256: f65adb99b7fce31f3513f9372ec73748eb694cea8a24d2e7f73f6d9df87cd258
+baseline_release_id: v1.6.1-1
+baseline_code_commit: 81bd581fafbccb602f9ecaf9aaefca4533be69a4
+baseline_development_sha: a001addabec3ca3d63ed136701b7c0c72480a216
+base_branch: main
+feature_branch: feat/REQ-180-MENTION-01
+lane: CODE_CONFIG
+release_risk: HIGH
+status: FROZEN_SPEC
+release_infrastructure_mode: 'OFF'
+production_access: forbidden
+publish_allowed: false
+restore_allowed: false
+source_contract_probe:
+  external: N/A
+  private_corpus: PASS
+  reason: consumes_existing_private_document_evidence_no_new_external_acquisition_contract
+  real_doc_id: doc_0f98d91df284a9d42afda9da
+  real_source_file_id: 1gOTwWRk2w2SP7fWuXVDEv-vWlsAvGx2m
+  normalized_sha256: 0f98d91df284a9d42afda9da9ca5057b4dd208ca0c12aada0aa67027706265ec
+optional_overlays:
+  release_performance:
+    enabled: false
+    proposal: REQ-RELEASE-PERF-01
+    activation_reason: null
+allowed_paths:
+- requirements/REQ-180-MENTION-01/requirement-r2-20260917.md
+- requirements/REQ-180-MENTION-01/task-brief.md
+- requirements/REQ-180-MENTION-01/task.yaml
+- src/cba_kb/document_mentions.py
+- src/cba_kb/cli.py
+- tests/test_document_mentions.py
+- tests/test_cli_document_mentions_v18.py
+focused_tests:
+- tests/test_document_mentions.py
+- tests/test_cli_document_mentions_v18.py
+- tests/test_document_lane.py
+- tests/test_document_sources.py
+- tests/test_consumer_package.py
+- tests/test_player_identity.py
+- tests/test_cli_identity_v18.py
+- tests/test_engine_instance_boundary.py
+- tests/test_security_guards.py
+- tests/test_master.py
+- tests/test_current_history_separation.py
+must_not_change:
+- .github/workflows/offline-tests.yml
+- requirements.lock
+- src/cba_kb/master.py
+- src/cba_kb/facts.py
+- src/cba_kb/event_closure.py
+- src/cba_kb/player_profile.py
+- src/cba_kb/player_identity.py
+- src/cba_kb/document_lane.py
+- src/cba_kb/document_sources.py
+- src/cba_kb/consumer_projection.py
+- src/cba_kb/consumer_package.py
+- src/cba_kb/consumer_acceptance.py
+- src/cba_kb/release.py
+- src/cba_kb/drive.py
+- src/cba_kb/transport.py
+- src/cba_kb/native.py
+- src/cba_kb/instance.py
+- scripts/prepare_production.py
+- config/production.json
+- config/runtime.json
+- config/sandbox.json
+- config/drive_map.yaml
+- config/taxonomy.yaml
+- canonical_MASTER_Facts_Events
+- source_registry_semantics
+- document_lane_immutable_raw_archive_and_doc_id_algorithm
+- live_release_status_manifest_and_production_targets
+- REQ-180-IDENTITY-01_implementation_scope
+acceptance_ids:
+- A01
+- A02
+- A03
+- A04
+- A05
+- A06
+- A07
+- A08
+- A09
+- A10
+- A11
+- A12
+- A13
+- A14
+release_critical_fixtures:
+- live_release_status_v1.6.1-1
+- current_MASTER_sha256_0aafb6a17748f8d13b83736ac22b5ba3d5947a924e1f987d9ba249bcd6879e7f
+- REQ-170_FINAL_HUMAN_FIXTURE_APPROVAL_人工审批表
+- real_DOC1_doc_0f98d91df284a9d42afda9da
+- real_DOC2_doc_22a31c03d6d48211c392e6ee
+- synthetic_one_doc_many_players
+- synthetic_undecided_and_blocked
+- facts_zero_diff_hash_set
+mention_contract:
+  grain: doc_id_x_player_uid
+  statuses:
+  - same
+  - not_same
+  - undecided
+  roles:
+  - subject
+  - mentioned
+  methods:
+  - exact_name
+  - alias
+  - manual
+  - external_id
+  exact_name_or_alias_auto_same: forbidden
+  undecided_document_level_reachability: required
+  confirmed_player_centric_undecided: forbidden
+  silent_drop: forbidden
+rights_contract:
+  reuse_v17_per_target_authorization: true
+  new_rights_taxonomy: false
+  private_acceptance_changes_public_export_allowed: false
+  unauthorized_or_blocked_explicit: true
+private_instance_contract:
+  root: /Users/skychengneo/Agent/CBA_kb_instance
+  runtime_evidence_root: /Users/skychengneo/Agent/CBA_kb_instance/evidence/REQ-180-MENTION-01/
+  real_mapping_repo_copy: forbidden
+human_runbook:
+  dev_workspace: /Users/skychengneo/Agent/CBA_kb_dev/REQ-180-MENTION-01
+  local_runtime_root: /Users/skychengneo/Agent/CBA_kb
+  private_instance_root: /Users/skychengneo/Agent/CBA_kb_instance
+  local_prepare_command: NOT_IMPLEMENTED
+  publish_command: NOT_IMPLEMENTED
+  rollback_command: NOT_IMPLEMENTED
+execution_mode: CODEX_EXECUTOR
+full_regression_owner: github_actions
+required_ci_check: tests
+max_ci_repair_cycles: 3
+context_policy: allowlist_only
+log_policy: summary_or_failure_only
+model_tier: high
+agent_harness: codex
+api_provider: openai
+stage2_authorized: false
+freeze_record:
+  approved_by: user_for_stage1_baseline_refreeze
+  date: '2026-09-17'
+  revision: r2-20260917-v180-mention-baseline-refreeze
+  base_sha: a001addabec3ca3d63ed136701b7c0c72480a216
+upstream_dependencies:
+  REQ-180-IDENTITY-01:
+    merged_main_sha: a001addabec3ca3d63ed136701b7c0c72480a216
+    player_uid_contract: opaque_stable_not_derived
+    implementation_path: src/cba_kb/player_identity.py
+    mutation: forbidden
+    shared_cli_regression_required: true
+baseline_revalidation:
+  previous_sha: d2771afbecc33ad9ce91bf34a4adce4c333e5821
+  current_sha: a001addabec3ca3d63ed136701b7c0c72480a216
+  scope_changed: false
+  allowed_product_code_paths_changed: false
+  document_lane_contract_changed: false
+  rights_contract_changed: false
+  focused_tests_changed: true
+  reason: identity_merge_added_shared_cli_surface_and_upstream_player_uid_authority
+  result: READY_TO_CODE

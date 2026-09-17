@@ -124,6 +124,13 @@ def main():
     q.add_argument('--expected-current-sha256')
     q=sub.add_parser('identity-candidates')
     q.add_argument('--name',required=True)
+    q=sub.add_parser('mention-validate')
+    q.add_argument('--input',type=Path,required=True)
+    q=sub.add_parser('mention-build')
+    q.add_argument('--documents',type=Path,required=True)
+    q.add_argument('--mentions',type=Path,required=True)
+    q.add_argument('--authorizations',type=Path)
+    q.add_argument('--output',type=Path,required=True)
     q=sub.add_parser('qualification-validate')
     q.add_argument('--ledger',type=Path,required=True)
     q=sub.add_parser('evidence-verify')
@@ -369,6 +376,43 @@ def main():
                         load_registry(a.input),
                         expected_current_sha256=a.expected_current_sha256,
                     )
+        elif a.command.startswith('mention-'):
+            from .document_mentions import (
+                build_mention_artifact,
+                load_mention_artifact,
+                mention_summary,
+                serialize_mention_artifact,
+            )
+            instance=private_instance()
+            instance_root=Path(instance.root).resolve()
+            def private_path(path):
+                candidate=Path(path)
+                if not candidate.is_absolute():
+                    candidate=instance_root/candidate
+                candidate=candidate.resolve()
+                if not candidate.is_relative_to(instance_root):
+                    raise ValueError('MENTION_PATH_OUTSIDE_PRIVATE_INSTANCE')
+                return candidate
+            if a.command=='mention-validate':
+                result=mention_summary(load_mention_artifact(private_path(a.input)))
+            else:
+                documents=json.loads(private_path(a.documents).read_text())
+                mentions=json.loads(private_path(a.mentions).read_text())
+                authorizations=(
+                    json.loads(private_path(a.authorizations).read_text())
+                    if a.authorizations else None
+                )
+                artifact=build_mention_artifact(
+                    documents,
+                    mentions,
+                    authorizations=authorizations,
+                )
+                output=private_path(a.output)
+                if output.exists():
+                    raise ValueError('MENTION_OUTPUT_EXISTS')
+                atomic(output,serialize_mention_artifact(artifact))
+                result=mention_summary(artifact)
+                result['output']=str(output)
         elif a.command=='qualification-validate':
             from .operational_qualification import validate_ledger
             result=validate_ledger(read(a.ledger))
