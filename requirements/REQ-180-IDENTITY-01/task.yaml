@@ -1,0 +1,124 @@
+req_id: REQ-180-IDENTITY-01
+requirement_md_url: https://drive.google.com/file/d/1YJYKKBKPg5B7pTmFKTSZhkO7UPpHGiEJ/view?usp=drivesdk
+requirement_revision_or_hash: r1-20260917-v180-identity-stage1
+requirement_artifact: REQ-180-IDENTITY-01.md
+requirement_artifact_sha256: 6d135158d90e48de319416c1a250f0f54d7b30b3fbdc6daec77174a65262cd1e
+version: v1.8.0
+baseline_release_id: v1.6.1-1
+baseline_code_commit: 81bd581fafbccb602f9ecaf9aaefca4533be69a4
+baseline_development_sha: d2771afbecc33ad9ce91bf34a4adce4c333e5821
+base_branch: main
+full_regression_owner: github_actions
+required_ci_check: tests
+max_ci_repair_cycles: 3
+context_policy: allowlist_only
+log_policy: summary_or_failure_only
+production_access: forbidden
+agent_harness: codex
+api_provider: openai
+feature_branch: feat/REQ-180-IDENTITY-01
+lane: CODE_CONFIG
+release_risk: HIGH
+status: FROZEN_SPEC
+release_infrastructure_mode: 'OFF'
+source_contract_probe:
+  status: N/A
+  reason: no_external_api_official_site_scraping_or_live_schema_dependency
+optional_overlays:
+  release_performance:
+    enabled: false
+    proposal: REQ-RELEASE-PERF-01
+    activation_reason: null
+allowed_paths:
+- requirements/REQ-180-IDENTITY-01/requirement-r1-20260917.md
+- requirements/REQ-180-IDENTITY-01/task-brief.md
+- requirements/REQ-180-IDENTITY-01/task.yaml
+- src/cba_kb/player_identity.py
+- src/cba_kb/cli.py
+- tests/test_player_identity.py
+- tests/test_cli_identity_v18.py
+focused_tests:
+- tests/test_player_identity.py
+- tests/test_cli_identity_v18.py
+- tests/test_player_profile.py
+- tests/test_master.py
+- tests/test_engine_instance_boundary.py
+- tests/test_security_guards.py
+- tests/test_current_history_separation.py
+must_not_change:
+- src/cba_kb/master.py
+- src/cba_kb/player_profile.py
+- src/cba_kb/document_lane.py
+- src/cba_kb/document_sources.py
+- src/cba_kb/consumer_projection.py
+- src/cba_kb/consumer_package.py
+- src/cba_kb/consumer_acceptance.py
+- src/cba_kb/release.py
+- src/cba_kb/drive.py
+- src/cba_kb/transport.py
+- src/cba_kb/native.py
+- src/cba_kb/instance.py
+- scripts/prepare_production.py
+- .github/workflows/offline-tests.yml
+- requirements.lock
+- config/production.json
+- config/runtime.json
+- config/sandbox.json
+- config/drive_map.yaml
+- config/taxonomy.yaml
+- canonical_facts_and_event_products
+- source_registry_semantics
+- production_manifest
+acceptance_ids:
+- A01
+- A02
+- A03
+- A04
+- A05
+- A06
+- A07
+- A08
+- A09
+- A10
+- A11
+- A12
+- A13
+- A14
+external_fixtures: []
+release_critical_fixtures:
+- name: live_release_status_v1.6.1-1
+  sha256: f4fb563c90ed19231d17fa4f5e88e5898bd971d077c046f52f57ce8360a6900d
+- name: current_MASTER_csv
+  file_id: 1FsHkEbGeNSqLqcIqZuoUSzFZTVR6Wyue
+  sha256: 0aafb6a17748f8d13b83736ac22b5ba3d5947a924e1f987d9ba249bcd6879e7f
+  rows: 3465
+  unique_record_keys: 3465
+- name: identity_canary_v1
+  location: private_instance
+  required_before_merge: true
+- name: facts_zero_diff_hash_set
+  required: true
+identity_contract:
+  player_uid: opaque_stable_not_derived
+  player_record_link_grain: record_key_x_player_uid
+  link_status:
+  - same
+  - not_same
+  - undecided
+  max_same_per_record_key: 1
+  exact_name_lookup: candidate_only
+  canonical_mutation: forbidden
+private_instance_contract:
+  root: /Users/skychengneo/Agent/CBA_kb_instance
+  identity_root: /Users/skychengneo/Agent/CBA_kb_instance/data/player_identity/
+  runtime_evidence_root: /Users/skychengneo/Agent/CBA_kb_instance/evidence/REQ-180-IDENTITY-01/
+  real_fixture_repo_copy: forbidden
+human_runbook:
+  dev_workspace: /Users/skychengneo/Agent/CBA_kb_dev/REQ-180-IDENTITY-01
+  local_runtime_root: /Users/skychengneo/Agent/CBA_kb
+  private_instance_root: /Users/skychengneo/Agent/CBA_kb_instance
+  local_prepare_command: NOT_IMPLEMENTED
+  publish_command: NOT_IMPLEMENTED
+  rollback_command: NOT_IMPLEMENTED
+execution_mode: CODEX_EXECUTOR
+stage2_authorized: false

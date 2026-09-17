@@ -116,6 +116,14 @@ def main():
     q.add_argument('--next-step-decision',choices=(
         'CONTINUE_V1_8','SPLIT_NEW_REQUIREMENT','HOLD_AND_KEEP_USING'))
     q.add_argument('--output',type=Path)
+    q=sub.add_parser('identity-validate')
+    q.add_argument('--input',type=Path,required=True)
+    sub.add_parser('identity-read')
+    q=sub.add_parser('identity-write')
+    q.add_argument('--input',type=Path,required=True)
+    q.add_argument('--expected-current-sha256')
+    q=sub.add_parser('identity-candidates')
+    q.add_argument('--name',required=True)
     q=sub.add_parser('qualification-validate')
     q.add_argument('--ledger',type=Path,required=True)
     q=sub.add_parser('evidence-verify')
@@ -341,6 +349,26 @@ def main():
             )
             if a.output:
                 save(a.output,result)
+        elif a.command.startswith('identity-'):
+            from .player_identity import (
+                IdentityStore,
+                discover_candidates,
+                identity_summary,
+                load_registry,
+            )
+            store=IdentityStore(private_instance())
+            if a.command=='identity-validate':
+                result=identity_summary(load_registry(a.input))
+            else:
+                if a.command=='identity-read':
+                    result=store.read()
+                elif a.command=='identity-candidates':
+                    result=discover_candidates(store.read(),a.name)
+                else:
+                    result=store.write(
+                        load_registry(a.input),
+                        expected_current_sha256=a.expected_current_sha256,
+                    )
         elif a.command=='qualification-validate':
             from .operational_qualification import validate_ledger
             result=validate_ledger(read(a.ledger))
