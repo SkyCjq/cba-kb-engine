@@ -2,6 +2,7 @@ import copy
 
 import pytest
 
+from cba_kb.consumer_projection import project_document
 from cba_kb.document_mentions import (
     DocumentMentionError,
     build_mention_artifact,
@@ -11,6 +12,7 @@ from cba_kb.document_mentions import (
     validate_mention,
     validate_mention_artifact,
 )
+from cba_kb.document_lane import ReviewRequired, rights_decision
 from cba_kb.player_identity import new_registry
 
 
@@ -24,6 +26,11 @@ DOC_PUBLIC = "doc_000000000000000000000001"
 DOC_COPYRIGHT = "doc_000000000000000000000002"
 DOC_PRIVATE = "doc_000000000000000000000003"
 DOC_UNKNOWN = "doc_000000000000000000000004"
+UPSTREAM_SCOPE = {
+    "release_id": "synthetic",
+    "as_of": "2026-09-17T00:00:00Z",
+    "provenance": "synthetic-upstream-rights",
+}
 
 
 def player(uid, name):
@@ -69,12 +76,13 @@ def mention(
 
 
 def document(doc_id, rights, public=False, authorized_targets=None):
+    evidence = ["synthetic-public-evidence"] if public else []
     return {
         "doc_id": doc_id,
         "rights": {
             "classification": rights,
             "public_export_allowed": public,
-            "evidence": [],
+            "evidence": evidence,
         },
         "authorized_targets": authorized_targets or [],
     }
@@ -88,6 +96,100 @@ def authorization(doc_id, target):
         "authorization_basis": "synthetic-authorization",
         "frozen_at": "2026-09-17T00:00:00Z",
     }
+
+
+def upstream_rights(classification, public_export_allowed, evidence):
+    parsed = {
+        "rights": {
+            "classification": classification,
+            "public_export_allowed": public_export_allowed,
+            "evidence": evidence,
+        },
+    }
+    rights = rights_decision(parsed)
+    projection = project_document(
+        {
+            "doc_id": DOC_PUBLIC,
+            "source_ref": "synthetic-source",
+            "rights": rights["classification"],
+            "public_export_allowed": rights["public_export_allowed"],
+            "body_status": "AVAILABLE",
+        },
+        UPSTREAM_SCOPE,
+    )
+    return rights, projection["availability"]
+
+
+@pytest.mark.parametrize(
+    ("classification", "public_export_allowed", "evidence"),
+    [
+        ("public", False, []),
+        ("public", True, ["public-evidence"]),
+        ("copyrighted", False, []),
+        ("private", False, []),
+        ("unknown", False, []),
+    ],
+)
+def test_rights_behavior_matches_upstream_projection(
+    classification,
+    public_export_allowed,
+    evidence,
+):
+    expected_rights, expected_availability = upstream_rights(
+        classification,
+        public_export_allowed,
+        evidence,
+    )
+    artifact = build_mention_artifact(
+        [{
+            "doc_id": DOC_PUBLIC,
+            "rights": {
+                "classification": classification,
+                "public_export_allowed": public_export_allowed,
+                "evidence": evidence,
+            },
+        }],
+        [],
+    )
+    assert artifact["documents"][0]["rights"] == expected_rights
+    assert (
+        artifact["documents"][0]["rights_availability"]
+        == expected_availability
+    )
+
+
+@pytest.mark.parametrize(
+    ("classification", "public_export_allowed", "evidence"),
+    [
+        ("public", True, []),
+        ("copyrighted", True, ["public-evidence"]),
+        ("private", True, ["public-evidence"]),
+        ("unknown", True, ["public-evidence"]),
+    ],
+)
+def test_invalid_upstream_rights_states_fail_in_both_layers(
+    classification,
+    public_export_allowed,
+    evidence,
+):
+    with pytest.raises(ReviewRequired):
+        upstream_rights(
+            classification,
+            public_export_allowed,
+            evidence,
+        )
+    with pytest.raises(DocumentMentionError):
+        build_mention_artifact(
+            [{
+                "doc_id": DOC_PUBLIC,
+                "rights": {
+                    "classification": classification,
+                    "public_export_allowed": public_export_allowed,
+                    "evidence": evidence,
+                },
+            }],
+            [],
+        )
 
 
 def test_mention_schema_rejects_automatic_same_and_duplicate_pairs():
@@ -234,16 +336,16 @@ def test_coverage_exposes_confirmed_undecided_unauthorized_and_blocked():
     assert artifact["coverage"]["confirmed"] == 3
     assert artifact["coverage"]["undecided"] == 1
     assert artifact["coverage"]["silent_drop_count"] == 0
-    assert artifact["documents"][1]["public_export_allowed"] is False
-    assert artifact["documents"][1]["canonical_projection"] == "METADATA_ONLY"
-    assert artifact["documents"][2]["canonical_projection"] == "PRIVATE"
-    assert artifact["documents"][3]["canonical_projection"] == "BLOCKED"
+    assert artifact["documents"][1]["rights"]["public_export_allowed"] is False
+    assert artifact["documents"][1]["rights_availability"] == "METADATA_ONLY"
+    assert artifact["documents"][2]["rights_availability"] == "PRIVATE"
+    assert artifact["documents"][3]["rights_availability"] == "BLOCKED"
 
 
 def test_public_export_never_upgrades_private_or_copyrighted_rights():
     with pytest.raises(
         DocumentMentionError,
-        match="PUBLIC_EXPORT_RIGHTS_CONFLICT",
+        match="PUBLIC_EXPORT_EVIDENCE_REQUIRED",
     ):
         build_mention_artifact(
             [document(DOC_PRIVATE, "private", True)],
@@ -254,8 +356,8 @@ def test_public_export_never_upgrades_private_or_copyrighted_rights():
         [],
         authorizations=[authorization(DOC_PRIVATE, "ChatGPT")],
     )
-    assert artifact["documents"][0]["public_export_allowed"] is False
-    assert artifact["documents"][0]["canonical_projection"] == "PRIVATE"
+    assert artifact["documents"][0]["rights"]["public_export_allowed"] is False
+    assert artifact["documents"][0]["rights_availability"] == "PRIVATE"
 
 
 def test_artifact_ordering_hash_and_serialization_are_deterministic():

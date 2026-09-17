@@ -13,7 +13,8 @@ import unicodedata
 from pathlib import Path
 
 from .consumer_package import CONSUMER_TARGETS, normalize_authorizations
-from .document_lane import RIGHTS_CLASSIFICATIONS
+from .consumer_projection import project_document
+from .document_lane import ReviewRequired, rights_decision
 from .evidence_ledger import canonical_bytes
 from .player_identity import (
     PlayerIdentityError,
@@ -39,13 +40,12 @@ MENTION_CONFIDENCE_LEVELS = frozenset({
     "LOW",
     "UNKNOWN",
 })
-CANONICAL_PROJECTIONS = frozenset({
-    "PUBLIC",
-    "METADATA_ONLY",
-    "PRIVATE",
-    "BLOCKED",
-})
 _DOC_ID = re.compile(r"doc_[0-9a-f]{24}\Z")
+_PROJECTION_SCOPE = {
+    "release_id": "mention-rights-authority",
+    "as_of": "1970-01-01T00:00:00Z",
+    "provenance": "upstream-v1.7-rights-authority",
+}
 
 
 class DocumentMentionError(RuntimeError):
@@ -155,57 +155,57 @@ def _normalize_targets(value):
     return targets
 
 
-def _canonical_projection(rights, public_export_allowed):
-    if rights == "private":
-        return "PRIVATE"
-    if rights == "copyrighted":
-        return "METADATA_ONLY"
-    if rights == "public" and public_export_allowed:
-        return "PUBLIC"
-    return "BLOCKED"
-
-
 def _normalize_document(value, *, authorized_targets=None):
     if not isinstance(value, dict):
         raise DocumentMentionError("DOCUMENT_OBJECT_REQUIRED")
     doc_id = validate_doc_id(value.get("doc_id"))
     rights_value = value.get("rights")
-    if isinstance(rights_value, dict):
-        rights = rights_value.get("classification")
-        rights_public_export = rights_value.get("public_export_allowed")
-    else:
-        rights = rights_value
-        rights_public_export = None
-    rights = _required_text(rights, "DOCUMENT_RIGHTS")
-    if rights not in RIGHTS_CLASSIFICATIONS:
-        raise DocumentMentionError("DOCUMENT_RIGHTS_INVALID")
-    requested_public_export = value.get(
-        "public_export_allowed",
-        rights_public_export,
+    parsed = {
+        "capture_channel": value.get("capture_channel"),
+        "rights": rights_value,
+    }
+    if not isinstance(rights_value, dict):
+        parsed["rights"] = {
+            "classification": rights_value,
+            "public_export_allowed": value.get(
+                "public_export_allowed",
+                False,
+            ),
+            "evidence": value.get("rights_evidence", []),
+        }
+    try:
+        rights = rights_decision(
+            parsed,
+            public_export_allowed=value.get("public_export_allowed"),
+            evidence=value.get("rights_evidence"),
+        )
+    except ReviewRequired as exc:
+        raise DocumentMentionError(exc.reason) from exc
+    projection = project_document(
+        {
+            "doc_id": doc_id,
+            "source_ref": value.get("source_ref") or f"mention-source:{doc_id}",
+            "rights": rights["classification"],
+            "public_export_allowed": rights["public_export_allowed"],
+            "body_status": value.get("body_status", "AVAILABLE"),
+        },
+        _PROJECTION_SCOPE,
     )
-    if not isinstance(requested_public_export, bool):
-        raise DocumentMentionError("PUBLIC_EXPORT_ALLOWED_BOOLEAN_REQUIRED")
-    if requested_public_export and rights != "public":
-        raise DocumentMentionError("PUBLIC_EXPORT_RIGHTS_CONFLICT")
     if authorized_targets is None:
         authorized_targets = value.get("authorized_targets", [])
     targets = _normalize_targets(authorized_targets)
     return {
         "doc_id": doc_id,
         "rights": rights,
-        "public_export_allowed": requested_public_export,
-        "canonical_projection": _canonical_projection(
-            rights,
-            requested_public_export,
-        ),
+        "rights_availability": projection["availability"],
         "authorized_targets": targets,
     }
 
 
 def _authorization_state(document, target):
-    if document["canonical_projection"] == "PUBLIC":
+    if document["rights"]["classification"] == "public":
         return "AUTHORIZED"
-    if document["canonical_projection"] == "BLOCKED":
+    if document["rights_availability"] == "BLOCKED":
         return "BLOCKED"
     if target in document["authorized_targets"]:
         return "AUTHORIZED"
