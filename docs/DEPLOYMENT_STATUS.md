@@ -24,13 +24,17 @@
 详细链接、CI 与 rollback 信息见
 [v1.5.4 production closeout](v1.5.4-production-closeout-20260912.md)。
 
-## v1.5.3 历史开发状态（2026-09-11）
+## v1.5.3 实际部署（2026-09-11）
 
-当前生产仍为 `v1.5.2-2 / COMPLETE`，未执行 v1.5.3 production publish。
-`codex/v1.5.3-event-closure` 已建立只读候选链路：六表候选为
-`46 / 10 / 131 / 244 / 227 / 7`，legacy EVENTS 73 行对账为 87 edges，
-未映射 0、未解释冲突 0，罗汉琛 relationship signal 存在。候选明确
-`production_eligible=false`；详细边界见 [v1.5.3 实施记录](CBA-KB_v1.5.3.md)。
+当前生产为 `v1.5.3-2 / COMPLETE`，上一发布为 `v1.5.3-1`，`pending_release_id`
+为 `null`。发布代码提交为 `f9038fd9cc03e552abee0ca08ae51d047efd65af`；149 个
+目标物已独立回读通过。`v1.5.3-2` 是受控文档修正发布，只替换
+`ai/CBA-KB_v1.5.3.md`，其余 148 项与前态逐字节一致。
+
+- 生产六表：[CBA_注册领域_六表.xlsx](https://docs.google.com/spreadsheets/d/1_dgbWXOkJeEjGRtEeZ0oOC9e-lqbXZeW/edit)，计数 `46 / 10 / 131 / 244 / 227 / 7`，workbook SHA-256 为 `0c9812e5e49f0824b74966f3f3941d8eee3711fdafc19d88774084a83742e66c`。
+- 事件收口：legacy EVENTS 73 行对账为 87 edges，未映射 0、未解释冲突 0。
+- 测试：常规工作树 **132 passed / 1 skipped**；跳过项为 `tests/test_midseason_md.py::test_real_source_records`，原因是仓库未布置 `.staging/review-0910/bayi.md`。链接外部真实来源后为 **133 passed / 0 skipped**。
+- 发布边界：v1.5.3 只完成注册事件域收口，不代表完整 DRAFT-2 或 STABLE。详细边界见 [v1.5.3 实施记录](CBA-KB_v1.5.3.md)。
 
 ## v1.5.2 DRAFT-2 实际部署（2026-09-11）
 
