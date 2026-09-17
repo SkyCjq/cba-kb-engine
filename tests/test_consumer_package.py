@@ -4,6 +4,7 @@ import pytest
 
 from cba_kb.common import digest
 from cba_kb.document_mentions import build_mention_artifact
+from cba_kb.evidence_ledger import canonical_bytes
 from cba_kb.consumer_package import (
     CONSUMER_TARGETS,
     ConsumerPackageError,
@@ -16,7 +17,11 @@ from cba_kb.consumer_package import (
 from cba_kb.consumer_projection import project_document
 from cba_kb.master import HEADERS
 from cba_kb.player_identity import new_registry
-from cba_kb.player_profile import build_profile, build_profile_v2
+from cba_kb.player_profile import (
+    PlayerProfileError,
+    build_profile,
+    build_profile_v2,
+)
 
 
 MASTER_SHA = "a" * 64
@@ -84,6 +89,99 @@ def profile_v2():
         source_master_sha256=MASTER_SHA,
         generator_sha=GENERATOR_SHA,
     )
+
+
+def profile_v2_with_mentions():
+    row_value = {key: None for key in HEADERS}
+    row_value.update({
+        "record_key": "synthetic-r1",
+        "season": "2026-2027",
+        "club_id": "synthetic-club",
+        "player": "SYNTHETIC PLAYER",
+        "source_file_id": "synthetic-source",
+        "source_url": "https://example.test/source",
+        "verification_level": "machine_validated",
+    })
+    player_uid = "pid_0000000000000001"
+    registry = new_registry(
+        [{
+            "schema_version": 1,
+            "player_uid": player_uid,
+            "canonical_name": "SYNTHETIC PLAYER",
+            "status": "ACTIVE",
+            "redirect_to": None,
+        }],
+        record_links=[{
+            "schema_version": 1,
+            "record_key": "synthetic-r1",
+            "player_uid": player_uid,
+            "link_status": "same",
+            "method": "MANUAL_REVIEW",
+            "confidence": "HIGH",
+            "evidence_refs": ["synthetic-identity-evidence"],
+        }],
+    )
+    artifact = build_mention_artifact(
+        [
+            {
+                "doc_id": "doc_000000000000000000000001",
+                "rights": {
+                    "classification": "public",
+                    "public_export_allowed": False,
+                    "evidence": [],
+                },
+            },
+            {
+                "doc_id": "doc_000000000000000000000002",
+                "rights": {
+                    "classification": "public",
+                    "public_export_allowed": False,
+                    "evidence": [],
+                },
+            },
+        ],
+        [
+            {
+                "schema_version": 1,
+                "doc_id": "doc_000000000000000000000001",
+                "player_uid": player_uid,
+                "mention_status": "same",
+                "mention_role": "mentioned",
+                "mention_method": "manual",
+                "mention_confidence": "HIGH",
+                "evidence_ref": "synthetic-same",
+            },
+            {
+                "schema_version": 1,
+                "doc_id": "doc_000000000000000000000002",
+                "player_uid": player_uid,
+                "mention_status": "undecided",
+                "mention_role": "mentioned",
+                "mention_method": "exact_name",
+                "mention_confidence": "UNKNOWN",
+                "evidence_ref": "synthetic-undecided",
+            },
+        ],
+    )
+    return build_profile_v2(
+        [row_value],
+        player_uid=player_uid,
+        identity_registry=registry,
+        mention_artifact=artifact,
+        release_id="v1.8.0-synthetic",
+        as_of="2026-09-15T00:00:00Z",
+        source_master_sha256=MASTER_SHA,
+        generator_sha=GENERATOR_SHA,
+    )
+
+
+def rehash_v2(value):
+    core = {
+        key: item for key, item in value.items()
+        if key != "profile_sha256"
+    }
+    value["profile_sha256"] = digest(canonical_bytes(core))
+    return value
 
 
 def document(doc_id, rights="public"):
@@ -292,7 +390,49 @@ def test_consumer_package_accepts_profile_v2_and_uses_player_uid_navigation():
         "player_uid"
     )
     validate_package(package)
-    validate_package(package)
+
+
+def test_consumer_package_inherits_profile_v2_semantic_validation():
+    value = profile_v2_with_mentions()
+    item = value["unresolved_mentions"].pop(0)
+    value["confirmed_documents"].append(item)
+    value["confirmed_documents"].sort(
+        key=lambda item: (
+            item["doc_id"],
+            item["mention_role"],
+            item["mention_status"],
+            item["mention_method"],
+        ),
+    )
+    coverage = value["document_coverage"]
+    coverage["confirmed_document_ids"] = sorted(
+        item["doc_id"] for item in value["confirmed_documents"]
+    )
+    coverage["unresolved_document_ids"] = []
+    coverage["documents_with_target_mentions"] = sorted(set(
+        coverage["confirmed_document_ids"]
+        + coverage["not_same_document_ids"]
+    ))
+    coverage["documents_without_target_mentions"] = sorted(
+        set(coverage["documents_in_artifact"])
+        - set(coverage["documents_with_target_mentions"])
+    )
+    coverage["confirmed_mention_count"] = len(value["confirmed_documents"])
+    coverage["unresolved_mention_count"] = len(value["unresolved_mentions"])
+    with pytest.raises(
+        PlayerProfileError,
+        match="MENTION_STATUS_BUCKET_MISMATCH",
+    ):
+        build_consumer_payload(
+            release_scope={
+                "release_id": "v1.8.0-synthetic",
+                "as_of": "2026-09-15T00:00:00Z",
+                "provenance": "synthetic-fixture",
+            },
+            profile=rehash_v2(value),
+            documents=[],
+            sources=[],
+        )
 
 
 def test_private_authorized_evidence_is_target_only():

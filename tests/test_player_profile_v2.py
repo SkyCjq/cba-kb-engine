@@ -23,6 +23,8 @@ UID_B = "pid_0000000000000002"
 DOC_1 = "doc_000000000000000000000001"
 DOC_2 = "doc_000000000000000000000002"
 DOC_3 = "doc_000000000000000000000003"
+DOC_4 = "doc_000000000000000000000004"
+DOC_5 = "doc_000000000000000000000005"
 
 
 def row(record_key, *, season="2026-2027", club="club-a", name="Synthetic"):
@@ -97,11 +99,19 @@ def document(doc_id):
 
 def mention_artifact():
     return build_mention_artifact(
-        [document(DOC_1), document(DOC_2), document(DOC_3)],
+        [
+            document(DOC_1),
+            document(DOC_2),
+            document(DOC_3),
+            document(DOC_4),
+            document(DOC_5),
+        ],
         [
             mention(DOC_1, UID_A, "same"),
             mention(DOC_2, UID_A, "undecided"),
             mention(DOC_3, UID_A, "not_same"),
+            mention(DOC_4, UID_A, "same"),
+            mention(DOC_5, UID_A, "undecided"),
         ],
     )
 
@@ -155,6 +165,15 @@ def profile(rows=None, registry_value=None, artifact=None):
     )
 
 
+def rehash(value):
+    core = {
+        key: item for key, item in value.items()
+        if key != "profile_sha256"
+    }
+    value["profile_sha256"] = digest(canonical_bytes(core))
+    return value
+
+
 def test_player_record_view_preserves_all_master_rows_and_link_states():
     value = build_player_record_view(
         [
@@ -197,10 +216,12 @@ def test_profile_v2_uses_player_uid_and_exposes_unresolved_states():
     assert value["identity_coverage"]["unlinked_record_keys"] == ["r5"]
     assert value["identity_coverage"]["full_history_coverage_complete"] is False
     assert [item["doc_id"] for item in value["confirmed_documents"]] == [
-        DOC_1
+        DOC_1,
+        DOC_4,
     ]
     assert [item["doc_id"] for item in value["unresolved_mentions"]] == [
-        DOC_2
+        DOC_2,
+        DOC_5,
     ]
     assert [item["doc_id"] for item in value["not_same_mentions"]] == [
         DOC_3
@@ -347,6 +368,120 @@ def test_profile_v2_fails_closed_for_invalid_inputs():
             player_uid=UID_A,
             identity_registry=registry(),
             mention_artifact=malformed_artifact,
+            release_id="v1.8.0-synthetic",
+            as_of="2026-09-17T00:00:00Z",
+            source_master_sha256=MASTER_SHA,
+            generator_sha=GENERATOR_SHA,
+        )
+
+
+def test_validator_rejects_mention_bucket_tamper_with_recomputed_hash():
+    tampered = profile()
+    item = tampered["unresolved_mentions"].pop(0)
+    tampered["confirmed_documents"].append(item)
+    tampered["confirmed_documents"].sort(
+        key=lambda value: (
+            value["doc_id"],
+            value["mention_role"],
+            value["mention_status"],
+            value["mention_method"],
+        ),
+    )
+    coverage = tampered["document_coverage"]
+    coverage["confirmed_document_ids"] = sorted(
+        item["doc_id"] for item in tampered["confirmed_documents"]
+    )
+    coverage["unresolved_document_ids"] = sorted(
+        item["doc_id"] for item in tampered["unresolved_mentions"]
+    )
+    coverage["documents_with_target_mentions"] = sorted(set(
+        coverage["confirmed_document_ids"]
+        + coverage["unresolved_document_ids"]
+        + coverage["not_same_document_ids"]
+    ))
+    coverage["documents_without_target_mentions"] = sorted(
+        set(coverage["documents_in_artifact"])
+        - set(coverage["documents_with_target_mentions"])
+    )
+    coverage["confirmed_mention_count"] = len(
+        tampered["confirmed_documents"],
+    )
+    coverage["unresolved_mention_count"] = len(
+        tampered["unresolved_mentions"],
+    )
+    with pytest.raises(
+        PlayerProfileError,
+        match="MENTION_STATUS_BUCKET_MISMATCH",
+    ):
+        validate_profile_v2(rehash(tampered))
+
+
+def test_validator_rejects_identity_coverage_count_tamper():
+    tampered = profile()
+    tampered["identity_coverage"]["undecided_record_count"] += 1
+    with pytest.raises(
+        PlayerProfileError,
+        match="IDENTITY_COVERAGE_COUNT_MISMATCH",
+    ):
+        validate_profile_v2(rehash(tampered))
+
+
+def test_validator_rejects_unresolved_identity_key_mismatch():
+    tampered = profile()
+    tampered["unresolved_identity_links"] = []
+    with pytest.raises(
+        PlayerProfileError,
+        match="UNRESOLVED_IDENTITY_MISMATCH",
+    ):
+        validate_profile_v2(rehash(tampered))
+
+
+def test_validator_rejects_document_coverage_mismatch():
+    tampered = profile()
+    tampered["document_coverage"]["confirmed_document_ids"] = []
+    with pytest.raises(
+        PlayerProfileError,
+        match="DOCUMENT_COVERAGE_BUCKET_MISMATCH",
+    ):
+        validate_profile_v2(rehash(tampered))
+
+
+def test_validator_rejects_status_tamper():
+    tampered = profile()
+    tampered["status"] = "READY"
+    with pytest.raises(
+        PlayerProfileError,
+        match="STATUS_SEMANTIC_MISMATCH",
+    ):
+        validate_profile_v2(rehash(tampered))
+
+
+def test_validator_rejects_mention_ordering_tamper():
+    tampered = profile()
+    tampered["confirmed_documents"].reverse()
+    with pytest.raises(
+        PlayerProfileError,
+        match="CONFIRMED_DOCUMENTS_ORDER_INVALID",
+    ):
+        validate_profile_v2(rehash(tampered))
+
+
+def test_registry_record_missing_from_master_fails_closed():
+    missing_registry = new_registry(
+        [player(UID_A, "Synthetic Player")],
+        record_links=[
+            record_link("missing-record", UID_A, "same"),
+        ],
+    )
+    with pytest.raises(
+        PlayerProfileError,
+        match="IDENTITY_RECORD_NOT_IN_MASTER",
+    ):
+        build_profile_v2(
+            [row("r1")],
+            player_uid=UID_A,
+            identity_registry=missing_registry,
+            mention_artifact=build_mention_artifact([], []),
             release_id="v1.8.0-synthetic",
             as_of="2026-09-17T00:00:00Z",
             source_master_sha256=MASTER_SHA,

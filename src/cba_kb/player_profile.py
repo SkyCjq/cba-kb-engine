@@ -10,6 +10,8 @@ from .consumer_projection import event_coverage
 from .evidence_ledger import canonical_bytes
 from .master import HEADERS, inspect
 from .player_identity import (
+    CONFIDENCE_LEVELS,
+    LINK_METHODS,
     PlayerIdentityError,
     validate_player_uid,
     validate_registry,
@@ -436,6 +438,12 @@ def build_profile_v2(
         item["record_key"]: item
         for item in view["rows"]
     }
+    registry_record_keys = {
+        link["record_key"]
+        for link in registry["record_links"]
+    }
+    if registry_record_keys - set(view_by_key):
+        raise PlayerProfileError("PROFILE_IDENTITY_RECORD_NOT_IN_MASTER")
     selected_links = [
         link for link in registry["record_links"]
         if link["player_uid"] == player_uid
@@ -497,6 +505,7 @@ def build_profile_v2(
     confirmed_documents = [
         {
             "doc_id": item["doc_id"],
+            "mention_status": item["mention_status"],
             "mention_role": item["mention_role"],
             "mention_method": item["mention_method"],
             "mention_confidence": item["mention_confidence"],
@@ -508,6 +517,7 @@ def build_profile_v2(
     unresolved_mentions = [
         {
             "doc_id": item["doc_id"],
+            "mention_status": item["mention_status"],
             "mention_role": item["mention_role"],
             "mention_method": item["mention_method"],
             "mention_confidence": item["mention_confidence"],
@@ -519,6 +529,7 @@ def build_profile_v2(
     not_same_mentions = [
         {
             "doc_id": item["doc_id"],
+            "mention_status": item["mention_status"],
             "mention_role": item["mention_role"],
             "mention_method": item["mention_method"],
             "mention_confidence": item["mention_confidence"],
@@ -600,6 +611,277 @@ def build_profile_v2(
     return {**core, "profile_sha256": digest(canonical_bytes(core))}
 
 
+def _profile_string_list(value, label):
+    if not isinstance(value, list):
+        raise PlayerProfileError(f"{label}_LIST_REQUIRED")
+    if any(not isinstance(item, str) or not item for item in value):
+        raise PlayerProfileError(f"{label}_STRING_REQUIRED")
+    if value != sorted(value) or len(value) != len(set(value)):
+        raise PlayerProfileError(f"{label}_ORDER_OR_DUPLICATE_INVALID")
+    return value
+
+
+def _validate_identity_coverage(coverage, record_keys):
+    required = {
+        "master_record_count",
+        "registry_record_link_count",
+        "confirmed_record_count",
+        "undecided_record_count",
+        "selected_not_same_record_count",
+        "not_same_record_count",
+        "unlinked_record_count",
+        "confirmed_record_keys",
+        "undecided_record_keys",
+        "selected_not_same_record_keys",
+        "not_same_record_keys",
+        "unlinked_record_keys",
+        "full_history_coverage_complete",
+    }
+    if not isinstance(coverage, dict) or set(coverage) != required:
+        raise PlayerProfileError("PROFILE_V2_IDENTITY_COVERAGE_INVALID")
+    count_fields = (
+        "master_record_count",
+        "registry_record_link_count",
+        "confirmed_record_count",
+        "undecided_record_count",
+        "selected_not_same_record_count",
+        "not_same_record_count",
+        "unlinked_record_count",
+    )
+    if any(
+        not isinstance(coverage[field], int) or coverage[field] < 0
+        for field in count_fields
+    ):
+        raise PlayerProfileError("PROFILE_V2_IDENTITY_COVERAGE_INVALID")
+    key_fields = (
+        "confirmed_record_keys",
+        "undecided_record_keys",
+        "selected_not_same_record_keys",
+        "not_same_record_keys",
+        "unlinked_record_keys",
+    )
+    for field in key_fields:
+        _profile_string_list(coverage[field], f"PROFILE_V2_{field.upper()}")
+    expected_counts = {
+        "confirmed_record_count": coverage["confirmed_record_keys"],
+        "undecided_record_count": coverage["undecided_record_keys"],
+        "selected_not_same_record_count": coverage[
+            "selected_not_same_record_keys"
+        ],
+        "not_same_record_count": coverage["not_same_record_keys"],
+        "unlinked_record_count": coverage["unlinked_record_keys"],
+    }
+    for field, values in expected_counts.items():
+        if coverage[field] != len(values):
+            raise PlayerProfileError(
+                "PROFILE_V2_IDENTITY_COVERAGE_COUNT_MISMATCH",
+            )
+    if coverage["confirmed_record_keys"] != record_keys:
+        raise PlayerProfileError("PROFILE_V2_IDENTITY_COVERAGE_MISMATCH")
+    selected_sets = [
+        set(coverage["confirmed_record_keys"]),
+        set(coverage["undecided_record_keys"]),
+        set(coverage["selected_not_same_record_keys"]),
+    ]
+    if any(
+        selected_sets[left] & selected_sets[right]
+        for left in range(3)
+        for right in range(left + 1, 3)
+    ):
+        raise PlayerProfileError("PROFILE_V2_IDENTITY_COVERAGE_OVERLAP")
+    if not set(coverage["selected_not_same_record_keys"]) <= set(
+        coverage["not_same_record_keys"],
+    ):
+        raise PlayerProfileError("PROFILE_V2_IDENTITY_SELECTED_NOT_SAME_INVALID")
+    if set(coverage["unlinked_record_keys"]) & (
+        set(coverage["confirmed_record_keys"])
+        | set(coverage["undecided_record_keys"])
+        | set(coverage["not_same_record_keys"])
+    ):
+        raise PlayerProfileError("PROFILE_V2_IDENTITY_UNLINKED_OVERLAP")
+    if coverage["full_history_coverage_complete"] is not False:
+        raise PlayerProfileError("FULL_HISTORY_COVERAGE_CLAIM_FORBIDDEN")
+    return coverage
+
+
+def _validate_unresolved_identity_links(value, coverage):
+    if not isinstance(value, list):
+        raise PlayerProfileError(
+            "PROFILE_V2_UNRESOLVED_IDENTITY_LINKS_REQUIRED",
+        )
+    for item in value:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {
+                "record_key",
+                "method",
+                "confidence",
+                "evidence_refs",
+            }
+        ):
+            raise PlayerProfileError(
+                "PROFILE_V2_UNRESOLVED_IDENTITY_SCHEMA_INVALID",
+            )
+        _required_text(item["record_key"], "RECORD_KEY")
+        if item["method"] not in LINK_METHODS:
+            raise PlayerProfileError(
+                "PROFILE_V2_UNRESOLVED_IDENTITY_METHOD_INVALID",
+            )
+        if item["confidence"] not in CONFIDENCE_LEVELS:
+            raise PlayerProfileError(
+                "PROFILE_V2_UNRESOLVED_IDENTITY_CONFIDENCE_INVALID",
+            )
+        _profile_string_list(
+            item["evidence_refs"],
+            "PROFILE_V2_UNRESOLVED_IDENTITY_EVIDENCE_REFS",
+        )
+    keys = [item["record_key"] for item in value]
+    if keys != sorted(keys) or len(keys) != len(set(keys)):
+        raise PlayerProfileError(
+            "PROFILE_V2_UNRESOLVED_IDENTITY_ORDER_OR_DUPLICATE_INVALID",
+        )
+    if keys != coverage["undecided_record_keys"]:
+        raise PlayerProfileError("PROFILE_V2_UNRESOLVED_IDENTITY_MISMATCH")
+    return value
+
+
+def _validate_mention_bucket(value, expected_status, label):
+    from .document_mentions import (
+        MENTION_CONFIDENCE_LEVELS,
+        MENTION_METHODS,
+        MENTION_ROLES,
+        validate_doc_id,
+    )
+
+    if not isinstance(value, list):
+        raise PlayerProfileError(f"{label}_REQUIRED")
+    for item in value:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {
+                "doc_id",
+                "mention_status",
+                "mention_role",
+                "mention_method",
+                "mention_confidence",
+                "evidence_ref",
+            }
+        ):
+            raise PlayerProfileError(f"{label}_SCHEMA_INVALID")
+        validate_doc_id(item["doc_id"])
+        if item["mention_status"] != expected_status:
+            raise PlayerProfileError(
+                "PROFILE_V2_MENTION_STATUS_BUCKET_MISMATCH",
+            )
+        if item["mention_role"] not in MENTION_ROLES:
+            raise PlayerProfileError(f"{label}_ROLE_INVALID")
+        if item["mention_method"] not in MENTION_METHODS:
+            raise PlayerProfileError(f"{label}_METHOD_INVALID")
+        if item["mention_confidence"] not in MENTION_CONFIDENCE_LEVELS:
+            raise PlayerProfileError(f"{label}_CONFIDENCE_INVALID")
+        _required_text(item["evidence_ref"], "MENTION_EVIDENCE_REF")
+    if value != sorted(value, key=_mention_sort_key):
+        raise PlayerProfileError(f"{label}_ORDER_INVALID")
+    doc_ids = [item["doc_id"] for item in value]
+    if len(doc_ids) != len(set(doc_ids)):
+        raise PlayerProfileError(f"{label}_DUPLICATE")
+    return value
+
+
+def _validate_document_coverage(value, buckets, artifact_sha256):
+    from .document_mentions import DocumentMentionError, validate_doc_id
+
+    required = {
+        "documents_in_artifact",
+        "documents_with_target_mentions",
+        "documents_without_target_mentions",
+        "confirmed_document_ids",
+        "unresolved_document_ids",
+        "not_same_document_ids",
+        "confirmed_mention_count",
+        "unresolved_mention_count",
+        "not_same_mention_count",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise PlayerProfileError("PROFILE_V2_DOCUMENT_COVERAGE_INVALID")
+    list_fields = (
+        "documents_in_artifact",
+        "documents_with_target_mentions",
+        "documents_without_target_mentions",
+        "confirmed_document_ids",
+        "unresolved_document_ids",
+        "not_same_document_ids",
+    )
+    for field in list_fields:
+        _profile_string_list(
+            value[field],
+            f"PROFILE_V2_{field.upper()}",
+        )
+        for doc_id in value[field]:
+            try:
+                validate_doc_id(doc_id)
+            except DocumentMentionError as exc:
+                raise PlayerProfileError(
+                    "PROFILE_V2_DOCUMENT_ID_INVALID",
+                ) from exc
+    expected_ids = {
+        "confirmed_document_ids": sorted({
+            item["doc_id"] for item in buckets["confirmed_documents"]
+        }),
+        "unresolved_document_ids": sorted({
+            item["doc_id"] for item in buckets["unresolved_mentions"]
+        }),
+        "not_same_document_ids": sorted({
+            item["doc_id"] for item in buckets["not_same_mentions"]
+        }),
+    }
+    for field, expected in expected_ids.items():
+        if value[field] != expected:
+            raise PlayerProfileError(
+                "PROFILE_V2_DOCUMENT_COVERAGE_BUCKET_MISMATCH",
+            )
+    counts = {
+        "confirmed_mention_count": len(buckets["confirmed_documents"]),
+        "unresolved_mention_count": len(buckets["unresolved_mentions"]),
+        "not_same_mention_count": len(buckets["not_same_mentions"]),
+    }
+    for field, expected in counts.items():
+        if value[field] != expected:
+            raise PlayerProfileError(
+                "PROFILE_V2_DOCUMENT_COVERAGE_COUNT_MISMATCH",
+            )
+    bucket_ids = [
+        set(expected_ids["confirmed_document_ids"]),
+        set(expected_ids["unresolved_document_ids"]),
+        set(expected_ids["not_same_document_ids"]),
+    ]
+    if any(
+        bucket_ids[left] & bucket_ids[right]
+        for left in range(3)
+        for right in range(left + 1, 3)
+    ):
+        raise PlayerProfileError("PROFILE_V2_MENTION_BUCKET_OVERLAP")
+    target_ids = set().union(*bucket_ids)
+    if set(value["documents_with_target_mentions"]) != target_ids:
+        raise PlayerProfileError(
+            "PROFILE_V2_DOCUMENT_TARGET_COVERAGE_MISMATCH",
+        )
+    artifact_ids = set(value["documents_in_artifact"])
+    if not target_ids <= artifact_ids:
+        raise PlayerProfileError(
+            "PROFILE_V2_DOCUMENT_TARGET_OUT_OF_ARTIFACT",
+        )
+    if set(value["documents_without_target_mentions"]) != (
+        artifact_ids - target_ids
+    ):
+        raise PlayerProfileError(
+            "PROFILE_V2_DOCUMENT_UNMENTIONED_COVERAGE_MISMATCH",
+        )
+    if not isinstance(artifact_sha256, str):
+        raise PlayerProfileError("MENTION_ARTIFACT_SHA256_INVALID")
+    return value
+
+
 def validate_profile_v2(value):
     if not isinstance(value, dict):
         raise PlayerProfileError("PROFILE_OBJECT_REQUIRED")
@@ -638,6 +920,10 @@ def validate_profile_v2(value):
         raise PlayerProfileError("PROFILE_STATUS_INVALID")
     if value["identity_selector"] != "player_uid":
         raise PlayerProfileError("PROFILE_SELECTOR_SOURCE_INVALID")
+    _required_text(value["release_id"], "RELEASE_ID")
+    _required_text(value["as_of"], "AS_OF")
+    if value["source_master_file_id"] is not None:
+        _required_text(value["source_master_file_id"], "SOURCE_MASTER_FILE_ID")
     try:
         validate_player_uid(value["player_uid"])
     except PlayerIdentityError as exc:
@@ -655,45 +941,61 @@ def validate_profile_v2(value):
     rows = _validated_rows(value["registration_history"])
     if rows != sorted(rows, key=_master_row_sort_key):
         raise PlayerProfileError("PROFILE_V2_REGISTRATION_SORT_INVALID")
-    record_keys = value["record_keys"]
+    record_keys = _profile_string_list(
+        value["record_keys"],
+        "PROFILE_V2_RECORD_KEYS",
+    )
     if record_keys != sorted(record_keys):
         raise PlayerProfileError("PROFILE_V2_RECORD_KEY_SORT_INVALID")
     if record_keys != sorted(row["record_key"] for row in rows):
         raise PlayerProfileError("PROFILE_V2_RECORD_KEYS_INVALID")
-    coverage = value["identity_coverage"]
-    if not isinstance(coverage, dict):
-        raise PlayerProfileError("PROFILE_V2_IDENTITY_COVERAGE_INVALID")
-    required_coverage = {
-        "master_record_count",
-        "registry_record_link_count",
-        "confirmed_record_count",
-        "undecided_record_count",
-        "selected_not_same_record_count",
-        "not_same_record_count",
-        "unlinked_record_count",
-        "confirmed_record_keys",
-        "undecided_record_keys",
-        "selected_not_same_record_keys",
-        "not_same_record_keys",
-        "unlinked_record_keys",
-        "full_history_coverage_complete",
+    coverage = _validate_identity_coverage(
+        value["identity_coverage"],
+        record_keys,
+    )
+    _validate_unresolved_identity_links(
+        value["unresolved_identity_links"],
+        coverage,
+    )
+    buckets = {
+        "confirmed_documents": _validate_mention_bucket(
+            value["confirmed_documents"],
+            "same",
+            "PROFILE_V2_CONFIRMED_DOCUMENTS",
+        ),
+        "unresolved_mentions": _validate_mention_bucket(
+            value["unresolved_mentions"],
+            "undecided",
+            "PROFILE_V2_UNRESOLVED_MENTIONS",
+        ),
+        "not_same_mentions": _validate_mention_bucket(
+            value["not_same_mentions"],
+            "not_same",
+            "PROFILE_V2_NOT_SAME_MENTIONS",
+        ),
     }
-    if set(coverage) != required_coverage:
-        raise PlayerProfileError("PROFILE_V2_IDENTITY_COVERAGE_INVALID")
-    if coverage["confirmed_record_keys"] != record_keys:
-        raise PlayerProfileError("PROFILE_V2_IDENTITY_COVERAGE_MISMATCH")
-    if coverage["full_history_coverage_complete"] is not False:
-        raise PlayerProfileError("FULL_HISTORY_COVERAGE_CLAIM_FORBIDDEN")
-    document_coverage = value["document_coverage"]
-    if (
-        not isinstance(document_coverage, dict)
-        or not isinstance(document_coverage.get("confirmed_document_ids"), list)
-        or not isinstance(document_coverage.get("unresolved_document_ids"), list)
-        or not isinstance(document_coverage.get("not_same_document_ids"), list)
-    ):
-        raise PlayerProfileError("PROFILE_V2_DOCUMENT_COVERAGE_INVALID")
+    _validate_document_coverage(
+        value["document_coverage"],
+        buckets,
+        value["mention_artifact_sha256"],
+    )
+    expected_status = (
+        "REVIEW_REQUIRED"
+        if (
+            coverage["undecided_record_keys"]
+            or value["unresolved_mentions"]
+            or not value["registration_history"]
+        )
+        else "READY"
+    )
+    if value["status"] != expected_status:
+        raise PlayerProfileError("PROFILE_V2_STATUS_SEMANTIC_MISMATCH")
     if not isinstance(value["event_coverage"], dict):
         raise PlayerProfileError("PROFILE_V2_EVENT_COVERAGE_INVALID")
+    _profile_string_list(
+        value["unresolved_gaps"],
+        "PROFILE_V2_UNRESOLVED_GAPS",
+    )
     if value["unresolved_gaps"] != value["event_coverage"].get(
         "unresolved",
     ):
