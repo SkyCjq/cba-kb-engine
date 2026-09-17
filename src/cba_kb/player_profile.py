@@ -6,12 +6,21 @@ import re
 from pathlib import Path
 
 from .common import digest
+from .consumer_projection import event_coverage
 from .evidence_ledger import canonical_bytes
 from .master import HEADERS, inspect
+from .player_identity import (
+    PlayerIdentityError,
+    validate_player_uid,
+    validate_registry,
+)
 
 
 SCHEMA_VERSION = 1
 PROFILE_VERSION = "v1.7"
+PROFILE_V2_VERSION = "v2.0"
+PLAYER_RECORD_VIEW = "PLAYER_RECORD_VIEW"
+PLAYER_RECORD_VIEW_VERSION = "v1.8"
 PROFILE_STATUSES = frozenset({"READY", "REVIEW_REQUIRED"})
 IDENTITY_LOOKUP = "EXACT_NAME_ONLY"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -239,6 +248,460 @@ def validate_profile(value):
     if "player_uid" in value:
         raise PlayerProfileError("STABLE_PLAYER_UID_FORBIDDEN")
     digest_input = {key: value[key] for key in value if key != "profile_sha256"}
+    if digest(canonical_bytes(digest_input)) != value["profile_sha256"]:
+        raise PlayerProfileError("PROFILE_HASH_MISMATCH")
+    return value
+
+
+def _master_row_sort_key(row):
+    return (
+        str(row.get("season") or ""),
+        str(row.get("club_id") or ""),
+        str(row.get("record_key") or ""),
+    )
+
+
+def _link_sort_key(link):
+    return (
+        link["record_key"],
+        link["player_uid"],
+        link["link_status"],
+    )
+
+
+def _identity_link_map(identity_registry):
+    try:
+        registry = validate_registry(identity_registry)
+    except PlayerIdentityError as exc:
+        raise PlayerProfileError(str(exc)) from exc
+    links_by_record = {}
+    for link in registry["record_links"]:
+        links_by_record.setdefault(link["record_key"], []).append({
+            "player_uid": link["player_uid"],
+            "link_status": link["link_status"],
+            "method": link["method"],
+            "confidence": link["confidence"],
+            "evidence_refs": list(link["evidence_refs"]),
+        })
+    for record_key, links in links_by_record.items():
+        links.sort(key=lambda item: (
+            item["player_uid"],
+            item["link_status"],
+        ))
+        if sum(item["link_status"] == "same" for item in links) > 1:
+            raise PlayerProfileError("PLAYER_RECORD_MULTIPLE_SAME_LINKS")
+    return registry, links_by_record
+
+
+def build_player_record_view(
+    rows,
+    *,
+    identity_registry,
+):
+    """Build the deterministic read-only PLAYER_RECORD_VIEW projection."""
+    rows = _validated_rows(rows)
+    registry, links_by_record = _identity_link_map(identity_registry)
+    view_rows = []
+    for row in sorted(rows, key=_master_row_sort_key):
+        links = links_by_record.get(row["record_key"], [])
+        same = [
+            item for item in links
+            if item["link_status"] == "same"
+        ]
+        undecided = any(
+            item["link_status"] == "undecided"
+            for item in links
+        )
+        not_same = any(
+            item["link_status"] == "not_same"
+            for item in links
+        )
+        if same:
+            status = "same"
+            confirmed_player_uid = same[0]["player_uid"]
+        elif undecided:
+            status = "undecided"
+            confirmed_player_uid = None
+        elif not_same:
+            status = "not_same"
+            confirmed_player_uid = None
+        else:
+            status = "UNLINKED"
+            confirmed_player_uid = None
+        view_rows.append({
+            **{key: row[key] for key in HEADERS},
+            "confirmed_player_uid": confirmed_player_uid,
+            "identity_link_status": status,
+            "identity_links": links,
+        })
+    core = {
+        "schema_version": SCHEMA_VERSION,
+        "view_version": PLAYER_RECORD_VIEW_VERSION,
+        "view_name": PLAYER_RECORD_VIEW,
+        "identity_registry_sha256": registry["registry_sha256"],
+        "rows": view_rows,
+    }
+    return {**core, "view_sha256": digest(canonical_bytes(core))}
+
+
+def _event_selection_v2(event_spec):
+    if event_spec is None:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "selected": False,
+            "season": None,
+            "team": None,
+            "covered": [],
+            "unresolved": [],
+            "critical_gap": False,
+            "source_status": {},
+            "as_of": None,
+        }
+    if not isinstance(event_spec, dict):
+        raise PlayerProfileError("EVENT_SELECTION_OBJECT_REQUIRED")
+    required = {"season", "team", "events", "sources", "as_of"}
+    if not required <= set(event_spec):
+        raise PlayerProfileError("EVENT_SELECTION_INCOMPLETE")
+    return {
+        **event_coverage(
+            season=event_spec["season"],
+            team=event_spec["team"],
+            events=event_spec["events"],
+            sources=event_spec["sources"],
+            as_of=event_spec["as_of"],
+        ),
+        "selected": True,
+    }
+
+
+def _mention_sort_key(item):
+    return (
+        item["doc_id"],
+        item["mention_role"],
+        item["mention_status"],
+        item["mention_method"],
+    )
+
+
+def build_profile_v2(
+    rows,
+    *,
+    player_uid,
+    identity_registry,
+    mention_artifact,
+    release_id,
+    as_of,
+    source_master_sha256,
+    event_spec=None,
+    generator_sha=None,
+    source_master_file_id=None,
+):
+    from .document_mentions import (
+        DocumentMentionError,
+        validate_mention_artifact,
+    )
+
+    rows = _validated_rows(rows)
+    try:
+        player_uid = validate_player_uid(player_uid)
+        registry = validate_registry(identity_registry)
+        mention_artifact = validate_mention_artifact(mention_artifact)
+    except (PlayerIdentityError, DocumentMentionError) as exc:
+        raise PlayerProfileError(str(exc)) from exc
+    release_id = _required_text(release_id, "RELEASE_ID")
+    as_of = _required_text(as_of, "AS_OF")
+    source_master_sha256 = _required_sha256(
+        source_master_sha256,
+        "SOURCE_MASTER_SHA256",
+    )
+    generator_sha = _required_sha256(
+        generator_sha or generator_sha256(),
+        "GENERATOR_SHA",
+    )
+
+    registry_players = {
+        item["player_uid"]: item
+        for item in registry["players"]
+    }
+    if player_uid not in registry_players:
+        raise PlayerProfileError("PROFILE_PLAYER_UID_NOT_FOUND")
+    if registry_players[player_uid]["status"] != "ACTIVE":
+        raise PlayerProfileError("PROFILE_PLAYER_UID_NOT_ACTIVE")
+
+    view = build_player_record_view(
+        rows,
+        identity_registry=registry,
+    )
+    view_by_key = {
+        item["record_key"]: item
+        for item in view["rows"]
+    }
+    selected_links = [
+        link for link in registry["record_links"]
+        if link["player_uid"] == player_uid
+    ]
+    selected_links.sort(key=_link_sort_key)
+    same_keys = sorted(
+        (
+            link["record_key"]
+            for link in selected_links
+            if link["link_status"] == "same"
+        ),
+        key=lambda record_key: _master_row_sort_key(
+            view_by_key[record_key],
+        ),
+    )
+    undecided_keys = sorted(
+        link["record_key"]
+        for link in selected_links
+        if link["link_status"] == "undecided"
+    )
+    not_same_keys = sorted(
+        link["record_key"]
+        for link in selected_links
+        if link["link_status"] == "not_same"
+    )
+    registration_history = [
+        {key: view_by_key[record_key][key] for key in HEADERS}
+        for record_key in same_keys
+    ]
+    all_linked_record_keys = {
+        link["record_key"]
+        for link in registry["record_links"]
+    }
+    registry_not_same_record_keys = sorted({
+        link["record_key"]
+        for link in registry["record_links"]
+        if link["link_status"] == "not_same"
+    })
+    unlinked_record_keys = sorted(
+        row["record_key"] for row in rows
+        if row["record_key"] not in all_linked_record_keys
+    )
+    unresolved_identity_links = [
+        {
+            "record_key": link["record_key"],
+            "method": link["method"],
+            "confidence": link["confidence"],
+            "evidence_refs": list(link["evidence_refs"]),
+        }
+        for link in selected_links
+        if link["link_status"] == "undecided"
+    ]
+
+    target_mentions = [
+        item for item in mention_artifact["mentions"]
+        if item["player_uid"] == player_uid
+    ]
+    target_mentions.sort(key=_mention_sort_key)
+    confirmed_documents = [
+        {
+            "doc_id": item["doc_id"],
+            "mention_role": item["mention_role"],
+            "mention_method": item["mention_method"],
+            "mention_confidence": item["mention_confidence"],
+            "evidence_ref": item["evidence_ref"],
+        }
+        for item in target_mentions
+        if item["mention_status"] == "same"
+    ]
+    unresolved_mentions = [
+        {
+            "doc_id": item["doc_id"],
+            "mention_role": item["mention_role"],
+            "mention_method": item["mention_method"],
+            "mention_confidence": item["mention_confidence"],
+            "evidence_ref": item["evidence_ref"],
+        }
+        for item in target_mentions
+        if item["mention_status"] == "undecided"
+    ]
+    not_same_mentions = [
+        {
+            "doc_id": item["doc_id"],
+            "mention_role": item["mention_role"],
+            "mention_method": item["mention_method"],
+            "mention_confidence": item["mention_confidence"],
+            "evidence_ref": item["evidence_ref"],
+        }
+        for item in target_mentions
+        if item["mention_status"] == "not_same"
+    ]
+    all_document_ids = sorted(
+        item["doc_id"] for item in mention_artifact["documents"]
+    )
+    mentioned_document_ids = sorted({
+        item["doc_id"] for item in target_mentions
+    })
+    document_coverage = {
+        "documents_in_artifact": all_document_ids,
+        "documents_with_target_mentions": mentioned_document_ids,
+        "documents_without_target_mentions": sorted(
+            set(all_document_ids) - set(mentioned_document_ids)
+        ),
+        "confirmed_document_ids": sorted({
+            item["doc_id"] for item in confirmed_documents
+        }),
+        "unresolved_document_ids": sorted({
+            item["doc_id"] for item in unresolved_mentions
+        }),
+        "not_same_document_ids": sorted({
+            item["doc_id"] for item in not_same_mentions
+        }),
+        "confirmed_mention_count": len(confirmed_documents),
+        "unresolved_mention_count": len(unresolved_mentions),
+        "not_same_mention_count": len(not_same_mentions),
+    }
+    events = _event_selection_v2(event_spec)
+    identity_coverage = {
+        "master_record_count": len(rows),
+        "registry_record_link_count": len(registry["record_links"]),
+        "confirmed_record_count": len(same_keys),
+        "undecided_record_count": len(undecided_keys),
+        "selected_not_same_record_count": len(not_same_keys),
+        "not_same_record_count": len(registry_not_same_record_keys),
+        "unlinked_record_count": len(unlinked_record_keys),
+        "confirmed_record_keys": same_keys,
+        "undecided_record_keys": undecided_keys,
+        "selected_not_same_record_keys": not_same_keys,
+        "not_same_record_keys": registry_not_same_record_keys,
+        "unlinked_record_keys": unlinked_record_keys,
+        "full_history_coverage_complete": False,
+    }
+    status = (
+        "REVIEW_REQUIRED"
+        if undecided_keys or unresolved_mentions or not same_keys
+        else "READY"
+    )
+    core = {
+        "schema_version": SCHEMA_VERSION,
+        "profile_version": PROFILE_V2_VERSION,
+        "status": status,
+        "identity_selector": "player_uid",
+        "player_uid": player_uid,
+        "release_id": release_id,
+        "as_of": as_of,
+        "source_master_sha256": source_master_sha256,
+        "source_master_file_id": source_master_file_id,
+        "generator_sha": generator_sha,
+        "identity_registry_sha256": registry["registry_sha256"],
+        "mention_artifact_sha256": mention_artifact["artifact_sha256"],
+        "registration_history": registration_history,
+        "record_keys": same_keys,
+        "unresolved_identity_links": unresolved_identity_links,
+        "confirmed_documents": confirmed_documents,
+        "unresolved_mentions": unresolved_mentions,
+        "not_same_mentions": not_same_mentions,
+        "identity_coverage": identity_coverage,
+        "document_coverage": document_coverage,
+        "event_coverage": events,
+        "unresolved_gaps": list(events["unresolved"]),
+    }
+    return {**core, "profile_sha256": digest(canonical_bytes(core))}
+
+
+def validate_profile_v2(value):
+    if not isinstance(value, dict):
+        raise PlayerProfileError("PROFILE_OBJECT_REQUIRED")
+    required = {
+        "schema_version",
+        "profile_version",
+        "status",
+        "identity_selector",
+        "player_uid",
+        "release_id",
+        "as_of",
+        "source_master_sha256",
+        "source_master_file_id",
+        "generator_sha",
+        "identity_registry_sha256",
+        "mention_artifact_sha256",
+        "registration_history",
+        "record_keys",
+        "unresolved_identity_links",
+        "confirmed_documents",
+        "unresolved_mentions",
+        "not_same_mentions",
+        "identity_coverage",
+        "document_coverage",
+        "event_coverage",
+        "unresolved_gaps",
+        "profile_sha256",
+    }
+    if set(value) != required:
+        raise PlayerProfileError("PROFILE_V2_SCHEMA_INVALID")
+    if value["schema_version"] != SCHEMA_VERSION:
+        raise PlayerProfileError("PROFILE_VERSION_INVALID")
+    if value["profile_version"] != PROFILE_V2_VERSION:
+        raise PlayerProfileError("PROFILE_VERSION_INVALID")
+    if value["status"] not in PROFILE_STATUSES:
+        raise PlayerProfileError("PROFILE_STATUS_INVALID")
+    if value["identity_selector"] != "player_uid":
+        raise PlayerProfileError("PROFILE_SELECTOR_SOURCE_INVALID")
+    try:
+        validate_player_uid(value["player_uid"])
+    except PlayerIdentityError as exc:
+        raise PlayerProfileError(str(exc)) from exc
+    _required_sha256(value["source_master_sha256"], "SOURCE_MASTER_SHA256")
+    _required_sha256(value["generator_sha"], "GENERATOR_SHA")
+    _required_sha256(
+        value["identity_registry_sha256"],
+        "IDENTITY_REGISTRY_SHA256",
+    )
+    _required_sha256(
+        value["mention_artifact_sha256"],
+        "MENTION_ARTIFACT_SHA256",
+    )
+    rows = _validated_rows(value["registration_history"])
+    if rows != sorted(rows, key=_master_row_sort_key):
+        raise PlayerProfileError("PROFILE_V2_REGISTRATION_SORT_INVALID")
+    record_keys = value["record_keys"]
+    if record_keys != sorted(record_keys):
+        raise PlayerProfileError("PROFILE_V2_RECORD_KEY_SORT_INVALID")
+    if record_keys != sorted(row["record_key"] for row in rows):
+        raise PlayerProfileError("PROFILE_V2_RECORD_KEYS_INVALID")
+    coverage = value["identity_coverage"]
+    if not isinstance(coverage, dict):
+        raise PlayerProfileError("PROFILE_V2_IDENTITY_COVERAGE_INVALID")
+    required_coverage = {
+        "master_record_count",
+        "registry_record_link_count",
+        "confirmed_record_count",
+        "undecided_record_count",
+        "selected_not_same_record_count",
+        "not_same_record_count",
+        "unlinked_record_count",
+        "confirmed_record_keys",
+        "undecided_record_keys",
+        "selected_not_same_record_keys",
+        "not_same_record_keys",
+        "unlinked_record_keys",
+        "full_history_coverage_complete",
+    }
+    if set(coverage) != required_coverage:
+        raise PlayerProfileError("PROFILE_V2_IDENTITY_COVERAGE_INVALID")
+    if coverage["confirmed_record_keys"] != record_keys:
+        raise PlayerProfileError("PROFILE_V2_IDENTITY_COVERAGE_MISMATCH")
+    if coverage["full_history_coverage_complete"] is not False:
+        raise PlayerProfileError("FULL_HISTORY_COVERAGE_CLAIM_FORBIDDEN")
+    document_coverage = value["document_coverage"]
+    if (
+        not isinstance(document_coverage, dict)
+        or not isinstance(document_coverage.get("confirmed_document_ids"), list)
+        or not isinstance(document_coverage.get("unresolved_document_ids"), list)
+        or not isinstance(document_coverage.get("not_same_document_ids"), list)
+    ):
+        raise PlayerProfileError("PROFILE_V2_DOCUMENT_COVERAGE_INVALID")
+    if not isinstance(value["event_coverage"], dict):
+        raise PlayerProfileError("PROFILE_V2_EVENT_COVERAGE_INVALID")
+    if value["unresolved_gaps"] != value["event_coverage"].get(
+        "unresolved",
+    ):
+        raise PlayerProfileError("PROFILE_V2_UNRESOLVED_GAPS_INVALID")
+    digest_input = {
+        key: item for key, item in value.items()
+        if key != "profile_sha256"
+    }
     if digest(canonical_bytes(digest_input)) != value["profile_sha256"]:
         raise PlayerProfileError("PROFILE_HASH_MISMATCH")
     return value

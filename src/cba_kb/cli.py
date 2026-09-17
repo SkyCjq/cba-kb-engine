@@ -84,6 +84,17 @@ def main():
     q.add_argument('--as-of',required=True)
     q.add_argument('--generator-sha')
     q.add_argument('--source-master-file-id')
+    q=sub.add_parser('consumer-profile-v2')
+    q.add_argument('--master',type=Path,required=True)
+    q.add_argument('--player-uid',required=True)
+    q.add_argument('--identity-registry',type=Path,required=True)
+    q.add_argument('--mention-artifact',type=Path,required=True)
+    q.add_argument('--events',type=Path)
+    q.add_argument('--output',type=Path,required=True)
+    q.add_argument('--release-id',required=True)
+    q.add_argument('--as-of',required=True)
+    q.add_argument('--generator-sha')
+    q.add_argument('--source-master-file-id')
     q=sub.add_parser('consumer-name-candidates')
     q.add_argument('--master',type=Path,required=True)
     q.add_argument('--name',required=True)
@@ -271,6 +282,45 @@ def main():
                 source_master_file_id=a.source_master_file_id,
             )
             save(a.output,result)
+        elif a.command=='consumer-profile-v2':
+            from .document_mentions import load_mention_artifact
+            from .player_identity import load_registry
+            from .player_profile import build_profile_v2
+            instance=private_instance()
+            instance_root=Path(instance.root).resolve()
+            def private_path(path):
+                candidate=Path(path)
+                if not candidate.is_absolute():
+                    candidate=instance_root/candidate
+                candidate=candidate.resolve()
+                if not candidate.is_relative_to(instance_root):
+                    raise ValueError('PROFILE_V2_PATH_OUTSIDE_PRIVATE_INSTANCE')
+                return candidate
+            master=private_path(a.master)
+            identity_registry=load_registry(
+                private_path(a.identity_registry),
+            )
+            mention_artifact=load_mention_artifact(
+                private_path(a.mention_artifact),
+            )
+            rows,summary=inspect(master)
+            event_spec=(
+                json.loads(private_path(a.events).read_text())
+                if a.events else None
+            )
+            result=build_profile_v2(
+                rows,
+                player_uid=a.player_uid,
+                identity_registry=identity_registry,
+                mention_artifact=mention_artifact,
+                release_id=a.release_id,
+                as_of=a.as_of,
+                source_master_sha256=summary['sha256'],
+                event_spec=event_spec,
+                generator_sha=a.generator_sha,
+                source_master_file_id=a.source_master_file_id,
+            )
+            save(private_path(a.output),result)
         elif a.command=='consumer-name-candidates':
             from .player_profile import discover_exact_name
             rows,_=inspect(a.master)

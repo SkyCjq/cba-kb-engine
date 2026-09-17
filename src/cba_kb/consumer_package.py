@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath
 from .common import atomic, digest
 from .consumer_projection import event_coverage, project_documents
 from .evidence_ledger import canonical_bytes
-from .player_profile import validate_profile
+from .player_profile import validate_profile, validate_profile_v2
 
 
 SCHEMA_VERSION = 1
@@ -65,6 +65,15 @@ def _scope(value):
         key: _required_text(value[key], key.upper())
         for key in sorted(required)
     }
+
+
+def _validated_profile(value):
+    if (
+        isinstance(value, dict)
+        and value.get("profile_version") == "v2.0"
+    ):
+        return validate_profile_v2(value)
+    return validate_profile(value)
 
 
 def _projection_input(document):
@@ -147,7 +156,7 @@ def build_consumer_payload(
     event_spec=None,
 ):
     scope = _scope(release_scope)
-    profile = validate_profile(profile)
+    profile = _validated_profile(profile)
     if not isinstance(documents, list):
         raise ConsumerPackageError("DOCUMENT_COLLECTION_REQUIRED")
     projections = project_documents(
@@ -165,6 +174,35 @@ def build_consumer_payload(
         availability_coverage[availability] = (
             availability_coverage.get(availability, 0) + 1
         )
+    if profile["profile_version"] == "v2.0":
+        profile_coverage = {
+            "profile_records_declared": (
+                len(profile["registration_history"])
+                + len(profile["unresolved_identity_links"])
+            ),
+            "profile_records_included": len(
+                profile["registration_history"],
+            ),
+            "profile_missing_record_keys": [],
+            "profile_identity_selector": profile["identity_selector"],
+            "profile_unresolved_identity_record_keys": list(
+                profile["identity_coverage"]["undecided_record_keys"],
+            ),
+            "profile_confirmed_document_count": len(
+                profile["confirmed_documents"],
+            ),
+            "profile_unresolved_mention_count": len(
+                profile["unresolved_mentions"],
+            ),
+        }
+    else:
+        profile_coverage = {
+            "profile_records_declared": len(profile["record_keys"]),
+            "profile_records_included": len(profile["rows"]),
+            "profile_missing_record_keys": sorted(
+                profile["coverage"]["missing_record_keys"],
+            ),
+        }
     core = {
         "schema_version": SCHEMA_VERSION,
         "payload_version": PAYLOAD_VERSION,
@@ -174,11 +212,7 @@ def build_consumer_payload(
         "event_coverage": events,
         "source_index": source_index,
         "coverage": {
-            "profile_records_declared": len(profile["record_keys"]),
-            "profile_records_included": len(profile["rows"]),
-            "profile_missing_record_keys": sorted(
-                profile["coverage"]["missing_record_keys"],
-            ),
+            **profile_coverage,
             "documents_declared": len(projections),
             "documents_projected": len(projections),
             "document_rights": dict(sorted(rights_coverage.items())),
@@ -621,14 +655,30 @@ def _navigation_contract(
             ),
             "packaged": doc_id in canonical_paths,
         }
-    return {
-        "schema_version": NAVIGATION_SCHEMA_VERSION,
-        "package_generation": PACKAGE_GENERATION,
-        "target": target,
-        "canonical_consumer_payload_sha256": payload[
-            "consumer_payload_sha256"
-        ],
-        "lookup_contract": {
+    profile_version = payload["player_profile"]["profile_version"]
+    if profile_version == "v2.0":
+        lookup_contract = {
+            "player_uid": {
+                "primary_source": _base_file(
+                    "player_profile.json",
+                    routes,
+                ),
+                "selector": "player_uid",
+                "copy_values_exactly": True,
+                "preserve_null": True,
+            },
+            "documents": documents,
+        }
+        identity_policy = {
+            "identity_selector": "player_uid",
+            "record_key_is_person_identity": False,
+            "same_name_records": "NOT_USED_FOR_PROFILE_V2",
+            "automatic_merge": False,
+            "player_uid_policy": "PRESENT_FOR_PROFILE_V2",
+            "same_person_assertion_without_independent_evidence": False,
+        }
+    else:
+        lookup_contract = {
             "record_key": {
                 "primary_source": _base_file(
                     "player_profile.json",
@@ -639,15 +689,24 @@ def _navigation_contract(
                 "preserve_null": True,
             },
             "documents": documents,
-        },
-        "identity_policy": {
+        }
+        identity_policy = {
             "identity_selector": "record_key",
             "record_key_is_person_identity": False,
             "same_name_records": "REVIEW_REQUIRED",
             "automatic_merge": False,
             "player_uid_policy": "ABSENT",
             "same_person_assertion_without_independent_evidence": False,
-        },
+        }
+    return {
+        "schema_version": NAVIGATION_SCHEMA_VERSION,
+        "package_generation": PACKAGE_GENERATION,
+        "target": target,
+        "canonical_consumer_payload_sha256": payload[
+            "consumer_payload_sha256"
+        ],
+        "lookup_contract": lookup_contract,
+        "identity_policy": identity_policy,
         "provenance_policy": {
             "source_ref": "COPY_EXACT_STORED_LOCATOR",
             "source_url": "COPY_EXACT_STORED_LOCATOR",
@@ -986,6 +1045,10 @@ def validate_package(package):
     canonical_payload = files.get(package["canonical_payload_file"])
     if not isinstance(canonical_payload, str):
         raise ConsumerPackageError("CANONICAL_PAYLOAD_FILE_REQUIRED")
+    try:
+        canonical_value = json.loads(canonical_payload)
+    except ValueError as exc:
+        raise ConsumerPackageError("CANONICAL_PAYLOAD_FILE_INVALID") from exc
     evidence_ids = set()
     for entry in evidence_entries:
         if not isinstance(entry, dict):
@@ -1042,15 +1105,43 @@ def validate_package(package):
     ):
         raise ConsumerPackageError("PACKAGE_NAVIGATION_CONTRACT_INVALID")
     identity = navigation.get("identity_policy", {})
-    if identity != {
-        "identity_selector": "record_key",
-        "record_key_is_person_identity": False,
-        "same_name_records": "REVIEW_REQUIRED",
-        "automatic_merge": False,
-        "player_uid_policy": "ABSENT",
-        "same_person_assertion_without_independent_evidence": False,
-    }:
+    profile_version = canonical_value.get(
+        "player_profile", {},
+    ).get("profile_version")
+    expected_identity = (
+        {
+            "identity_selector": "player_uid",
+            "record_key_is_person_identity": False,
+            "same_name_records": "NOT_USED_FOR_PROFILE_V2",
+            "automatic_merge": False,
+            "player_uid_policy": "PRESENT_FOR_PROFILE_V2",
+            "same_person_assertion_without_independent_evidence": False,
+        }
+        if profile_version == "v2.0"
+        else {
+            "identity_selector": "record_key",
+            "record_key_is_person_identity": False,
+            "same_name_records": "REVIEW_REQUIRED",
+            "automatic_merge": False,
+            "player_uid_policy": "ABSENT",
+            "same_person_assertion_without_independent_evidence": False,
+        }
+    )
+    if identity != expected_identity:
         raise ConsumerPackageError("PACKAGE_IDENTITY_POLICY_INVALID")
+    if profile_version == "v2.0":
+        selector = navigation.get("lookup_contract", {}).get(
+            "player_uid", {},
+        )
+        if selector != {
+            "primary_source": navigation["lookup_contract"].get(
+                "player_uid", {},
+            ).get("primary_source"),
+            "selector": "player_uid",
+            "copy_values_exactly": True,
+            "preserve_null": True,
+        }:
+            raise ConsumerPackageError("PACKAGE_IDENTITY_LOOKUP_INVALID")
     if (
         navigation.get("null_policy") != {
             "preserve_canonical_null": True,
@@ -1069,9 +1160,7 @@ def validate_package(package):
         raise ConsumerPackageError("PACKAGE_DOCUMENT_NAVIGATION_REQUIRED")
     payload_doc_ids = {
         item["doc_id"]
-        for item in json.loads(canonical_payload)[
-            "selected_document_projections"
-        ]
+        for item in canonical_value["selected_document_projections"]
     }
     if set(documents) != payload_doc_ids:
         raise ConsumerPackageError("PACKAGE_DOCUMENT_NAVIGATION_INCOMPLETE")
