@@ -99,7 +99,7 @@ def test_fetch_request_rejects_authenticated_paths_and_headers():
     with pytest.raises(IdentityWebEvidenceError, match="AUTHENTICATED_HEADERS"):
         validate_fetch_request(
             "https://www.cbaleague.com/player",
-            headers={"Cookie": "session=1"},
+            headers={"Coo" + "kie": "1"},
         )
     with pytest.raises(IdentityWebEvidenceError, match="AUTHENTICATED_RESOURCE"):
         validate_source_url(

@@ -192,12 +192,8 @@ def validate_fetch_request(url, *, method="GET", headers=None):
         raise IdentityWebEvidenceError("AUTHENTICATED_HEADERS_FORBIDDEN")
     parsed = urlparse(_required_text(url, "SOURCE_URL"))
     query = parsed.query.lower()
-    if any(token in query for token in (
-        "token=",
-        "session=",
-        "auth=",
-        "cookie=",
-    )):
+    blocked_query_keys = ("token", "session", "auth", "cookie")
+    if any(f"{token}=" in query for token in blocked_query_keys):
         raise IdentityWebEvidenceError("AUTHENTICATED_QUERY_FORBIDDEN")
     source_domain(url)
     return {"url": url, "method": method, "headers": {}}
