@@ -783,6 +783,26 @@ def validate_uid_bridge_authority(value):
         "uid_bridge_authority_sha256"
     ]:
         raise IdentityWebEvidenceError("UID_BRIDGE_AUTHORITY_HASH_MISMATCH")
+    seen = set()
+    for entry in value["entries"]:
+        for field in (
+            "entry_id",
+            "namespace",
+            "identifier",
+            "existing_uid",
+            "approval_ref",
+            "normalized_identifier",
+        ):
+            _required_text(entry.get(field), f"UID_BRIDGE_{field.upper()}")
+        if entry["normalized_identifier"] != (
+            f"{entry['namespace']}:{entry['identifier']}"
+        ):
+            raise IdentityWebEvidenceError(
+                "UID_BRIDGE_NORMALIZED_IDENTIFIER_MISMATCH",
+            )
+        if entry["entry_id"] in seen:
+            raise IdentityWebEvidenceError("UID_BRIDGE_ENTRY_DUPLICATE")
+        seen.add(entry["entry_id"])
     return value
 
 
@@ -801,6 +821,25 @@ def validate_b0_source_registry(value):
         "b0_source_registry_sha256"
     ]:
         raise IdentityWebEvidenceError("B0_REGISTRY_HASH_MISMATCH")
+    entry_ids = []
+    domains = []
+    for entry in value["entries"]:
+        if not isinstance(entry, dict):
+            raise IdentityWebEvidenceError("B0_REGISTRY_ENTRY_INVALID")
+        for field in (
+            "entry_id",
+            "canonical_club_identity",
+            "approved_domain",
+            "human_approval_ref",
+            "approved_at",
+        ):
+            _required_text(entry.get(field), f"B0_{field.upper()}")
+        entry_ids.append(entry["entry_id"])
+        domains.append(entry["approved_domain"].lower())
+    if len(entry_ids) != len(set(entry_ids)):
+        raise IdentityWebEvidenceError("B0_ENTRY_ID_DUPLICATE")
+    if len(domains) != len(set(domains)):
+        raise IdentityWebEvidenceError("B0_DOMAIN_DUPLICATE")
     return value
 
 
@@ -1300,6 +1339,15 @@ def enrich_candidates(
     association_contexts=None,
     bridge_authority=None,
 ):
+    if (
+        association_contexts is not None
+        and bridge_authority is not None
+    ):
+        evidence_manifest = apply_existing_uid_bindings(
+            evidence_manifest,
+            association_contexts,
+            bridge_authority,
+        )
     validate_evidence_manifest(evidence_manifest)
     search_statuses = search_statuses or {}
     conflicts = {
@@ -1523,6 +1571,20 @@ def validate_association_authority(value):
     return value
 
 
+def recompute_association_authority(
+    evidence_manifest,
+    association_contexts,
+    supplied_authority,
+):
+    expected = build_association_authority(
+        evidence_manifest,
+        association_contexts,
+    )
+    if expected != supplied_authority:
+        raise IdentityWebEvidenceError("ASSOCIATION_AUTHORITY_STALE")
+    return expected
+
+
 def derive_existing_uid_bindings(
     evidence_manifest,
     association_contexts,
@@ -1541,7 +1603,11 @@ def derive_existing_uid_bindings(
     }
     allowed_associations = None
     if association_authority is not None:
-        authority = validate_association_authority(association_authority)
+        authority = recompute_association_authority(
+            evidence_manifest,
+            contexts,
+            association_authority,
+        )
         allowed_associations = {
             (item["record_key"], item["evidence_id"])
             for item in authority["entries"]
@@ -1591,6 +1657,45 @@ def derive_existing_uid_bindings(
     return bindings
 
 
+def apply_existing_uid_bindings(
+    evidence_manifest,
+    association_contexts,
+    bridge_authority,
+    association_authority=None,
+):
+    bindings = derive_existing_uid_bindings(
+        evidence_manifest,
+        association_contexts,
+        bridge_authority,
+        association_authority=association_authority,
+    )
+    by_url = defaultdict(list)
+    for context in validate_association_contexts(association_contexts):
+        by_url[context["discovered_url"]].append(context)
+    items = []
+    for item in evidence_manifest["items"]:
+        item_bindings = list(item["bindings"])
+        for context in by_url.get(item["source_url"], []):
+            for binding in bindings:
+                if (
+                    binding["record_key"] == context["record_key"]
+                    and binding["target_type"] == "EXISTING_UID"
+                ):
+                    item_bindings.append(binding)
+        items.append({
+            **item,
+            "bindings": sorted(
+                item_bindings,
+                key=lambda value: (
+                    value["record_key"],
+                    value["target_type"],
+                    value["target_id"],
+                ),
+            ),
+        })
+    return build_evidence_manifest(items)
+
+
 def derive_new_identity_groups(
     candidates,
     *,
@@ -1605,7 +1710,11 @@ def derive_new_identity_groups(
     }
     allowed_associations = None
     if association_authority is not None:
-        authority = validate_association_authority(association_authority)
+        authority = recompute_association_authority(
+            evidence_manifest,
+            list(contexts.values()),
+            association_authority,
+        )
         allowed_associations = {
             (item["record_key"], item["evidence_id"])
             for item in authority["entries"]
@@ -1921,7 +2030,13 @@ def validate_group_authority(value):
     return value
 
 
-def recompute_groups(packet, evidence_manifest, group_authority):
+def recompute_groups(
+    packet,
+    evidence_manifest,
+    group_authority,
+    *,
+    association_authority=None,
+):
     validate_review_packet(packet)
     validate_evidence_manifest(evidence_manifest)
     authority = validate_group_authority(group_authority)
@@ -1933,6 +2048,16 @@ def recompute_groups(packet, evidence_manifest, group_authority):
         "web_evidence_manifest_sha256"
     ]:
         raise IdentityWebEvidenceError("GROUP_PLAN_EVIDENCE_MISMATCH")
+    if association_authority is not None:
+        association = validate_association_authority(
+            association_authority,
+        )
+        if authority["association_authority_sha256"] != association[
+            "association_authority_sha256"
+        ]:
+            raise IdentityWebEvidenceError(
+                "GROUP_PLAN_ASSOCIATION_MISMATCH",
+            )
     expected = build_groups(packet, evidence_manifest)
     if expected != authority["groups"]:
         raise IdentityWebEvidenceError("GROUP_PLAN_STALE")
@@ -1972,10 +2097,27 @@ def _validate_authority_event_common(event, packet, evidence_manifest):
     _required_text(event["reviewed_at"], "REVIEWED_AT")
 
 
-def expand_group_event(packet, evidence_manifest, groups, event):
+def expand_group_event(
+    packet,
+    evidence_manifest,
+    groups,
+    event,
+    *,
+    group_authority=None,
+    association_authority=None,
+):
     validate_review_packet(packet)
     validate_evidence_manifest(evidence_manifest)
     _validate_authority_event_common(event, packet, evidence_manifest)
+    if group_authority is not None:
+        recomputed_groups = recompute_groups(
+            packet,
+            evidence_manifest,
+            group_authority,
+            association_authority=association_authority,
+        )
+        if groups != recomputed_groups:
+            raise IdentityWebEvidenceError("GROUP_PLAN_MISMATCH")
     group = next(
         (
             item for item in groups
@@ -2015,10 +2157,25 @@ def expand_group_event(packet, evidence_manifest, groups, event):
     return decisions
 
 
-def expand_batch_event(packet, evidence_manifest, batches, event):
+def expand_batch_event(
+    packet,
+    evidence_manifest,
+    batches,
+    event,
+    *,
+    search_statuses=None,
+):
     validate_review_packet(packet)
     validate_evidence_manifest(evidence_manifest)
     _validate_authority_event_common(event, packet, evidence_manifest)
+    if search_statuses is not None:
+        expected_batches = recompute_batches(
+            packet,
+            evidence_manifest,
+            search_statuses,
+        )
+        if batches != expected_batches:
+            raise IdentityWebEvidenceError("BATCH_PLAN_MISMATCH")
     batch = next(
         (
             item for item in batches
@@ -2359,15 +2516,25 @@ def import_review_workbook(
     groups,
     batches,
     group_authority=None,
+    association_authority=None,
     search_statuses=None,
 ):
     validate_review_packet(packet)
     validate_evidence_manifest(evidence_manifest)
+    if groups and group_authority is None:
+        raise IdentityWebEvidenceError("GROUP_AUTHORITY_REQUIRED")
+    requires_search_authority = any(
+        item["batch_predicate"] == "BATCH_NO_SAFE_SEARCH_EXHAUSTED"
+        for item in batches
+    )
+    if requires_search_authority and search_statuses is None:
+        raise IdentityWebEvidenceError("SEARCH_AUTHORITY_REQUIRED")
     if group_authority is not None:
         expected_groups = recompute_groups(
             packet,
             evidence_manifest,
             group_authority,
+            association_authority=association_authority,
         )
         if groups != expected_groups:
             raise IdentityWebEvidenceError("GROUP_PLAN_MISMATCH")

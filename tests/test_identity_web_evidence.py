@@ -785,7 +785,25 @@ def test_workbook_rejects_group_batch_and_evidence_machine_edits(tmp_path):
             source_locator="id",
         )],
     )
+    evidence["bindings"] = [{
+        "record_key": "r1",
+        "target_type": "NEW_GROUP",
+        "target_id": "group-1",
+        "matched_claim_fields": ["OFFICIAL_SOURCE_DECLARED_PERSON_ID"],
+        "binding_rationale": "shared official person id",
+    }]
     manifest = build_evidence_manifest([evidence])
+    association = build_association_authority(manifest, [{
+        "record_key": "r1",
+        "discovered_url": evidence["source_url"],
+        "record_name": "Synthetic",
+        "record_birth_date": None,
+    }])
+    group_authority = build_group_authority(
+        packet,
+        manifest,
+        association_authority=association,
+    )
     review_id = packet["reviews"][0]["review_id"]
     groups = [{
         "candidate_group_id": "group-1",
@@ -818,6 +836,8 @@ def test_workbook_rejects_group_batch_and_evidence_machine_edits(tmp_path):
             evidence_manifest=manifest,
             groups=groups,
             batches=batches,
+            group_authority=group_authority,
+            association_authority=association,
         )
 
 

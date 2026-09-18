@@ -212,6 +212,7 @@ def main():
     q.add_argument('--batches',type=Path,required=True)
     q.add_argument('--workbook',type=Path,required=True)
     q.add_argument('--group-authority',type=Path)
+    q.add_argument('--association-authority',type=Path)
     q.add_argument('--search-statuses',type=Path)
     q.add_argument('--output-csv',type=Path,required=True)
     q=sub.add_parser('mention-validate')
@@ -816,6 +817,22 @@ def main():
                     )
                     if a.bridge_authority else None
                 )
+                strong_potential=any(
+                    any(
+                        claim['claim_type'] in {
+                            'OFFICIAL_SOURCE_DECLARED_PERSON_ID',
+                            'OFFICIAL_BIRTH_DATE',
+                        }
+                        for claim in item['claims']
+                    )
+                    for item in manifest['items']
+                )
+                if strong_potential and (
+                    associations is None or bridges is None
+                ):
+                    raise ValueError(
+                        'STRONG_EVIDENCE_REQUIRES_ASSOCIATION_AND_BRIDGE_AUTHORITY'
+                    )
                 enriched=enrich_candidates(
                     candidates,
                     evidence_manifest=manifest,
@@ -877,6 +894,12 @@ def main():
                             private_path(a.group_authority).read_text()
                         )
                         if a.group_authority else None
+                    ),
+                    association_authority=(
+                        json.loads(
+                            private_path(a.association_authority).read_text()
+                        )
+                        if a.association_authority else None
                     ),
                     search_statuses=(
                         json.loads(
