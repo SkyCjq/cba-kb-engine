@@ -187,6 +187,7 @@ def main():
     q.add_argument('--discoveries',type=Path)
     q.add_argument('--output-root',type=Path,required=True)
     q.add_argument('--manifest',type=Path,required=True)
+    q.add_argument('--provenance-output',type=Path)
     q.add_argument('--source-tier',required=True)
     q.add_argument('--source-kind',required=True)
     q.add_argument('--extracted-at',required=True)
@@ -696,6 +697,7 @@ def main():
             from .identity_web_evidence import (
                 build_discovery_record,
                 build_evidence_manifest,
+                build_fetch_provenance_authority,
                 build_batch_plan,
                 build_groups,
                 collect_evidence_from_responses,
@@ -753,6 +755,7 @@ def main():
                     raw_root=private_path(a.output_root)/'raw'
                     raw_root.mkdir(parents=True,exist_ok=True)
                     items=[]
+                    provenance_entries=[]
                     for discovery in discoveries:
                         fetched=fetch_official_resource(
                             discovery['discovered_url'],
@@ -782,8 +785,38 @@ def main():
                             claims=claims,
                             record_keys=[],
                         ))
+                        provenance_entries.append({
+                            'discovery_id': digest(json.dumps(
+                                discovery,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ).encode()),
+                            'context_reference': discovery.get(
+                                'context_reference',
+                                discovery['discovered_url'],
+                            ),
+                            'original_discovered_url': discovery[
+                                'discovered_url'
+                            ],
+                            'redirect_chain': fetched.get(
+                                'redirect_chain',
+                                [],
+                            ),
+                            'final_source_url': fetched['url'],
+                            'evidence_id': items[-1]['evidence_id'],
+                            'content_sha256': items[-1]['content_sha256'],
+                            'source_tier': a.source_tier,
+                            'source_kind': a.source_kind,
+                        })
                     from .identity_web_evidence import build_evidence_manifest
                     manifest=build_evidence_manifest(items)
+                    if a.provenance_output:
+                        save(
+                            private_path(a.provenance_output),
+                            build_fetch_provenance_authority(
+                                provenance_entries
+                            ),
+                        )
                 else:
                     raise ValueError(
                         'IDENTITY_WEB_EVIDENCE_RESPONSES_OR_DISCOVERIES_REQUIRED'

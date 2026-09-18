@@ -415,6 +415,7 @@ def fetch_official_resource(
         try:
             current_url = url
             redirect_count = 0
+            redirect_chain = []
             while True:
                 throttle(current_url)
                 try:
@@ -449,6 +450,7 @@ def fetch_official_resource(
                             "REDIRECT_LIMIT_EXCEEDED",
                         )
                     current_url = redirects[-1]
+                    redirect_chain.extend(redirects)
                     continue
                 break
             validate_response_guard(
@@ -464,6 +466,7 @@ def fetch_official_resource(
                 "status": response["status"],
                 "content_type": response["content_type"],
                 "content": response["body"],
+                "redirect_chain": redirect_chain,
                 "attempts": attempt + 1,
             }
         except IdentityWebEvidenceError:
@@ -473,6 +476,74 @@ def fetch_official_resource(
             if attempt < max_retries:
                 sleep(per_domain_interval)
     raise IdentityWebEvidenceError("PUBLIC_FETCH_FAILED") from last_error
+
+
+def build_fetch_provenance_authority(entries):
+    normalized = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise IdentityWebEvidenceError("FETCH_PROVENANCE_ENTRY_INVALID")
+        required = {
+            "discovery_id",
+            "context_reference",
+            "original_discovered_url",
+            "redirect_chain",
+            "final_source_url",
+            "evidence_id",
+            "content_sha256",
+            "source_tier",
+            "source_kind",
+        }
+        if set(entry) != required:
+            raise IdentityWebEvidenceError("FETCH_PROVENANCE_ENTRY_INVALID")
+        core = {
+            **entry,
+            "redirect_chain": list(entry["redirect_chain"]),
+        }
+        normalized.append({
+            **core,
+            "entry_sha256": hashlib.sha256(
+                canonical_bytes(core),
+            ).hexdigest(),
+        })
+    normalized.sort(key=lambda item: item["entry_sha256"])
+    core = {"schema_version": SCHEMA_VERSION, "entries": normalized}
+    return {
+        **core,
+        "fetch_provenance_authority_sha256": hashlib.sha256(
+            canonical_bytes(core),
+        ).hexdigest(),
+    }
+
+
+def validate_fetch_provenance_authority(value):
+    if not isinstance(value, dict):
+        raise IdentityWebEvidenceError("FETCH_PROVENANCE_OBJECT_REQUIRED")
+    required = {
+        "schema_version",
+        "entries",
+        "fetch_provenance_authority_sha256",
+    }
+    if set(value) != required:
+        raise IdentityWebEvidenceError("FETCH_PROVENANCE_SCHEMA_INVALID")
+    core = {
+        key: value[key]
+        for key in value
+        if key != "fetch_provenance_authority_sha256"
+    }
+    if hashlib.sha256(canonical_bytes(core)).hexdigest() != value[
+        "fetch_provenance_authority_sha256"
+    ]:
+        raise IdentityWebEvidenceError("FETCH_PROVENANCE_HASH_MISMATCH")
+    for entry in value["entries"]:
+        expected = hashlib.sha256(canonical_bytes({
+            key: entry[key]
+            for key in entry
+            if key != "entry_sha256"
+        })).hexdigest()
+        if entry["entry_sha256"] != expected:
+            raise IdentityWebEvidenceError("FETCH_PROVENANCE_ENTRY_HASH_MISMATCH")
+    return value
 
 
 def content_sha256(content):
