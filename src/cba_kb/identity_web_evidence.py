@@ -1409,6 +1409,7 @@ def enrich_candidates(
     search_statuses=None,
     association_contexts=None,
     bridge_authority=None,
+    fetch_provenance_authority=None,
 ):
     if (
         association_contexts is not None
@@ -1418,6 +1419,7 @@ def enrich_candidates(
             evidence_manifest,
             association_contexts,
             bridge_authority,
+            fetch_provenance_authority=fetch_provenance_authority,
         )
     validate_evidence_manifest(evidence_manifest)
     search_statuses = search_statuses or {}
@@ -1480,6 +1482,7 @@ def enrich_candidates(
             candidates,
             evidence_manifest=evidence_manifest,
             association_contexts=association_contexts,
+            fetch_provenance_authority=fetch_provenance_authority,
         )
         derived_keys = {item["record_key"] for item in derived}
         enriched = [
@@ -1511,18 +1514,54 @@ def validate_association_contexts(value):
             "record_name",
             "record_birth_date",
         }
-        if set(item) != required:
+        allowed = required | {"stable_identity_context"}
+        if not required <= set(item) or not set(item) <= allowed:
             raise IdentityWebEvidenceError("ASSOCIATION_CONTEXT_INVALID")
+        if item.get("stable_identity_context") is not None:
+            stable = item["stable_identity_context"]
+            if (
+                not isinstance(stable, dict)
+                or set(stable) != {"claim_type", "value"}
+            ):
+                raise IdentityWebEvidenceError(
+                    "ASSOCIATION_CONTEXT_INVALID",
+                )
         normalized.append(item)
     return normalized
 
 
-def build_association_authority(evidence_manifest, association_contexts):
+def build_association_authority(
+    evidence_manifest,
+    association_contexts,
+    fetch_provenance_authority=None,
+):
     validate_evidence_manifest(evidence_manifest)
     contexts = validate_association_contexts(association_contexts)
     by_url = defaultdict(list)
     for context in contexts:
         by_url[context["discovered_url"]].append(context)
+    by_evidence = defaultdict(list)
+    if fetch_provenance_authority is not None:
+        provenance = validate_fetch_provenance_authority(
+            fetch_provenance_authority,
+        )
+        context_by_record = {
+            context["record_key"]: context for context in contexts
+        }
+        for entry in provenance["entries"]:
+            context = context_by_record.get(entry["context_reference"])
+            if context is not None:
+                by_evidence[entry["evidence_id"]].append(context)
+    same_name_ids = defaultdict(set)
+    for manifest_item in evidence_manifest["items"]:
+        names = {
+            claim["normalized_value"]
+            for claim in manifest_item["claims"]
+            if claim["claim_type"] == "OFFICIAL_PLAYER_NAME"
+        }
+        ids = _person_ids(manifest_item["claims"])
+        for name in names:
+            same_name_ids[name].update(ids)
     entries = []
     for item in evidence_manifest["items"]:
         official_names = {
@@ -1541,7 +1580,12 @@ def build_association_authority(evidence_manifest, association_contexts):
             for claim in item["claims"]
         ):
             warnings.append("TEXT_OR_OCR_WARNING")
-        for context in by_url.get(item["source_url"], []):
+        contexts_for_item = (
+            by_evidence.get(item["evidence_id"], [])
+            if by_evidence
+            else by_url.get(item["source_url"], [])
+        )
+        for context in contexts_for_item:
             private_name = normalize_claim(
                 "OFFICIAL_PLAYER_NAME",
                 context["record_name"],
@@ -1551,6 +1595,25 @@ def build_association_authority(evidence_manifest, association_contexts):
                 not context["record_birth_date"]
                 or not official_dobs
                 or context["record_birth_date"] in official_dobs
+            )
+            stable_context = context.get("stable_identity_context")
+            stable_context_match = False
+            if stable_context:
+                normalized_context = normalize_claim(
+                    stable_context["claim_type"],
+                    stable_context["value"],
+                )
+                stable_context_match = any(
+                    claim["claim_type"] == stable_context["claim_type"]
+                    and claim["normalized_value"] == normalized_context
+                    for claim in item["claims"]
+                )
+            ambiguity = (
+                bool(official_names)
+                and any(
+                    len(same_name_ids[name]) > 1
+                    for name in official_names
+                )
             )
             conflicts = []
             if official_names and not name_match:
@@ -1566,6 +1629,11 @@ def build_association_authority(evidence_manifest, association_contexts):
                 if (
                     name_match
                     and dob_match
+                    and (
+                        bool(official_dobs)
+                        or stable_context_match
+                    )
+                    and not ambiguity
                     and not conflicts
                     and not warnings
                 )
@@ -1646,10 +1714,12 @@ def recompute_association_authority(
     evidence_manifest,
     association_contexts,
     supplied_authority,
+    fetch_provenance_authority=None,
 ):
     expected = build_association_authority(
         evidence_manifest,
         association_contexts,
+        fetch_provenance_authority=fetch_provenance_authority,
     )
     if expected != supplied_authority:
         raise IdentityWebEvidenceError("ASSOCIATION_AUTHORITY_STALE")
@@ -1661,6 +1731,7 @@ def derive_existing_uid_bindings(
     association_contexts,
     bridge_authority,
     association_authority=None,
+    fetch_provenance_authority=None,
 ):
     validate_evidence_manifest(evidence_manifest)
     contexts = validate_association_contexts(association_contexts)
@@ -1678,6 +1749,7 @@ def derive_existing_uid_bindings(
             evidence_manifest,
             contexts,
             association_authority,
+            fetch_provenance_authority=fetch_provenance_authority,
         )
         allowed_associations = {
             (item["record_key"], item["evidence_id"])
@@ -1733,12 +1805,14 @@ def apply_existing_uid_bindings(
     association_contexts,
     bridge_authority,
     association_authority=None,
+    fetch_provenance_authority=None,
 ):
     bindings = derive_existing_uid_bindings(
         evidence_manifest,
         association_contexts,
         bridge_authority,
         association_authority=association_authority,
+        fetch_provenance_authority=fetch_provenance_authority,
     )
     by_url = defaultdict(list)
     for context in validate_association_contexts(association_contexts):
@@ -1773,6 +1847,7 @@ def derive_new_identity_groups(
     evidence_manifest,
     association_contexts,
     association_authority=None,
+    fetch_provenance_authority=None,
 ):
     validate_evidence_manifest(evidence_manifest)
     contexts = {
@@ -1785,6 +1860,7 @@ def derive_new_identity_groups(
             evidence_manifest,
             list(contexts.values()),
             association_authority,
+            fetch_provenance_authority=fetch_provenance_authority,
         )
         allowed_associations = {
             (item["record_key"], item["evidence_id"])

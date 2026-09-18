@@ -197,6 +197,7 @@ def main():
     q.add_argument('--search-statuses',type=Path,required=True)
     q.add_argument('--association-contexts',type=Path)
     q.add_argument('--bridge-authority',type=Path)
+    q.add_argument('--fetch-provenance',type=Path)
     q.add_argument('--output-candidates',type=Path,required=True)
     q.add_argument('--output-conflicts',type=Path,required=True)
     q.add_argument('--output-summary',type=Path,required=True)
@@ -850,6 +851,12 @@ def main():
                     )
                     if a.bridge_authority else None
                 )
+                provenance=(
+                    json.loads(
+                        private_path(a.fetch_provenance).read_text()
+                    )
+                    if a.fetch_provenance else None
+                )
                 strong_potential=any(
                     any(
                         claim['claim_type'] in {
@@ -861,7 +868,9 @@ def main():
                     for item in manifest['items']
                 )
                 if strong_potential and (
-                    associations is None or bridges is None
+                    associations is None
+                    or bridges is None
+                    or provenance is None
                 ):
                     raise ValueError(
                         'STRONG_EVIDENCE_REQUIRES_ASSOCIATION_AND_BRIDGE_AUTHORITY'
@@ -872,6 +881,7 @@ def main():
                     search_statuses=statuses,
                     association_contexts=associations,
                     bridge_authority=bridges,
+                    fetch_provenance_authority=provenance,
                 )
                 conflicts=[{
                     'record_key':item['record_key'],
