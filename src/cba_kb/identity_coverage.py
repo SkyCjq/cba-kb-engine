@@ -88,6 +88,30 @@ HUMAN_REVIEW_FIELDS = (
     "reviewed_at",
 )
 REVIEW_FIELDS = MACHINE_REVIEW_FIELDS + HUMAN_REVIEW_FIELDS
+CANDIDATE_REGISTRY_MANIFEST_FIELDS = (
+    "schema_version",
+    "base_registry_sha256",
+    "candidate_registry_sha256",
+    "MASTER_sha256",
+    "master_authority_mode",
+    "MASTER_rows",
+    "MASTER_unique_record_keys",
+    "review_packet_sha256",
+    "reviewed_decisions_sha256",
+    "created_at",
+    "candidate_registry_manifest_sha256",
+)
+COVERAGE_LEDGER_ENTRY_FIELDS = frozenset({
+    "record_key",
+    "coverage_disposition",
+    "same_count",
+    "undecided_count",
+    "not_same_count",
+    "candidate_count",
+    "review_required",
+    "source_exception_reason",
+    "evidence_refs",
+})
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -114,6 +138,24 @@ def _required_sha256_or_null(value, label):
     if not _SHA256.fullmatch(value):
         raise IdentityCoverageError(f"{label}_INVALID")
     return value
+
+
+def _required_sha256(value, label):
+    value = _required_sha256_or_null(value, label)
+    if value is None:
+        raise IdentityCoverageError(f"{label}_REQUIRED")
+    return value
+
+
+def _evidence_refs(value, label):
+    if not isinstance(value, list):
+        raise IdentityCoverageError(f"{label}_LIST_REQUIRED")
+    result = []
+    for item in value:
+        result.append(_required_text(item, f"{label}_ITEM"))
+    if result != sorted(set(result)):
+        raise IdentityCoverageError(f"{label}_ORDER_OR_DUPLICATE_INVALID")
+    return result
 
 
 def normalize_semantic_field(value):
@@ -309,8 +351,12 @@ def generate_candidate_proposals(
                 alias["player_uid"],
             )
     existing_status = defaultdict(set)
+    existing_pair_status = {}
     for link in registry["record_links"]:
         existing_status[link["record_key"]].add(link["link_status"])
+        existing_pair_status[
+            (link["record_key"], link["player_uid"])
+        ] = link["link_status"]
 
     proposals = []
     for row in sorted(rows, key=_record_key):
@@ -356,7 +402,16 @@ def generate_candidate_proposals(
             ))
             continue
 
-        matches = matches_by_name.get(normalize_name(row.get("player") or ""), set())
+        matches = set(matches_by_name.get(
+            normalize_name(row.get("player") or ""),
+            set(),
+        ))
+        matches = {
+            player_uid for player_uid in matches
+            if existing_pair_status.get(
+                (record_key, player_uid),
+            ) != "not_same"
+        }
         if matches:
             for player_uid in sorted(matches):
                 proposals.append(_machine_proposal(
@@ -513,6 +568,61 @@ def _validate_group_consistency(rows):
             groups[group_id] = values
 
 
+def _validate_decision_semantics(row):
+    if not isinstance(row, dict) or set(row) != set(REVIEW_FIELDS):
+        raise IdentityCoverageError("REVIEW_DECISION_ROW_SCHEMA_INVALID")
+    _required_text(row["review_id"], "REVIEW_ID")
+    machine = {
+        key: row[key]
+        for key in MACHINE_REVIEW_FIELDS
+        if key != "review_id"
+    }
+    validate_machine_proposal(machine)
+    decision = row["human_decision"]
+    if decision not in DECISIONS:
+        raise IdentityCoverageError("HUMAN_DECISION_REQUIRED")
+    _required_text(row["reviewed_at"], "REVIEWED_AT")
+    proposal_type = row["proposal_type"]
+    relation = row["proposed_relation"]
+    reason = row["source_exception_reason"]
+    if proposal_type == "SOURCE_EXCEPTION_CANDIDATE":
+        if decision == "APPROVE":
+            _required_text(reason, "SOURCE_EXCEPTION_REASON")
+            if not row["evidence_refs"]:
+                raise IdentityCoverageError(
+                    "SOURCE_EXCEPTION_EVIDENCE_REQUIRED",
+                )
+        elif reason is not None:
+            raise IdentityCoverageError(
+                "SOURCE_EXCEPTION_REASON_FORBIDDEN",
+            )
+    elif reason is not None:
+        raise IdentityCoverageError("SOURCE_EXCEPTION_REASON_FORBIDDEN")
+
+    is_new_same = (
+        proposal_type == "NEW_IDENTITY_CANDIDATE"
+        and decision == "APPROVE"
+        and relation == "PROPOSED_SAME"
+    )
+    if is_new_same:
+        validate_player_uid(row["approved_player_uid"])
+        _required_text(
+            row["approved_canonical_name"],
+            "APPROVED_CANONICAL_NAME",
+        )
+        _required_text(row["human_note"], "UID_ALLOCATION_ATTESTATION")
+        if not row["evidence_refs"]:
+            raise IdentityCoverageError(
+                "NEW_IDENTITY_EVIDENCE_REQUIRED",
+            )
+    elif (
+        row["approved_player_uid"] is not None
+        or row["approved_canonical_name"] is not None
+    ):
+        raise IdentityCoverageError("APPROVED_IDENTITY_FIELDS_FORBIDDEN")
+    return row
+
+
 def validate_reviewed_csv(packet, csv_bytes):
     validate_review_packet(packet)
     try:
@@ -553,36 +663,7 @@ def validate_reviewed_csv(packet, csv_bytes):
             for field in REVIEW_FIELDS
         }
         row["evidence_refs"] = json.loads(row["evidence_refs"] or "[]")
-        decision = row["human_decision"]
-        if decision not in DECISIONS:
-            raise IdentityCoverageError("HUMAN_DECISION_REQUIRED")
-        if not row["reviewed_at"]:
-            raise IdentityCoverageError("REVIEWED_AT_REQUIRED")
-        if (
-            row["proposal_type"] == "SOURCE_EXCEPTION_CANDIDATE"
-            and decision == "APPROVE"
-            and not row["source_exception_reason"]
-        ):
-            raise IdentityCoverageError("SOURCE_EXCEPTION_REASON_REQUIRED")
-        if (
-            row["proposal_type"] != "SOURCE_EXCEPTION_CANDIDATE"
-            and row["source_exception_reason"] is not None
-        ):
-            raise IdentityCoverageError("SOURCE_EXCEPTION_REASON_FORBIDDEN")
-        if (
-            row["proposal_type"] == "NEW_IDENTITY_CANDIDATE"
-            and decision == "APPROVE"
-            and row["proposed_relation"] == "PROPOSED_SAME"
-        ):
-            validate_player_uid(row["approved_player_uid"])
-            _required_text(
-                row["approved_canonical_name"],
-                "APPROVED_CANONICAL_NAME",
-            )
-            if not row["human_note"]:
-                raise IdentityCoverageError(
-                    "UID_ALLOCATION_ATTESTATION_REQUIRED",
-                )
+        _validate_decision_semantics(row)
         decisions.append(row)
     if seen != set(by_id):
         raise IdentityCoverageError("REVIEW_CSV_MISSING_DECISIONS")
@@ -608,6 +689,18 @@ def validate_reviewed_decisions(value):
     }
     if set(value) != required:
         raise IdentityCoverageError("REVIEWED_DECISIONS_SCHEMA_INVALID")
+    if value["schema_version"] != SCHEMA_VERSION:
+        raise IdentityCoverageError("REVIEWED_DECISIONS_VERSION_INVALID")
+    if value["reviewed_decisions_version"] != REVIEWED_DECISIONS_VERSION:
+        raise IdentityCoverageError("REVIEWED_DECISIONS_VERSION_INVALID")
+    _required_sha256(
+        value["review_packet_sha256"],
+        "REVIEW_PACKET_SHA256",
+    )
+    if not isinstance(value["decisions"], list):
+        raise IdentityCoverageError("REVIEWED_DECISIONS_LIST_REQUIRED")
+    for row in value["decisions"]:
+        _validate_decision_semantics(row)
     core = {
         key: value[key]
         for key in value
@@ -693,8 +786,10 @@ def apply_reviewed_decisions(
     aliases = list(registry["aliases"])
     links = list(registry["record_links"])
     by_uid = {item["player_uid"]: item for item in players}
+    base_uids = set(by_uid)
     row_by_key = {row["record_key"]: row for row in rows}
     created_groups = {}
+    allocated_uid_groups = {}
 
     for decision in reviewed["decisions"]:
         review_id = decision["review_id"]
@@ -750,6 +845,16 @@ def apply_reviewed_decisions(
                 raise IdentityCoverageError(
                     "NEW_IDENTITY_GROUP_AUTHORITY_CONFLICT",
                 )
+            if current is None and approved_uid in base_uids:
+                raise IdentityCoverageError(
+                    "NEW_IDENTITY_UID_ALREADY_EXISTS",
+                )
+            owner = allocated_uid_groups.get(approved_uid)
+            if owner is not None and owner != group_id:
+                raise IdentityCoverageError(
+                    "NEW_IDENTITY_UID_GROUP_CONFLICT",
+                )
+            allocated_uid_groups[approved_uid] = group_id
             created_groups[group_id] = values
             if approved_uid not in by_uid:
                 players.append({
@@ -802,11 +907,11 @@ def build_candidate_registry_manifest(
     reviewed_decisions_sha256,
     created_at,
 ):
-    base_registry_sha256 = _required_sha256_or_null(
+    base_registry_sha256 = _required_sha256(
         base_registry_sha256,
         "BASE_REGISTRY_SHA256",
     )
-    candidate_registry_sha256 = _required_sha256_or_null(
+    candidate_registry_sha256 = _required_sha256(
         candidate_registry_sha256,
         "CANDIDATE_REGISTRY_SHA256",
     )
@@ -837,17 +942,60 @@ def build_candidate_registry_manifest(
         "master_authority_mode": master_authority_mode,
         "MASTER_rows": master_rows,
         "MASTER_unique_record_keys": master_unique_record_keys,
-        "review_packet_sha256": _required_sha256_or_null(
+        "review_packet_sha256": _required_sha256(
             review_packet_sha256,
             "REVIEW_PACKET_SHA256",
         ),
-        "reviewed_decisions_sha256": _required_sha256_or_null(
+        "reviewed_decisions_sha256": _required_sha256(
             reviewed_decisions_sha256,
             "REVIEWED_DECISIONS_SHA256",
         ),
         "created_at": _required_text(created_at, "CREATED_AT"),
     }
     return _add_hash(core, "candidate_registry_manifest_sha256")
+
+
+def validate_candidate_registry_manifest(value):
+    if not isinstance(value, dict):
+        raise IdentityCoverageError("CANDIDATE_MANIFEST_OBJECT_REQUIRED")
+    if set(value) != set(CANDIDATE_REGISTRY_MANIFEST_FIELDS):
+        raise IdentityCoverageError("CANDIDATE_MANIFEST_SCHEMA_INVALID")
+    if value["schema_version"] != SCHEMA_VERSION:
+        raise IdentityCoverageError("CANDIDATE_MANIFEST_VERSION_INVALID")
+    for field in (
+        "base_registry_sha256",
+        "candidate_registry_sha256",
+        "review_packet_sha256",
+        "reviewed_decisions_sha256",
+        "candidate_registry_manifest_sha256",
+    ):
+        _required_sha256(value[field], field.upper())
+    master_sha = _required_sha256_or_null(
+        value["MASTER_sha256"],
+        "MASTER_SHA256",
+    )
+    mode = value["master_authority_mode"]
+    if mode not in MASTER_AUTHORITY_MODES:
+        raise IdentityCoverageError("MASTER_AUTHORITY_MODE_INVALID")
+    if master_sha is None:
+        if mode != "ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA":
+            raise IdentityCoverageError("MASTER_AUTHORITY_MODE_MISMATCH")
+    elif mode != "FILE_SHA256_VERIFIED":
+        raise IdentityCoverageError("MASTER_AUTHORITY_MODE_MISMATCH")
+    for field in ("MASTER_rows", "MASTER_unique_record_keys"):
+        if not isinstance(value[field], int) or value[field] < 0:
+            raise IdentityCoverageError(f"{field}_INVALID")
+    _required_text(value["created_at"], "CREATED_AT")
+    core = {
+        key: value[key]
+        for key in value
+        if key != "candidate_registry_manifest_sha256"
+    }
+    if hashlib.sha256(canonical_bytes(core)).hexdigest() != value[
+        "candidate_registry_manifest_sha256"
+    ]:
+        raise IdentityCoverageError("CANDIDATE_MANIFEST_HASH_MISMATCH")
+    return value
 
 
 def build_coverage_ledger(
@@ -925,6 +1073,14 @@ def build_coverage_ledger(
             for item in proposals_for_record
             if item["candidate_player_uid"] is not None
         }
+        candidate_groups = {
+            item["candidate_group_id"]
+            for item in proposals_for_record
+            if (
+                item["proposal_type"] == "NEW_IDENTITY_CANDIDATE"
+                and item["candidate_group_id"] is not None
+            )
+        }
         evidence_refs = sorted({
             ref
             for item in record_decisions
@@ -936,7 +1092,7 @@ def build_coverage_ledger(
             "same_count": same_count,
             "undecided_count": undecided_count,
             "not_same_count": not_same_count,
-            "candidate_count": len(candidate_uids),
+            "candidate_count": len(candidate_uids) + len(candidate_groups),
             "review_required": review_required,
             "source_exception_reason": source_reason,
             "evidence_refs": evidence_refs,
@@ -971,7 +1127,10 @@ def validate_coverage_ledger(value):
         raise IdentityCoverageError("COVERAGE_LEDGER_HASH_MISMATCH")
     seen = set()
     for entry in value["entries"]:
-        if not isinstance(entry, dict):
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != COVERAGE_LEDGER_ENTRY_FIELDS
+        ):
             raise IdentityCoverageError("COVERAGE_ENTRY_OBJECT_REQUIRED")
         record_key = _required_text(entry.get("record_key"), "RECORD_KEY")
         if record_key in seen:
@@ -979,13 +1138,101 @@ def validate_coverage_ledger(value):
         seen.add(record_key)
         if entry.get("coverage_disposition") not in DISPOSITIONS:
             raise IdentityCoverageError("COVERAGE_DISPOSITION_INVALID")
+        for field in (
+            "same_count",
+            "undecided_count",
+            "not_same_count",
+            "candidate_count",
+        ):
+            if not isinstance(entry[field], int) or entry[field] < 0:
+                raise IdentityCoverageError("COVERAGE_COUNT_INVALID")
+        if not isinstance(entry["review_required"], bool):
+            raise IdentityCoverageError("REVIEW_REQUIRED_BOOLEAN_INVALID")
+        if entry["source_exception_reason"] is not None:
+            _required_text(
+                entry["source_exception_reason"],
+                "SOURCE_EXCEPTION_REASON",
+            )
+        if entry["coverage_disposition"] == "SOURCE_EXCEPTION":
+            _required_text(
+                entry["source_exception_reason"],
+                "SOURCE_EXCEPTION_REASON",
+            )
+        elif entry["source_exception_reason"] is not None:
+            raise IdentityCoverageError(
+                "SOURCE_EXCEPTION_REASON_FORBIDDEN",
+            )
+        _evidence_refs(entry["evidence_refs"], "COVERAGE_EVIDENCE_REFS")
     return value
 
 
-def reconcile_coverage(master_rows, coverage_ledger, final_registry):
+def _same_relation_set(registry):
+    return {
+        (link["record_key"], link["player_uid"])
+        for link in registry["record_links"]
+        if link["link_status"] == "same"
+    }
+
+
+def authorized_same_relations(
+    base_registry,
+    review_packet,
+    reviewed_decisions,
+):
+    base = validate_registry(base_registry)
+    validate_review_packet(review_packet)
+    reviewed = validate_reviewed_decisions(reviewed_decisions)
+    if reviewed["review_packet_sha256"] != review_packet[
+        "review_packet_sha256"
+    ]:
+        raise IdentityCoverageError("REVIEW_AUTHORITY_MISMATCH")
+    authorized = _same_relation_set(base)
+    for decision in reviewed["decisions"]:
+        if (
+            decision["human_decision"] == "APPROVE"
+            and decision["proposed_relation"] == "PROPOSED_SAME"
+        ):
+            if decision["proposal_type"] == "EXISTING_IDENTITY_CANDIDATE":
+                player_uid = validate_player_uid(
+                    decision["candidate_player_uid"],
+                )
+            elif decision["proposal_type"] == "NEW_IDENTITY_CANDIDATE":
+                player_uid = validate_player_uid(
+                    decision["approved_player_uid"],
+                )
+            else:
+                raise IdentityCoverageError(
+                    "PROPOSAL_RELATION_INCOMPATIBLE",
+                )
+            authorized.add((decision["record_key"], player_uid))
+    return authorized
+
+
+def reconcile_coverage(
+    master_rows,
+    coverage_ledger,
+    final_registry,
+    *,
+    base_registry=None,
+    review_packet=None,
+    reviewed_decisions=None,
+):
     rows = _validated_rows(master_rows)
     ledger = validate_coverage_ledger(coverage_ledger)
     registry = validate_registry(final_registry)
+    if (
+        base_registry is None
+        or review_packet is None
+        or reviewed_decisions is None
+    ):
+        raise IdentityCoverageError("COVERAGE_AUTHORITY_CONTEXT_REQUIRED")
+    authorized_same = authorized_same_relations(
+        base_registry,
+        review_packet,
+        reviewed_decisions,
+    )
+    final_same = _same_relation_set(registry)
+    false_merge_count = len(final_same - authorized_same)
     master_keys = {row["record_key"] for row in rows}
     ledger_keys = {entry["record_key"] for entry in ledger["entries"]}
     missing = sorted(master_keys - ledger_keys)
@@ -1012,6 +1259,7 @@ def reconcile_coverage(master_rows, coverage_ledger, final_registry):
         and duplicate_count == 0
         and silent_drop_count == 0
         and review_required_count == 0
+        and false_merge_count == 0
     )
     full_identity_resolution_complete = (
         len(master_keys) == len(ledger_keys)
@@ -1028,7 +1276,7 @@ def reconcile_coverage(master_rows, coverage_ledger, final_registry):
         "unknown_record_count": len(unknown),
         "duplicate_disposition_count": duplicate_count,
         "silent_drop_count": silent_drop_count,
-        "false_merge_count": 0,
+        "false_merge_count": false_merge_count,
         "review_required_count": review_required_count,
         "resolved_same_count": counts["RESOLVED_SAME"],
         "unresolved_candidates_count": counts["UNRESOLVED_CANDIDATES"],
@@ -1077,27 +1325,27 @@ def build_coverage_certificate(
         "master_authority_mode": master_authority_mode,
         "MASTER_rows": master_rows,
         "MASTER_unique_record_keys": master_unique_record_keys,
-        "base_registry_sha256": _required_sha256_or_null(
+        "base_registry_sha256": _required_sha256(
             base_registry_sha256,
             "BASE_REGISTRY_SHA256",
         ),
-        "final_registry_sha256": _required_sha256_or_null(
+        "final_registry_sha256": _required_sha256(
             final_registry_sha256,
             "FINAL_REGISTRY_SHA256",
         ),
-        "review_packet_sha256": _required_sha256_or_null(
+        "review_packet_sha256": _required_sha256(
             review_packet_sha256,
             "REVIEW_PACKET_SHA256",
         ),
-        "reviewed_decisions_sha256": _required_sha256_or_null(
+        "reviewed_decisions_sha256": _required_sha256(
             reviewed_decisions_sha256,
             "REVIEWED_DECISIONS_SHA256",
         ),
-        "candidate_registry_manifest_sha256": _required_sha256_or_null(
+        "candidate_registry_manifest_sha256": _required_sha256(
             candidate_registry_manifest_sha256,
             "CANDIDATE_REGISTRY_MANIFEST_SHA256",
         ),
-        "coverage_ledger_sha256": _required_sha256_or_null(
+        "coverage_ledger_sha256": _required_sha256(
             coverage_ledger_sha256,
             "COVERAGE_LEDGER_SHA256",
         ),
@@ -1122,6 +1370,75 @@ def build_coverage_certificate(
         "full_identity_resolution_complete"
     ]
     return _add_hash(core, "coverage_certificate_sha256")
+
+
+def certify_coverage(
+    *,
+    master_rows,
+    master_sha256,
+    master_authority_mode,
+    base_registry,
+    final_registry,
+    review_packet,
+    reviewed_decisions,
+    candidate_registry_manifest,
+    coverage_ledger,
+):
+    rows = _validated_rows(master_rows)
+    base = validate_registry(base_registry)
+    final = validate_registry(final_registry)
+    packet = validate_review_packet(review_packet)
+    reviewed = validate_reviewed_decisions(reviewed_decisions)
+    manifest = validate_candidate_registry_manifest(
+        candidate_registry_manifest,
+    )
+    ledger = validate_coverage_ledger(coverage_ledger)
+    if reviewed["review_packet_sha256"] != packet["review_packet_sha256"]:
+        raise IdentityCoverageError("REVIEW_AUTHORITY_MISMATCH")
+    if manifest["base_registry_sha256"] != base["registry_sha256"]:
+        raise IdentityCoverageError("MANIFEST_BASE_REGISTRY_MISMATCH")
+    if manifest["candidate_registry_sha256"] != final["registry_sha256"]:
+        raise IdentityCoverageError("MANIFEST_CANDIDATE_REGISTRY_MISMATCH")
+    if manifest["review_packet_sha256"] != packet["review_packet_sha256"]:
+        raise IdentityCoverageError("MANIFEST_REVIEW_PACKET_MISMATCH")
+    if manifest["reviewed_decisions_sha256"] != reviewed[
+        "reviewed_decisions_sha256"
+    ]:
+        raise IdentityCoverageError("MANIFEST_REVIEWED_DECISIONS_MISMATCH")
+    if manifest["MASTER_sha256"] != master_sha256:
+        raise IdentityCoverageError("MANIFEST_MASTER_SHA_MISMATCH")
+    if manifest["master_authority_mode"] != master_authority_mode:
+        raise IdentityCoverageError("MANIFEST_MASTER_MODE_MISMATCH")
+    if manifest["MASTER_rows"] != len(rows):
+        raise IdentityCoverageError("MANIFEST_MASTER_ROWS_MISMATCH")
+    unique_keys = len({row["record_key"] for row in rows})
+    if manifest["MASTER_unique_record_keys"] != unique_keys:
+        raise IdentityCoverageError(
+            "MANIFEST_MASTER_UNIQUE_RECORD_KEYS_MISMATCH",
+        )
+    reconciliation = reconcile_coverage(
+        rows,
+        ledger,
+        final,
+        base_registry=base,
+        review_packet=packet,
+        reviewed_decisions=reviewed,
+    )
+    return build_coverage_certificate(
+        master_sha256=master_sha256,
+        master_authority_mode=master_authority_mode,
+        master_rows=len(rows),
+        master_unique_record_keys=unique_keys,
+        base_registry_sha256=base["registry_sha256"],
+        final_registry_sha256=final["registry_sha256"],
+        review_packet_sha256=packet["review_packet_sha256"],
+        reviewed_decisions_sha256=reviewed["reviewed_decisions_sha256"],
+        candidate_registry_manifest_sha256=manifest[
+            "candidate_registry_manifest_sha256"
+        ],
+        coverage_ledger_sha256=ledger["coverage_ledger_sha256"],
+        reconciliation=reconciliation,
+    )
 
 
 def coverage_inventory(master_rows, identity_registry):
@@ -1158,9 +1475,24 @@ def review_apply(master_rows, base_registry, packet, reviewed_decisions):
     )
 
 
-def coverage_reconcile(master_rows, ledger, final_registry):
-    return reconcile_coverage(master_rows, ledger, final_registry)
+def coverage_reconcile(
+    master_rows,
+    ledger,
+    final_registry,
+    *,
+    base_registry,
+    review_packet,
+    reviewed_decisions,
+):
+    return reconcile_coverage(
+        master_rows,
+        ledger,
+        final_registry,
+        base_registry=base_registry,
+        review_packet=review_packet,
+        reviewed_decisions=reviewed_decisions,
+    )
 
 
 def coverage_certify(**kwargs):
-    return build_coverage_certificate(**kwargs)
+    return certify_coverage(**kwargs)

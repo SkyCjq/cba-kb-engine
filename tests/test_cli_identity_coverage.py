@@ -199,6 +199,12 @@ def test_cli_full_synthetic_private_workflow(tmp_path):
         "outputs/coverage_ledger.json",
         "--final-registry",
         "outputs/candidate_registry.json",
+        "--base-registry",
+        "data/player_identity/registry.json",
+        "--review-packet",
+        "outputs/review_packet.json",
+        "--reviewed-decisions",
+        "outputs/reviewed_decisions.json",
         "--output",
         "outputs/reconciliation.json",
     )
@@ -229,12 +235,57 @@ def test_cli_full_synthetic_private_workflow(tmp_path):
     certificate = json.loads(
         (instance / "outputs/certificate.json").read_text(encoding="utf-8")
     )
+    packet = json.loads(
+        (instance / "outputs/review_packet.json").read_text(encoding="utf-8")
+    )
+    reviewed = json.loads(
+        (instance / "outputs/reviewed_decisions.json").read_text(
+            encoding="utf-8",
+        )
+    )
+    candidate = json.loads(
+        (instance / "outputs/candidate_registry.json").read_text(
+            encoding="utf-8",
+        )
+    )
+    manifest = json.loads(
+        (instance / "outputs/candidate_registry_manifest.json").read_text(
+            encoding="utf-8",
+        )
+    )
+    ledger = json.loads(
+        (instance / "outputs/coverage_ledger.json").read_text(
+            encoding="utf-8",
+        )
+    )
+    assert manifest["base_registry_sha256"] == json.loads(
+        (instance / "data/player_identity/registry.json").read_text(
+            encoding="utf-8",
+        )
+    )["registry_sha256"]
+    assert manifest["candidate_registry_sha256"] == candidate[
+        "registry_sha256"
+    ]
+    assert manifest["review_packet_sha256"] == packet[
+        "review_packet_sha256"
+    ]
+    assert manifest["reviewed_decisions_sha256"] == reviewed[
+        "reviewed_decisions_sha256"
+    ]
     assert certificate["full_record_coverage_complete"] is True
     assert certificate["full_identity_resolution_complete"] is False
-    assert certificate["review_packet_sha256"]
-    assert certificate["reviewed_decisions_sha256"]
-    assert certificate["candidate_registry_manifest_sha256"]
-    assert certificate["coverage_ledger_sha256"]
+    assert certificate["review_packet_sha256"] == packet[
+        "review_packet_sha256"
+    ]
+    assert certificate["reviewed_decisions_sha256"] == reviewed[
+        "reviewed_decisions_sha256"
+    ]
+    assert certificate["candidate_registry_manifest_sha256"] == manifest[
+        "candidate_registry_manifest_sha256"
+    ]
+    assert certificate["coverage_ledger_sha256"] == ledger[
+        "coverage_ledger_sha256"
+    ]
     assert (
         instance / "data/player_identity/registry.json"
     ).read_bytes() == base_registry_before

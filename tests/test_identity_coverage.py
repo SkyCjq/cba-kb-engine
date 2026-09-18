@@ -13,6 +13,7 @@ from cba_kb.identity_coverage import (
     build_coverage_certificate,
     build_coverage_inventory,
     build_coverage_ledger,
+    certify_coverage,
     generate_candidate_proposals,
     normalize_semantic_field,
     prepare_review_packet,
@@ -241,6 +242,9 @@ def test_reject_does_not_infer_opposite_and_incomplete_record_blocks_completion(
         [row("r4", "Synthetic Gamma")],
         ledger,
         candidate,
+        base_registry=base_registry(),
+        review_packet=packet,
+        reviewed_decisions=reviewed,
     )
     assert report["full_record_coverage_complete"] is False
 
@@ -451,7 +455,14 @@ def test_candidate_manifest_and_certificate_provenance_and_full_resolution():
     assert manifest["master_authority_mode"] == (
         "ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA"
     )
-    reconciliation = reconcile_coverage(rows, ledger, candidate)
+    reconciliation = reconcile_coverage(
+        rows,
+        ledger,
+        candidate,
+        base_registry=base_registry(),
+        review_packet=packet,
+        reviewed_decisions=reviewed,
+    )
     certificate = build_coverage_certificate(
         master_sha256=None,
         master_authority_mode=(
@@ -483,15 +494,19 @@ def test_candidate_manifest_and_certificate_provenance_and_full_resolution():
     assert "review_manifest_sha256" not in certificate
 
 
-def rehash_ledger(value):
+def rehash(value, field):
     core = {
         key: item for key, item in value.items()
-        if key != "coverage_ledger_sha256"
+        if key != field
     }
-    value["coverage_ledger_sha256"] = hashlib.sha256(
+    value[field] = hashlib.sha256(
         canonical_bytes(core)
     ).hexdigest()
     return value
+
+
+def rehash_ledger(value):
+    return rehash(value, "coverage_ledger_sha256")
 
 
 def test_reconciliation_reports_missing_unknown_and_duplicate_fail_closed():
@@ -505,7 +520,14 @@ def test_reconciliation_reports_missing_unknown_and_duplicate_fail_closed():
         **ledger,
         "entries": [],
     })
-    report = reconcile_coverage(rows, missing, registry)
+    report = reconcile_coverage(
+        rows,
+        missing,
+        registry,
+        base_registry=registry,
+        review_packet=packet,
+        reviewed_decisions=reviewed,
+    )
     assert report["missing_record_count"] == 1
     assert report["full_record_coverage_complete"] is False
 
@@ -514,7 +536,14 @@ def test_reconciliation_reports_missing_unknown_and_duplicate_fail_closed():
         "record_key": "r-unknown",
     }
     unknown = rehash_ledger({**ledger, "entries": [unknown_entry]})
-    report = reconcile_coverage(rows, unknown, registry)
+    report = reconcile_coverage(
+        rows,
+        unknown,
+        registry,
+        base_registry=registry,
+        review_packet=packet,
+        reviewed_decisions=reviewed,
+    )
     assert report["unknown_record_count"] == 1
     assert report["full_record_coverage_complete"] is False
 
@@ -524,7 +553,14 @@ def test_reconciliation_reports_missing_unknown_and_duplicate_fail_closed():
     }
     duplicate = rehash_ledger(duplicate)
     with pytest.raises(IdentityCoverageError, match="DUPLICATE_RECORD"):
-        reconcile_coverage(rows, duplicate, registry)
+        reconcile_coverage(
+            rows,
+            duplicate,
+            registry,
+            base_registry=registry,
+            review_packet=packet,
+            reviewed_decisions=reviewed,
+        )
 
 
 def test_full_identity_resolution_true_only_when_all_records_are_same():
@@ -533,7 +569,14 @@ def test_full_identity_resolution_true_only_when_all_records_are_same():
     packet = prepare_review_packet([])
     reviewed = reviewed_for(packet)
     ledger = build_coverage_ledger(rows, registry, packet, reviewed)
-    report = reconcile_coverage(rows, ledger, registry)
+    report = reconcile_coverage(
+        rows,
+        ledger,
+        registry,
+        base_registry=registry,
+        review_packet=packet,
+        reviewed_decisions=reviewed,
+    )
     assert report["full_record_coverage_complete"] is True
     assert report["full_identity_resolution_complete"] is True
 
@@ -551,6 +594,408 @@ def test_master_sha_sentinel_and_mode_mismatch_fail_closed():
             reviewed_decisions_sha256="d" * 64,
             created_at="2026-09-17T00:00:00Z",
         )
+
+
+def test_non_master_hashes_are_required():
+    with pytest.raises(IdentityCoverageError, match="BASE_REGISTRY_SHA256_REQUIRED"):
+        build_candidate_registry_manifest(
+            base_registry_sha256=None,
+            candidate_registry_sha256="b" * 64,
+            master_sha256=None,
+            master_authority_mode=(
+                "ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA"
+            ),
+            master_rows=1,
+            master_unique_record_keys=1,
+            review_packet_sha256="c" * 64,
+            reviewed_decisions_sha256="d" * 64,
+            created_at="2026-09-17T00:00:00Z",
+        )
+
+
+def _completed_authority():
+    rows = [row("r4", "Synthetic Gamma")]
+    base = base_registry()
+    packet = prepare_review_packet(
+        generate_candidate_proposals(rows, base)
+    )
+    reviewed = reviewed_for(packet)
+    candidate, _ = apply_reviewed_decisions(
+        rows,
+        base,
+        packet,
+        reviewed,
+    )
+    ledger = build_coverage_ledger(
+        rows,
+        candidate,
+        packet,
+        reviewed,
+    )
+    manifest = build_candidate_registry_manifest(
+        base_registry_sha256=base["registry_sha256"],
+        candidate_registry_sha256=candidate["registry_sha256"],
+        master_sha256=None,
+        master_authority_mode=(
+            "ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA"
+        ),
+        master_rows=1,
+        master_unique_record_keys=1,
+        review_packet_sha256=packet["review_packet_sha256"],
+        reviewed_decisions_sha256=reviewed["reviewed_decisions_sha256"],
+        created_at="2026-09-17T00:00:00Z",
+    )
+    return rows, base, packet, reviewed, candidate, manifest, ledger
+
+
+def test_certification_rejects_rehashed_provenance_mismatches():
+    rows, base, packet, reviewed, candidate, manifest, ledger = (
+        _completed_authority()
+    )
+    tampered_manifest = {
+        **manifest,
+        "candidate_registry_sha256": "f" * 64,
+    }
+    tampered_manifest = rehash(
+        tampered_manifest,
+        "candidate_registry_manifest_sha256",
+    )
+    with pytest.raises(
+        IdentityCoverageError,
+        match="MANIFEST_CANDIDATE_REGISTRY_MISMATCH",
+    ):
+        certify_coverage(
+            master_rows=rows,
+            master_sha256=None,
+            master_authority_mode=(
+                "ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA"
+            ),
+            base_registry=base,
+            final_registry=candidate,
+            review_packet=packet,
+            reviewed_decisions=reviewed,
+            candidate_registry_manifest=tampered_manifest,
+            coverage_ledger=ledger,
+        )
+
+    packet_mismatch = {**manifest, "review_packet_sha256": "e" * 64}
+    packet_mismatch = rehash(
+        packet_mismatch,
+        "candidate_registry_manifest_sha256",
+    )
+    with pytest.raises(
+        IdentityCoverageError,
+        match="MANIFEST_REVIEW_PACKET_MISMATCH",
+    ):
+        certify_coverage(
+            master_rows=rows,
+            master_sha256=None,
+            master_authority_mode=(
+                "ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA"
+            ),
+            base_registry=base,
+            final_registry=candidate,
+            review_packet=packet,
+            reviewed_decisions=reviewed,
+            candidate_registry_manifest=packet_mismatch,
+            coverage_ledger=ledger,
+        )
+
+    decisions_mismatch = {**manifest, "reviewed_decisions_sha256": "d" * 64}
+    decisions_mismatch = rehash(
+        decisions_mismatch,
+        "candidate_registry_manifest_sha256",
+    )
+    with pytest.raises(
+        IdentityCoverageError,
+        match="MANIFEST_REVIEWED_DECISIONS_MISMATCH",
+    ):
+        certify_coverage(
+            master_rows=rows,
+            master_sha256=None,
+            master_authority_mode=(
+                "ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA"
+            ),
+            base_registry=base,
+            final_registry=candidate,
+            review_packet=packet,
+            reviewed_decisions=reviewed,
+            candidate_registry_manifest=decisions_mismatch,
+            coverage_ledger=ledger,
+        )
+
+    changed_final = new_registry(
+        [player(UID_A, "Synthetic Alpha")],
+    )
+    with pytest.raises(
+        IdentityCoverageError,
+        match="MANIFEST_CANDIDATE_REGISTRY_MISMATCH",
+    ):
+        certify_coverage(
+            master_rows=rows,
+            master_sha256=None,
+            master_authority_mode=(
+                "ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA"
+            ),
+            base_registry=base,
+            final_registry=changed_final,
+            review_packet=packet,
+            reviewed_decisions=reviewed,
+            candidate_registry_manifest=manifest,
+            coverage_ledger=ledger,
+        )
+
+
+def test_unauthorized_final_same_relation_derives_false_merge_and_fails_complete():
+    rows = [row("r4", "Synthetic Gamma")]
+    base = base_registry()
+    packet = prepare_review_packet([])
+    reviewed = reviewed_for(packet)
+    unauthorized = new_registry(
+        [player(UID_A, "Synthetic Alpha")],
+        record_links=[link("r4", UID_A, "same")],
+    )
+    ledger = build_coverage_ledger(
+        rows,
+        unauthorized,
+        packet,
+        reviewed,
+    )
+    report = reconcile_coverage(
+        rows,
+        ledger,
+        unauthorized,
+        base_registry=base,
+        review_packet=packet,
+        reviewed_decisions=reviewed,
+    )
+    assert report["false_merge_count"] == 1
+    assert report["full_record_coverage_complete"] is False
+
+
+def test_new_identity_and_source_exception_evidence_are_required():
+    rows = [row("r4", "Synthetic Gamma")]
+    packet = prepare_review_packet(
+        generate_candidate_proposals(
+            rows,
+            base_registry(),
+            candidate_hints={
+                "r4": {
+                    "proposal_type": "NEW_IDENTITY_CANDIDATE",
+                    "candidate_group_id": "group-gamma",
+                    "proposed_relation": "PROPOSED_SAME",
+                    "evidence_refs": [],
+                }
+            },
+        )
+    )
+    review_id = packet["reviews"][0]["review_id"]
+    with pytest.raises(
+        IdentityCoverageError,
+        match="NEW_IDENTITY_EVIDENCE_REQUIRED",
+    ):
+        reviewed_for(packet, {
+            review_id: {
+                "human_decision": "APPROVE",
+                "human_note": "allocated independently",
+                "approved_player_uid": UID_NEW,
+                "approved_canonical_name": "Synthetic Gamma",
+            },
+        })
+
+    source_packet = prepare_review_packet(
+        generate_candidate_proposals(
+            rows,
+            base_registry(),
+            candidate_hints={
+                "r4": {
+                    "proposal_type": "SOURCE_EXCEPTION_CANDIDATE",
+                    "evidence_refs": [],
+                }
+            },
+        )
+    )
+    with pytest.raises(
+        IdentityCoverageError,
+        match="SOURCE_EXCEPTION_EVIDENCE_REQUIRED",
+    ):
+        reviewed_for(source_packet)
+
+
+def test_new_identity_cannot_reuse_base_uid_or_share_uid_across_groups():
+    rows = [row("r4", "Synthetic Gamma")]
+    packet = prepare_review_packet(
+        generate_candidate_proposals(
+            rows,
+            base_registry(),
+            candidate_hints={
+                "r4": {
+                    "proposal_type": "NEW_IDENTITY_CANDIDATE",
+                    "candidate_group_id": "group-gamma",
+                    "proposed_relation": "PROPOSED_SAME",
+                    "evidence_refs": ["identity-evidence"],
+                }
+            },
+        )
+    )
+    review_id = packet["reviews"][0]["review_id"]
+    reviewed = reviewed_for(packet, {
+        review_id: {
+            "human_decision": "APPROVE",
+            "human_note": "allocated independently",
+            "approved_player_uid": UID_A,
+            "approved_canonical_name": "Synthetic Gamma",
+        },
+    })
+    with pytest.raises(
+        IdentityCoverageError,
+        match="NEW_IDENTITY_UID_ALREADY_EXISTS",
+    ):
+        apply_reviewed_decisions(
+            rows,
+            base_registry(),
+            packet,
+            reviewed,
+        )
+
+    two_rows = [row("r4", "Synthetic Gamma"), row("r5", "Synthetic Gamma")]
+    hints = {
+        key: {
+            "proposal_type": "NEW_IDENTITY_CANDIDATE",
+            "candidate_group_id": f"group-{key}",
+            "proposed_relation": "PROPOSED_SAME",
+            "evidence_refs": ["identity-evidence"],
+        }
+        for key in ("r4", "r5")
+    }
+    two_packet = prepare_review_packet(
+        generate_candidate_proposals(
+            two_rows,
+            base_registry(),
+            candidate_hints=hints,
+        )
+    )
+    overrides = {
+        item["review_id"]: {
+            "human_decision": "APPROVE",
+            "human_note": "allocated independently",
+            "approved_player_uid": UID_NEW,
+            "approved_canonical_name": "Synthetic Gamma",
+        }
+        for item in two_packet["reviews"]
+    }
+    two_reviewed = reviewed_for(two_packet, overrides)
+    with pytest.raises(
+        IdentityCoverageError,
+        match="NEW_IDENTITY_UID_GROUP_CONFLICT",
+    ):
+        apply_reviewed_decisions(
+            two_rows,
+            base_registry(),
+            two_packet,
+            two_reviewed,
+        )
+
+
+def test_not_same_pair_is_not_reproposed_and_new_group_counts_once():
+    registry = base_registry([
+        link("r2", UID_A, "not_same"),
+    ])
+    proposals = generate_candidate_proposals(
+        [row("r2", "Synthetic Alpha")],
+        registry,
+    )
+    assert proposals[0]["proposal_type"] == "NO_SAFE_CANDIDATE"
+
+    rows = [row("r4", "Synthetic Gamma"), row("r5", "Synthetic Gamma")]
+    hints = {
+        key: {
+            "proposal_type": "NEW_IDENTITY_CANDIDATE",
+            "candidate_group_id": "group-gamma",
+            "proposed_relation": "KEEP_UNDECIDED",
+            "evidence_refs": ["identity-evidence"],
+        }
+        for key in ("r4", "r5")
+    }
+    packet = prepare_review_packet(
+        generate_candidate_proposals(
+            rows,
+            base_registry(),
+            candidate_hints=hints,
+        )
+    )
+    reviewed = reviewed_for(packet)
+    candidate, _ = apply_reviewed_decisions(
+        rows,
+        base_registry(),
+        packet,
+        reviewed,
+    )
+    ledger = build_coverage_ledger(
+        rows,
+        candidate,
+        packet,
+        reviewed,
+    )
+    assert all(entry["candidate_count"] == 1 for entry in ledger["entries"])
+
+
+def test_rehashed_reviewed_decision_semantic_tamper_still_fails():
+    packet = prepare_review_packet(
+        generate_candidate_proposals(
+            [row("r4", "Synthetic Gamma")],
+            base_registry(),
+            candidate_hints={
+                "r4": {
+                    "proposal_type": "SOURCE_EXCEPTION_CANDIDATE",
+                    "evidence_refs": ["source-evidence"],
+                }
+            },
+        )
+    )
+    reviewed = reviewed_for(packet)
+    tampered = {
+        **reviewed,
+        "decisions": [
+            {
+                **reviewed["decisions"][0],
+                "source_exception_reason": None,
+            },
+        ],
+    }
+    tampered = rehash(tampered, "reviewed_decisions_sha256")
+    with pytest.raises(
+        IdentityCoverageError,
+        match="SOURCE_EXCEPTION_REASON_REQUIRED",
+    ):
+        apply_reviewed_decisions(
+            [row("r4", "Synthetic Gamma")],
+            base_registry(),
+            packet,
+            tampered,
+        )
+
+
+def test_manifest_created_at_is_deterministic_when_explicit():
+    kwargs = {
+        "base_registry_sha256": "a" * 64,
+        "candidate_registry_sha256": "b" * 64,
+        "master_sha256": None,
+        "master_authority_mode": (
+            "ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA"
+        ),
+        "master_rows": 1,
+        "master_unique_record_keys": 1,
+        "review_packet_sha256": "c" * 64,
+        "reviewed_decisions_sha256": "d" * 64,
+        "created_at": "2026-09-17T00:00:00Z",
+    }
+    first = build_candidate_registry_manifest(**kwargs)
+    second = build_candidate_registry_manifest(**kwargs)
+    assert first == second
+    assert first["candidate_registry_manifest_sha256"] == second[
+        "candidate_registry_manifest_sha256"
+    ]
     with pytest.raises(IdentityCoverageError, match="MODE_MISMATCH"):
         build_candidate_registry_manifest(
             base_registry_sha256="a" * 64,
