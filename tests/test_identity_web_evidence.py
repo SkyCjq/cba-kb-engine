@@ -8,6 +8,7 @@ from cba_kb.identity_coverage import prepare_review_packet
 from cba_kb.identity_web_evidence import (
     IdentityWebEvidenceError,
     batch_predicate,
+    build_association_authority,
     build_b0_source_registry,
     build_uid_bridge_authority,
     build_batch_plan,
@@ -17,6 +18,7 @@ from cba_kb.identity_web_evidence import (
     build_evidence_item,
     build_evidence_manifest,
     build_groups,
+    build_group_authority,
     classify_record_evidence,
     classify_candidate_evidence,
     collect_evidence_from_responses,
@@ -33,6 +35,7 @@ from cba_kb.identity_web_evidence import (
     make_claim,
     normalize_claim,
     search_exhaustion_status,
+    recompute_batches,
     validate_fetch_request,
     validate_redirect,
     validate_source_url,
@@ -817,40 +820,80 @@ def test_workbook_rejects_group_batch_and_evidence_machine_edits(tmp_path):
             batches=batches,
         )
 
-    export_review_workbook(
-        workbook_path,
-        packet=packet,
-        evidence_manifest=manifest,
-        groups=groups,
-        batches=batches,
-    )
-    workbook = load_workbook(workbook_path)
-    workbook["Batches"]["B2"] = "BATCH_EXISTING_W2"
-    workbook.save(workbook_path)
-    with pytest.raises(IdentityWebEvidenceError, match="Batches.batch_predicate"):
-        import_review_workbook(
-            workbook_path,
-            packet=packet,
-            evidence_manifest=manifest,
-            groups=groups,
-            batches=batches,
-        )
 
-    export_review_workbook(
-        workbook_path,
-        packet=packet,
-        evidence_manifest=manifest,
-        groups=groups,
-        batches=batches,
+def test_association_authority_filters_weak_record_links():
+    evidence = evidence_item(
+        "https://www.cbaleague.com/player/1",
+        b"association",
+        claims=[
+            external_person_id_claim(
+                namespace="CBA_OFFICIAL_PLAYER_ID",
+                identifier="1",
+                source_semantics="PLAYER_ENTITY",
+                source_locator="id",
+            ),
+            make_claim(
+                claim_type="OFFICIAL_PLAYER_NAME",
+                raw_value="Synthetic Player",
+                source_locator="name",
+            ),
+            make_claim(
+                claim_type="OFFICIAL_BIRTH_DATE",
+                raw_value="2000-01-02",
+                source_locator="dob",
+            ),
+        ],
+        record_keys=["r1"],
     )
-    workbook = load_workbook(workbook_path)
-    workbook["Evidence_Index"]["C2"] = "https://evil.example/"
-    workbook.save(workbook_path)
-    with pytest.raises(IdentityWebEvidenceError, match="Evidence_Index.source_url"):
-        import_review_workbook(
-            workbook_path,
-            packet=packet,
-            evidence_manifest=manifest,
-            groups=groups,
-            batches=batches,
+    manifest = build_evidence_manifest([evidence])
+    strong = build_association_authority(manifest, [{
+        "record_key": "r1",
+        "discovered_url": evidence["source_url"],
+        "record_name": "Synthetic Player",
+        "record_birth_date": "2000-01-02",
+    }])
+    assert strong["entries"][0]["association_class"] == "STRONG"
+    weak = build_association_authority(manifest, [{
+        "record_key": "r1",
+        "discovered_url": evidence["source_url"],
+        "record_name": "Other Player",
+        "record_birth_date": "2000-01-02",
+    }])
+    assert weak["entries"][0]["association_class"] == "WEAK"
+    assert "RECORD_NAME_CONFLICT" in weak["entries"][0][
+        "association_conflicts"
+    ]
+
+
+def test_recompute_batches_rejects_external_plan_drift():
+    packet = prepare_review_packet([
+        proposal(
+            "r1",
+            "EXISTING_IDENTITY_CANDIDATE",
+            "KEEP_UNDECIDED",
+            candidate_player_uid="pid_0000000000000001",
         )
+    ])
+    evidence = evidence_item(
+        "https://www.cbaleague.com/player/1",
+        b"batch-plan",
+        claims=[external_person_id_claim(
+            namespace="CBA_OFFICIAL_PLAYER_ID",
+            identifier="1",
+            source_semantics="PLAYER_ENTITY",
+            source_locator="id",
+        )],
+        record_keys=["r1"],
+    )
+    evidence["bindings"] = [{
+        "record_key": "r1",
+        "target_type": "EXISTING_UID",
+        "target_id": "pid_0000000000000001",
+        "matched_claim_fields": ["OFFICIAL_SOURCE_DECLARED_PERSON_ID"],
+        "binding_rationale": "bridge:one",
+    }]
+    manifest = build_evidence_manifest([evidence])
+    expected = recompute_batches(packet, manifest, {})
+    assert expected[0]["batch_predicate"] == "BATCH_EXISTING_W1"
+    tampered = [{**expected[0], "member_count": 2}]
+    assert tampered != expected

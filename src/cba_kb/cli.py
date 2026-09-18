@@ -211,6 +211,8 @@ def main():
     q.add_argument('--groups',type=Path,required=True)
     q.add_argument('--batches',type=Path,required=True)
     q.add_argument('--workbook',type=Path,required=True)
+    q.add_argument('--group-authority',type=Path)
+    q.add_argument('--search-statuses',type=Path)
     q.add_argument('--output-csv',type=Path,required=True)
     q=sub.add_parser('mention-validate')
     q.add_argument('--input',type=Path,required=True)
@@ -870,6 +872,18 @@ def main():
                     evidence_manifest=manifest,
                     groups=groups,
                     batches=batches,
+                    group_authority=(
+                        json.loads(
+                            private_path(a.group_authority).read_text()
+                        )
+                        if a.group_authority else None
+                    ),
+                    search_statuses=(
+                        json.loads(
+                            private_path(a.search_statuses).read_text()
+                        )
+                        if a.search_statuses else None
+                    ),
                 )
                 atomic(private_path(a.output_csv),output)
                 result={

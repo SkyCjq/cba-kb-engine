@@ -704,11 +704,25 @@ def build_b0_source_registry(entries):
         }
         if set(entry) != required:
             raise IdentityWebEvidenceError("B0_REGISTRY_ENTRY_INVALID")
+        for field in (
+            "entry_id",
+            "canonical_club_identity",
+            "approved_domain",
+            "human_approval_ref",
+            "approved_at",
+        ):
+            _required_text(entry[field], f"B0_{field.upper()}")
         normalized.append({
             **entry,
             "approved_domain": entry["approved_domain"].lower(),
         })
     normalized.sort(key=lambda item: item["entry_id"])
+    entry_ids = [item["entry_id"] for item in normalized]
+    domains = [item["approved_domain"] for item in normalized]
+    if len(entry_ids) != len(set(entry_ids)):
+        raise IdentityWebEvidenceError("B0_ENTRY_ID_DUPLICATE")
+    if len(domains) != len(set(domains)):
+        raise IdentityWebEvidenceError("B0_DOMAIN_DUPLICATE")
     core = {
         "schema_version": SCHEMA_VERSION,
         "entries": normalized,
@@ -1384,10 +1398,136 @@ def validate_association_contexts(value):
     return normalized
 
 
+def build_association_authority(evidence_manifest, association_contexts):
+    validate_evidence_manifest(evidence_manifest)
+    contexts = validate_association_contexts(association_contexts)
+    by_url = defaultdict(list)
+    for context in contexts:
+        by_url[context["discovered_url"]].append(context)
+    entries = []
+    for item in evidence_manifest["items"]:
+        official_names = {
+            claim["normalized_value"]
+            for claim in item["claims"]
+            if claim["claim_type"] == "OFFICIAL_PLAYER_NAME"
+        }
+        official_dobs = {
+            claim["normalized_value"]
+            for claim in item["claims"]
+            if claim["claim_type"] == "OFFICIAL_BIRTH_DATE"
+        }
+        warnings = []
+        if _SUSPICIOUS_TEXT.search(item["source_url"]) or any(
+            _SUSPICIOUS_TEXT.search(claim["raw_value"])
+            for claim in item["claims"]
+        ):
+            warnings.append("TEXT_OR_OCR_WARNING")
+        for context in by_url.get(item["source_url"], []):
+            private_name = normalize_claim(
+                "OFFICIAL_PLAYER_NAME",
+                context["record_name"],
+            )
+            name_match = bool(official_names) and private_name in official_names
+            dob_match = (
+                not context["record_birth_date"]
+                or not official_dobs
+                or context["record_birth_date"] in official_dobs
+            )
+            conflicts = []
+            if official_names and not name_match:
+                conflicts.append("RECORD_NAME_CONFLICT")
+            if (
+                context["record_birth_date"]
+                and official_dobs
+                and context["record_birth_date"] not in official_dobs
+            ):
+                conflicts.append("RECORD_DOB_CONFLICT")
+            association_class = (
+                "STRONG"
+                if (
+                    name_match
+                    and dob_match
+                    and not conflicts
+                    and not warnings
+                )
+                else "WEAK"
+            )
+            core = {
+                "record_key": context["record_key"],
+                "evidence_id": item["evidence_id"],
+                "association_class": association_class,
+                "matched_private_fields": (
+                    ["record_name"] if name_match else []
+                ) + (
+                    ["record_birth_date"] if dob_match and official_dobs else []
+                ),
+                "matched_official_claims": sorted({
+                    claim["claim_type"]
+                    for claim in item["claims"]
+                    if claim["claim_type"] in {
+                        "OFFICIAL_PLAYER_NAME",
+                        "OFFICIAL_BIRTH_DATE",
+                    }
+                }),
+                "association_warnings": sorted(set(warnings)),
+                "association_conflicts": sorted(set(conflicts)),
+            }
+            entries.append({
+                **core,
+                "association_sha256": hashlib.sha256(
+                    canonical_bytes(core),
+                ).hexdigest(),
+            })
+    authority_core = {
+        "schema_version": SCHEMA_VERSION,
+        "entries": sorted(
+            entries,
+            key=lambda item: (
+                item["record_key"],
+                item["evidence_id"],
+                item["association_sha256"],
+            ),
+        ),
+    }
+    return {
+        **authority_core,
+        "association_authority_sha256": hashlib.sha256(
+            canonical_bytes(authority_core),
+        ).hexdigest(),
+    }
+
+
+def validate_association_authority(value):
+    if not isinstance(value, dict):
+        raise IdentityWebEvidenceError("ASSOCIATION_AUTHORITY_OBJECT_REQUIRED")
+    required = {"schema_version", "entries", "association_authority_sha256"}
+    if set(value) != required:
+        raise IdentityWebEvidenceError("ASSOCIATION_AUTHORITY_SCHEMA_INVALID")
+    core = {
+        key: value[key]
+        for key in value
+        if key != "association_authority_sha256"
+    }
+    if hashlib.sha256(canonical_bytes(core)).hexdigest() != value[
+        "association_authority_sha256"
+    ]:
+        raise IdentityWebEvidenceError("ASSOCIATION_AUTHORITY_HASH_MISMATCH")
+    for entry in value["entries"]:
+        expected = hashlib.sha256(canonical_bytes({
+            key: entry[key]
+            for key in entry
+            if key != "association_sha256"
+        })).hexdigest()
+        if entry["association_sha256"] != expected:
+            raise IdentityWebEvidenceError("ASSOCIATION_HASH_MISMATCH")
+    return value
+
+
 def derive_existing_uid_bindings(
     evidence_manifest,
     association_contexts,
     bridge_authority,
+    association_authority=None,
 ):
     validate_evidence_manifest(evidence_manifest)
     contexts = validate_association_contexts(association_contexts)
@@ -1399,6 +1539,18 @@ def derive_existing_uid_bindings(
         item["normalized_identifier"]: item
         for item in bridge["entries"]
     }
+    allowed_associations = None
+    if association_authority is not None:
+        authority = validate_association_authority(association_authority)
+        allowed_associations = {
+            (item["record_key"], item["evidence_id"])
+            for item in authority["entries"]
+            if (
+                item["association_class"] == "STRONG"
+                and not item["association_conflicts"]
+                and not item["association_warnings"]
+            )
+        }
     bindings = []
     for item in evidence_manifest["items"]:
         identifiers = _person_ids(item["claims"])
@@ -1408,6 +1560,12 @@ def derive_existing_uid_bindings(
         if bridge_entry is None:
             continue
         for context in by_url.get(item["source_url"], []):
+            if (
+                allowed_associations is not None
+                and (context["record_key"], item["evidence_id"])
+                not in allowed_associations
+            ):
+                continue
             record_name = normalize_claim(
                 "OFFICIAL_PLAYER_NAME",
                 context["record_name"],
@@ -1438,12 +1596,25 @@ def derive_new_identity_groups(
     *,
     evidence_manifest,
     association_contexts,
+    association_authority=None,
 ):
     validate_evidence_manifest(evidence_manifest)
     contexts = {
         item["record_key"]: item
         for item in validate_association_contexts(association_contexts)
     }
+    allowed_associations = None
+    if association_authority is not None:
+        authority = validate_association_authority(association_authority)
+        allowed_associations = {
+            (item["record_key"], item["evidence_id"])
+            for item in authority["entries"]
+            if (
+                item["association_class"] == "STRONG"
+                and not item["association_conflicts"]
+                and not item["association_warnings"]
+            )
+        }
     candidates_by_key = {
         item["record_key"]: item for item in candidates
         if item.get("proposal_type") == "NO_SAFE_CANDIDATE"
@@ -1459,6 +1630,12 @@ def derive_new_identity_groups(
                 if context["discovered_url"] != item["source_url"]:
                     continue
                 record_key = context["record_key"]
+                if (
+                    allowed_associations is not None
+                    and (record_key, item["evidence_id"])
+                    not in allowed_associations
+                ):
+                    continue
                 if record_key not in candidates_by_key:
                     continue
                 key_members[("W1", person_id)].add(record_key)
@@ -1490,6 +1667,12 @@ def derive_new_identity_groups(
                     if context["discovered_url"] != item["source_url"]:
                         continue
                     record_key = context["record_key"]
+                    if (
+                        allowed_associations is not None
+                        and (record_key, item["evidence_id"])
+                        not in allowed_associations
+                    ):
+                        continue
                     if record_key not in candidates_by_key:
                         continue
                     key = ("W2", next(iter(names)), next(iter(dates)))
@@ -1682,6 +1865,94 @@ def build_groups(packet, evidence_manifest):
         }
         for group_id, member_ids in sorted(grouped.items())
     ]
+
+
+def build_group_authority(
+    packet,
+    evidence_manifest,
+    *,
+    association_authority,
+):
+    validate_review_packet(packet)
+    validate_evidence_manifest(evidence_manifest)
+    validate_association_authority(association_authority)
+    groups = build_groups(packet, evidence_manifest)
+    core = {
+        "schema_version": SCHEMA_VERSION,
+        "review_packet_sha256": packet["review_packet_sha256"],
+        "web_evidence_manifest_sha256": evidence_manifest[
+            "web_evidence_manifest_sha256"
+        ],
+        "association_authority_sha256": association_authority[
+            "association_authority_sha256"
+        ],
+        "groups": groups,
+    }
+    return {
+        **core,
+        "group_authority_sha256": hashlib.sha256(
+            canonical_bytes(core),
+        ).hexdigest(),
+    }
+
+
+def validate_group_authority(value):
+    if not isinstance(value, dict):
+        raise IdentityWebEvidenceError("GROUP_AUTHORITY_OBJECT_REQUIRED")
+    required = {
+        "schema_version",
+        "review_packet_sha256",
+        "web_evidence_manifest_sha256",
+        "association_authority_sha256",
+        "groups",
+        "group_authority_sha256",
+    }
+    if set(value) != required:
+        raise IdentityWebEvidenceError("GROUP_AUTHORITY_SCHEMA_INVALID")
+    core = {
+        key: value[key]
+        for key in value
+        if key != "group_authority_sha256"
+    }
+    if hashlib.sha256(canonical_bytes(core)).hexdigest() != value[
+        "group_authority_sha256"
+    ]:
+        raise IdentityWebEvidenceError("GROUP_AUTHORITY_HASH_MISMATCH")
+    return value
+
+
+def recompute_groups(packet, evidence_manifest, group_authority):
+    validate_review_packet(packet)
+    validate_evidence_manifest(evidence_manifest)
+    authority = validate_group_authority(group_authority)
+    if authority["review_packet_sha256"] != packet[
+        "review_packet_sha256"
+    ]:
+        raise IdentityWebEvidenceError("GROUP_PLAN_PACKET_MISMATCH")
+    if authority["web_evidence_manifest_sha256"] != evidence_manifest[
+        "web_evidence_manifest_sha256"
+    ]:
+        raise IdentityWebEvidenceError("GROUP_PLAN_EVIDENCE_MISMATCH")
+    expected = build_groups(packet, evidence_manifest)
+    if expected != authority["groups"]:
+        raise IdentityWebEvidenceError("GROUP_PLAN_STALE")
+    return expected
+
+
+def recompute_batches(
+    packet,
+    evidence_manifest,
+    search_statuses,
+    *,
+    batch_size=200,
+):
+    expected = build_batch_plan(
+        packet,
+        evidence_manifest,
+        batch_size=batch_size,
+        search_statuses=search_statuses,
+    )
+    return expected["batches"]
 
 
 def plan_sha256(value):
@@ -2087,9 +2358,27 @@ def import_review_workbook(
     evidence_manifest,
     groups,
     batches,
+    group_authority=None,
+    search_statuses=None,
 ):
     validate_review_packet(packet)
     validate_evidence_manifest(evidence_manifest)
+    if group_authority is not None:
+        expected_groups = recompute_groups(
+            packet,
+            evidence_manifest,
+            group_authority,
+        )
+        if groups != expected_groups:
+            raise IdentityWebEvidenceError("GROUP_PLAN_MISMATCH")
+    if search_statuses is not None:
+        expected_batches = recompute_batches(
+            packet,
+            evidence_manifest,
+            search_statuses,
+        )
+        if batches != expected_batches:
+            raise IdentityWebEvidenceError("BATCH_PLAN_MISMATCH")
     _verify_workbook_tables(
         path,
         packet=packet,
