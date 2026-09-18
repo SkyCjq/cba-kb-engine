@@ -1202,7 +1202,23 @@ def classify_candidate_evidence(
         for claim in claims
         if claim["claim_type"] == "OFFICIAL_PLAYER_NAME"
     }
-    if names and birth_dates and len(evidence_ids) >= 2:
+    evidence_groups = []
+    for item in manifest["items"]:
+        bindings = [
+            binding for binding in item["bindings"]
+            if (
+                binding["record_key"] == record_key
+                and binding["target_type"] == target_type
+                and binding["target_id"] == target_id
+            )
+        ]
+        if bindings:
+            evidence_groups.append((
+                item["evidence_id"],
+                item["claims"],
+                item["source_url"],
+            ))
+    if names and birth_dates and _w2_multi_source(evidence_groups):
         return "W2_OFFICIAL_BIO_MULTI_SOURCE", []
     if names and any(
         claim["claim_type"] in {
@@ -1222,6 +1238,30 @@ def _person_ids(claims):
         for claim in claims
         if claim["claim_type"] == "OFFICIAL_SOURCE_DECLARED_PERSON_ID"
     }
+
+
+def _w2_additional_claims(claims):
+    return {
+        (claim["claim_type"], claim["normalized_value"])
+        for claim in claims
+        if claim["claim_type"] in {
+            "OFFICIAL_REGISTRATION_UNIT",
+            "OFFICIAL_SEASON",
+            "OFFICIAL_TEAM",
+            "OFFICIAL_JERSEY_NUMBER",
+            "OFFICIAL_TRANSACTION_OR_REGISTRATION_EVENT",
+        }
+    }
+
+
+def _w2_multi_source(evidence_groups):
+    if len({source_url for _, _, source_url in evidence_groups}) < 2:
+        return False
+    additional = [
+        _w2_additional_claims(claims)
+        for _, claims, _ in evidence_groups
+    ]
+    return bool(additional) and bool(set.intersection(*additional))
 
 
 def classify_record_evidence(record_key, manifest):
@@ -1245,7 +1285,12 @@ def classify_record_evidence(record_key, manifest):
         for claim in claims
         if claim["claim_type"] == "OFFICIAL_PLAYER_NAME"
     }
-    if names and birth_dates and len(evidence_ids) >= 2:
+    evidence_groups = [
+        (item["evidence_id"], item["claims"], item["source_url"])
+        for item in manifest["items"]
+        if record_key in item["record_keys"]
+    ]
+    if names and birth_dates and _w2_multi_source(evidence_groups):
         return "W2_OFFICIAL_BIO_MULTI_SOURCE", []
     if names and any(
         claim["claim_type"] in {
@@ -2297,6 +2342,8 @@ def expand_group_event(
     group_authority=None,
     association_authority=None,
 ):
+    if group_authority is None:
+        raise IdentityWebEvidenceError("GROUP_AUTHORITY_REQUIRED")
     validate_review_packet(packet)
     validate_evidence_manifest(evidence_manifest)
     _validate_authority_event_common(event, packet, evidence_manifest)
@@ -2356,6 +2403,8 @@ def expand_batch_event(
     *,
     search_statuses=None,
 ):
+    if search_statuses is None:
+        raise IdentityWebEvidenceError("SEARCH_AUTHORITY_REQUIRED")
     validate_review_packet(packet)
     validate_evidence_manifest(evidence_manifest)
     _validate_authority_event_common(event, packet, evidence_manifest)

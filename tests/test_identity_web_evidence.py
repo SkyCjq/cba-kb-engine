@@ -247,6 +247,11 @@ def test_evidence_classification_w1_w2_w3_w4_wx():
                     raw_value="2000-01-02",
                     source_locator="dob",
                 ),
+                make_claim(
+                    claim_type="OFFICIAL_TEAM",
+                    raw_value="Synthetic Club",
+                    source_locator="team",
+                ),
             ],
             record_keys=["r2"],
         ),
@@ -426,10 +431,9 @@ def test_group_ids_deterministic_and_group_event_exact_membership():
         "allocation_attestation": "allocated independently",
         "reviewed_at": "2026-09-18T00:00:00Z",
     }
-    expanded = expand_group_event(packet, manifest, groups, event)
-    assert len(expanded) == 2
-    assert all(item["approved_player_uid"] == "pid_0000000000000099" for item in expanded)
-    with pytest.raises(IdentityWebEvidenceError, match="MEMBERSHIP_MISMATCH"):
+    with pytest.raises(IdentityWebEvidenceError, match="GROUP_AUTHORITY_REQUIRED"):
+        expand_group_event(packet, manifest, groups, event)
+    with pytest.raises(IdentityWebEvidenceError, match="GROUP_AUTHORITY_REQUIRED"):
         expand_group_event(
             packet,
             manifest,
@@ -480,9 +484,8 @@ def test_batch_predicate_and_event_expansion():
         "human_note": "approved batch",
         "reviewed_at": "2026-09-18T00:00:00Z",
     }
-    expanded = expand_batch_event(packet, manifest, batches, event)
-    assert "authority_event_id=batch-event-1" in expanded[0]["human_note"]
-    assert expanded[0]["approved_player_uid"] is None
+    with pytest.raises(IdentityWebEvidenceError, match="SEARCH_AUTHORITY_REQUIRED"):
+        expand_batch_event(packet, manifest, batches, event)
 
 
 def test_batch_plan_partitions_predicates_before_chunking():
