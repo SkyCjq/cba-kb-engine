@@ -10,17 +10,20 @@ from cba_kb.identity_web_evidence import (
     batch_predicate,
     build_batch_plan,
     build_conflicts,
+    build_collector_search_manifest,
     build_discovery_record,
     build_evidence_item,
     build_evidence_manifest,
     build_groups,
     classify_record_evidence,
+    classify_candidate_evidence,
     collect_evidence_from_responses,
     deterministic_group_id,
     expand_batch_event,
     expand_group_event,
     export_review_workbook,
     external_person_id_claim,
+    fetch_official_resource,
     extract_html_claims,
     import_review_workbook,
     make_claim,
@@ -275,23 +278,47 @@ def test_evidence_classification_w1_w2_w3_w4_wx():
 
 
 def test_search_exhaustion_requires_complete_clean_collectors():
-    assert search_exhaustion_status(
-        collector_failures=0,
-        surviving_official_candidate=False,
+    complete = build_collector_search_manifest(
+        record_key="r1",
+        applicable_required_collectors=["A1"],
+        completed_collectors=["A1"],
+        failed_collectors=[],
+        attempted_official_urls=["https://www.cbaleague.com/player/1"],
+        collector_version="v1",
         text_warning=False,
         identity_conflict=False,
+        surviving_candidate_count=0,
+    )
+    assert search_exhaustion_status(
+        complete,
     ) == "OFFICIAL_SEARCH_EXHAUSTED_NO_SAFE_MATCH"
-    assert search_exhaustion_status(
-        collector_failures=1,
-        surviving_official_candidate=False,
+    no_collectors = build_collector_search_manifest(
+        record_key="r1",
+        applicable_required_collectors=[],
+        completed_collectors=[],
+        failed_collectors=[],
+        attempted_official_urls=[],
+        collector_version="v1",
         text_warning=False,
         identity_conflict=False,
-    ) != "OFFICIAL_SEARCH_EXHAUSTED_NO_SAFE_MATCH"
+        surviving_candidate_count=0,
+    )
     assert search_exhaustion_status(
-        collector_failures=0,
-        surviving_official_candidate=False,
-        text_warning=True,
+        no_collectors,
+    ) != "OFFICIAL_SEARCH_EXHAUSTED_NO_SAFE_MATCH"
+    failed = build_collector_search_manifest(
+        record_key="r1",
+        applicable_required_collectors=["A1"],
+        completed_collectors=[],
+        failed_collectors=["A1"],
+        attempted_official_urls=["https://www.cbaleague.com/player/1"],
+        collector_version="v1",
+        text_warning=False,
         identity_conflict=False,
+        surviving_candidate_count=0,
+    )
+    assert search_exhaustion_status(
+        failed,
     ) != "OFFICIAL_SEARCH_EXHAUSTED_NO_SAFE_MATCH"
 
 
@@ -398,8 +425,65 @@ def test_batch_predicate_and_event_expansion():
         "reviewed_at": "2026-09-18T00:00:00Z",
     }
     expanded = expand_batch_event(packet, manifest, batches, event)
-    assert expanded[0]["human_note"] == "approved batch"
+    assert "authority_event_id=batch-event-1" in expanded[0]["human_note"]
     assert expanded[0]["approved_player_uid"] is None
+
+
+def test_batch_plan_partitions_predicates_before_chunking():
+    packet = prepare_review_packet([
+        proposal(
+            "r1",
+            "EXISTING_IDENTITY_CANDIDATE",
+            "KEEP_UNDECIDED",
+            candidate_player_uid="pid_0000000000000001",
+        ),
+        proposal(
+            "r2",
+            "NO_SAFE_CANDIDATE",
+            "NO_SAFE_CANDIDATE",
+            machine_suggestion="NO_SAFE_CANDIDATE",
+        ),
+    ])
+    item = evidence_item(
+        "https://www.cbaleague.com/player/1",
+        b"batch-bound",
+        claims=[external_person_id_claim(
+            namespace="CBA_OFFICIAL_PLAYER_ID",
+            identifier="1",
+            source_semantics="PLAYER_ENTITY",
+            source_locator="id",
+        )],
+        record_keys=["r1"],
+    )
+    item["bindings"] = [{
+        "record_key": "r1",
+        "target_type": "EXISTING_UID",
+        "target_id": "pid_0000000000000001",
+        "matched_claim_fields": ["OFFICIAL_SOURCE_DECLARED_PERSON_ID"],
+        "binding_rationale": "explicit player binding",
+    }]
+    manifest = build_evidence_manifest([item])
+    exhausted = build_collector_search_manifest(
+        record_key="r2",
+        applicable_required_collectors=["A1"],
+        completed_collectors=["A1"],
+        failed_collectors=[],
+        attempted_official_urls=["https://www.cbaleague.com/search"],
+        collector_version="v1",
+        text_warning=False,
+        identity_conflict=False,
+        surviving_candidate_count=0,
+    )
+    plan = build_batch_plan(
+        packet,
+        manifest,
+        batch_size=1,
+        search_statuses={"r2": exhausted},
+    )
+    assert {item["batch_predicate"] for item in plan["batches"]} == {
+        "BATCH_EXISTING_W1",
+        "BATCH_NO_SAFE_SEARCH_EXHAUSTED",
+    }
 
 
 def test_collect_html_and_pdf_fixtures(tmp_path):
@@ -430,6 +514,82 @@ def test_collect_html_and_pdf_fixtures(tmp_path):
     assert manifest["items"][0]["claims"][0]["normalized_value"] == (
         "Synthetic Player"
     )
+
+
+def test_fetch_boundary_retry_redirect_timeout_and_size():
+    calls = []
+
+    def transport(url, *, method, timeout, headers):
+        calls.append((url, method, timeout, headers))
+        return {
+            "status": 200,
+            "content_type": "text/html",
+            "body": b"<html>ok</html>",
+            "redirects": ["https://www.cbaleague.com/player/1"],
+        }
+
+    result = fetch_official_resource(
+        "https://www.cbaleague.com/start",
+        source_tier="A1",
+        transport=transport,
+        max_retries=0,
+        per_domain_interval=0,
+        timeout_seconds=3,
+    )
+    assert result["content"] == b"<html>ok</html>"
+    assert calls[0][1] == "GET"
+
+    def oversized(url, *, method, timeout, headers):
+        return {
+            "status": 200,
+            "content_type": "text/html",
+            "body": b"x" * 10,
+            "redirects": [],
+        }
+
+    with pytest.raises(IdentityWebEvidenceError, match="TOO_LARGE"):
+        fetch_official_resource(
+            "https://www.cbaleague.com/start",
+            source_tier="A1",
+            transport=oversized,
+            max_retries=0,
+            per_domain_interval=0,
+            max_bytes=5,
+        )
+
+
+def test_candidate_bound_evidence_blocks_wrong_attachment():
+    item = evidence_item(
+        "https://www.cbaleague.com/player/1",
+        b"bound",
+        claims=[external_person_id_claim(
+            namespace="CBA_OFFICIAL_PLAYER_ID",
+            identifier="1",
+            source_semantics="PLAYER_ENTITY",
+            source_locator="id",
+        )],
+        record_keys=["r1"],
+    )
+    item["bindings"] = [{
+        "record_key": "r1",
+        "target_type": "EXISTING_UID",
+        "target_id": "pid_0000000000000001",
+        "matched_claim_fields": ["OFFICIAL_SOURCE_DECLARED_PERSON_ID"],
+        "binding_rationale": "explicit official player entity binding",
+    }]
+    manifest = build_evidence_manifest([item])
+    assert classify_candidate_evidence(
+        "r1",
+        target_type="EXISTING_UID",
+        target_id="pid_0000000000000001",
+        manifest=manifest,
+    )[0] == "W1_OFFICIAL_PERSON_ID_EXACT"
+    assert classify_candidate_evidence(
+        "r1",
+        target_type="EXISTING_UID",
+        target_id="pid_0000000000000002",
+        manifest=manifest,
+    )[0] == "W4_DISCOVERY_SUPPORT"
 
 
 def test_workbook_export_import_unicode_and_machine_tamper(tmp_path):
@@ -478,4 +638,98 @@ def test_workbook_export_import_unicode_and_machine_tamper(tmp_path):
             evidence_manifest=manifest,
             groups=[],
             batches=[],
+        )
+
+
+def test_workbook_rejects_group_batch_and_evidence_machine_edits(tmp_path):
+    packet = prepare_review_packet([
+        proposal(
+            "r1",
+            "NEW_IDENTITY_CANDIDATE",
+            "PROPOSED_SAME",
+            candidate_group_id="group-1",
+        )
+    ])
+    evidence = evidence_item(
+        "https://www.cbaleague.com/player/1",
+        b"workbook-evidence",
+        record_keys=["r1"],
+        claims=[external_person_id_claim(
+            namespace="CBA_OFFICIAL_PLAYER_ID",
+            identifier="1",
+            source_semantics="PLAYER_ENTITY",
+            source_locator="id",
+        )],
+    )
+    manifest = build_evidence_manifest([evidence])
+    review_id = packet["reviews"][0]["review_id"]
+    groups = [{
+        "candidate_group_id": "group-1",
+        "member_review_ids": [review_id],
+        "member_count": 1,
+        "evidence_class": "W1_OFFICIAL_PERSON_ID_EXACT",
+        "conflict_count": 0,
+    }]
+    batches = [{
+        "batch_id": "batch-1",
+        "batch_predicate": "BATCH_EXISTING_W1",
+        "member_review_ids": [review_id],
+        "member_count": 1,
+    }]
+    workbook_path = tmp_path / "review_packet_workbook.xlsx"
+    export_review_workbook(
+        workbook_path,
+        packet=packet,
+        evidence_manifest=manifest,
+        groups=groups,
+        batches=batches,
+    )
+    workbook = load_workbook(workbook_path)
+    workbook["Groups"]["C2"] = 2
+    workbook.save(workbook_path)
+    with pytest.raises(IdentityWebEvidenceError, match="Groups.member_count"):
+        import_review_workbook(
+            workbook_path,
+            packet=packet,
+            evidence_manifest=manifest,
+            groups=groups,
+            batches=batches,
+        )
+
+    export_review_workbook(
+        workbook_path,
+        packet=packet,
+        evidence_manifest=manifest,
+        groups=groups,
+        batches=batches,
+    )
+    workbook = load_workbook(workbook_path)
+    workbook["Batches"]["B2"] = "BATCH_EXISTING_W2"
+    workbook.save(workbook_path)
+    with pytest.raises(IdentityWebEvidenceError, match="Batches.batch_predicate"):
+        import_review_workbook(
+            workbook_path,
+            packet=packet,
+            evidence_manifest=manifest,
+            groups=groups,
+            batches=batches,
+        )
+
+    export_review_workbook(
+        workbook_path,
+        packet=packet,
+        evidence_manifest=manifest,
+        groups=groups,
+        batches=batches,
+    )
+    workbook = load_workbook(workbook_path)
+    workbook["Evidence_Index"]["C2"] = "https://evil.example/"
+    workbook.save(workbook_path)
+    with pytest.raises(IdentityWebEvidenceError, match="Evidence_Index.source_url"):
+        import_review_workbook(
+            workbook_path,
+            packet=packet,
+            evidence_manifest=manifest,
+            groups=groups,
+            batches=batches,
         )

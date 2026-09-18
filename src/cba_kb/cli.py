@@ -182,7 +182,8 @@ def main():
     q.add_argument('--input',type=Path,required=True)
     q.add_argument('--output',type=Path,required=True)
     q=sub.add_parser('identity-web-evidence-collect')
-    q.add_argument('--responses',type=Path,required=True)
+    q.add_argument('--responses',type=Path)
+    q.add_argument('--discoveries',type=Path)
     q.add_argument('--output-root',type=Path,required=True)
     q.add_argument('--manifest',type=Path,required=True)
     q.add_argument('--source-tier',required=True)
@@ -694,6 +695,9 @@ def main():
                 collect_evidence_from_responses,
                 enrich_candidates,
                 export_review_workbook,
+                extract_html_claims,
+                extract_pdf_claims,
+                fetch_official_resource,
                 import_review_workbook,
             )
             instance=private_instance()
@@ -716,21 +720,64 @@ def main():
                 result=records
                 save(private_path(a.output),result)
             elif a.command=='identity-web-evidence-collect':
-                responses=json.loads(
-                    private_path(a.responses).read_text()
-                )
-                hydrated=[]
-                for item in responses:
-                    item=dict(item)
-                    item['body']=private_path(item.pop('body_path')).read_bytes()
-                    hydrated.append(item)
-                manifest=collect_evidence_from_responses(
-                    hydrated,
-                    output_root=private_path(a.output_root),
-                    extracted_at=a.extracted_at,
-                    source_tier=a.source_tier,
-                    source_kind=a.source_kind,
-                )
+                if a.responses:
+                    responses=json.loads(
+                        private_path(a.responses).read_text()
+                    )
+                    hydrated=[]
+                    for item in responses:
+                        item=dict(item)
+                        item['body']=private_path(item.pop('body_path')).read_bytes()
+                        hydrated.append(item)
+                    manifest=collect_evidence_from_responses(
+                        hydrated,
+                        output_root=private_path(a.output_root),
+                        extracted_at=a.extracted_at,
+                        source_tier=a.source_tier,
+                        source_kind=a.source_kind,
+                    )
+                elif a.discoveries:
+                    discoveries=json.loads(
+                        private_path(a.discoveries).read_text()
+                    )
+                    raw_root=private_path(a.output_root)/'raw'
+                    raw_root.mkdir(parents=True,exist_ok=True)
+                    items=[]
+                    for discovery in discoveries:
+                        fetched=fetch_official_resource(
+                            discovery['discovered_url'],
+                            source_tier=a.source_tier,
+                        )
+                        body=fetched['content']
+                        content_type=fetched['content_type']
+                        if content_type.startswith('text/html'):
+                            claims=extract_html_claims(body)
+                        elif content_type=='application/pdf':
+                            claims=extract_pdf_claims(body)
+                        else:
+                            claims=[]
+                        snapshot=raw_root/(digest(body)+'.bin')
+                        if not snapshot.exists():
+                            atomic(snapshot,body)
+                        from .identity_web_evidence import build_evidence_item
+                        items.append(build_evidence_item(
+                            source_tier=a.source_tier,
+                            source_kind=a.source_kind,
+                            source_url=discovery['discovered_url'],
+                            fetched_at=a.extracted_at,
+                            http_status=fetched['status'],
+                            content_type=content_type,
+                            content=body,
+                            raw_snapshot_path=str(snapshot),
+                            claims=claims,
+                            record_keys=[],
+                        ))
+                    from .identity_web_evidence import build_evidence_manifest
+                    manifest=build_evidence_manifest(items)
+                else:
+                    raise ValueError(
+                        'IDENTITY_WEB_EVIDENCE_RESPONSES_OR_DISCOVERIES_REQUIRED'
+                    )
                 save(private_path(a.manifest),manifest)
                 result={
                     'evidence_count':len(manifest['items']),

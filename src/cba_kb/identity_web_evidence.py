@@ -12,7 +12,10 @@ import html
 import io
 import json
 import re
+import time
 import unicodedata
+import urllib.error
+import urllib.request
 from collections import defaultdict
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -53,6 +56,12 @@ WORKBOOK_SHEETS = (
     "Evidence_Index",
     "Instructions",
 )
+INSTRUCTIONS_ROWS = (
+    ("Authority boundary",),
+    ("Workbook is non-canonical human workflow projection only.",),
+    ("Only human-owned cells may be edited.",),
+    ("Do not paste source bodies into this workbook.",),
+)
 SOURCE_TIERS = {
     "A0": frozenset({
         "cba.net.cn",
@@ -92,6 +101,7 @@ EXTERNAL_ID_NAMESPACE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
 _SUSPICIOUS_TEXT = re.compile(r"[�]|Ã|Â|锟|拷|娌|鎹")
+_DOMAIN_LAST_REQUEST = {}
 
 
 class IdentityWebEvidenceError(RuntimeError):
@@ -338,6 +348,93 @@ def validate_response_guard(
     }
 
 
+def _urllib_transport(url, *, method, timeout, headers):
+    request = urllib.request.Request(url, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return {
+                "status": response.status,
+                "content_type": response.headers.get_content_type(),
+                "body": response.read(),
+                "redirects": [],
+            }
+    except urllib.error.HTTPError as exc:
+        return {
+            "status": exc.code,
+            "content_type": exc.headers.get_content_type(),
+            "body": exc.read(),
+            "redirects": [],
+        }
+
+
+def fetch_official_resource(
+    url,
+    *,
+    source_tier,
+    method="GET",
+    headers=None,
+    timeout_seconds=10,
+    max_bytes=10_000_000,
+    max_retries=2,
+    per_domain_interval=1.0,
+    transport=None,
+    sleep=time.sleep,
+    clock=time.monotonic,
+    private_b0_domains=None,
+):
+    request = validate_fetch_request(url, method=method, headers=headers)
+    validate_source_url(
+        url,
+        source_tier=source_tier,
+        private_b0_domains=private_b0_domains,
+    )
+    domain = source_domain(url)
+    transport = transport or _urllib_transport
+    last_request = _DOMAIN_LAST_REQUEST.get(domain)
+    current = clock()
+    if last_request is not None and current - last_request < per_domain_interval:
+        sleep(per_domain_interval - (current - last_request))
+    _DOMAIN_LAST_REQUEST[domain] = clock()
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            response = transport(
+                url,
+                method=request["method"],
+                timeout=timeout_seconds,
+                headers=request["headers"],
+            )
+            for redirect in response.get("redirects", []):
+                validate_redirect(
+                    url,
+                    redirect,
+                    source_tier=source_tier,
+                    private_b0_domains=private_b0_domains,
+                )
+            validate_response_guard(
+                status=response["status"],
+                content_type=response["content_type"],
+                content=response["body"],
+                max_bytes=max_bytes,
+                timeout_seconds=timeout_seconds,
+            )
+            return {
+                "url": url,
+                "domain": domain,
+                "status": response["status"],
+                "content_type": response["content_type"],
+                "content": response["body"],
+                "attempts": attempt + 1,
+            }
+        except IdentityWebEvidenceError:
+            raise
+        except (OSError, urllib.error.URLError) as exc:
+            last_error = exc
+            if attempt < max_retries:
+                sleep(per_domain_interval)
+    raise IdentityWebEvidenceError("PUBLIC_FETCH_FAILED") from last_error
+
+
 def content_sha256(content):
     if not isinstance(content, bytes):
         raise IdentityWebEvidenceError("CONTENT_BYTES_REQUIRED")
@@ -444,6 +541,32 @@ def _validate_claim(claim):
     return claim
 
 
+def _validate_evidence_binding(binding):
+    if not isinstance(binding, dict):
+        raise IdentityWebEvidenceError("EVIDENCE_BINDING_OBJECT_REQUIRED")
+    required = {
+        "record_key",
+        "target_type",
+        "target_id",
+        "matched_claim_fields",
+        "binding_rationale",
+    }
+    if set(binding) != required:
+        raise IdentityWebEvidenceError("EVIDENCE_BINDING_SCHEMA_INVALID")
+    _required_text(binding["record_key"], "RECORD_KEY")
+    if binding["target_type"] not in {"EXISTING_UID", "NEW_GROUP"}:
+        raise IdentityWebEvidenceError("EVIDENCE_TARGET_TYPE_INVALID")
+    _required_text(binding["target_id"], "EVIDENCE_TARGET_ID")
+    if not isinstance(binding["matched_claim_fields"], list):
+        raise IdentityWebEvidenceError("MATCHED_CLAIM_FIELDS_REQUIRED")
+    if binding["matched_claim_fields"] != sorted(
+        set(binding["matched_claim_fields"]),
+    ):
+        raise IdentityWebEvidenceError("MATCHED_CLAIM_FIELDS_ORDER_INVALID")
+    _required_text(binding["binding_rationale"], "BINDING_RATIONALE")
+    return binding
+
+
 def validate_evidence_item(item):
     if not isinstance(item, dict):
         raise IdentityWebEvidenceError("EVIDENCE_ITEM_OBJECT_REQUIRED")
@@ -464,6 +587,8 @@ def validate_evidence_item(item):
         "claims",
         "extraction_warnings",
         "record_keys",
+        "bindings",
+        "b0_domain_approved",
     }
     if set(item) != required:
         raise IdentityWebEvidenceError("EVIDENCE_ITEM_SCHEMA_INVALID")
@@ -480,6 +605,14 @@ def validate_evidence_item(item):
         raise IdentityWebEvidenceError("EVIDENCE_ID_MISMATCH")
     if item["source_domain"] != source_domain(item["source_url"]):
         raise IdentityWebEvidenceError("EVIDENCE_DOMAIN_MISMATCH")
+    if item["source_tier"] == "B0":
+        if item["b0_domain_approved"] is not True:
+            raise IdentityWebEvidenceError("B0_DOMAIN_NOT_APPROVED")
+    else:
+        validate_source_url(
+            item["source_url"],
+            source_tier=item["source_tier"],
+        )
     if not isinstance(item["claims"], list):
         raise IdentityWebEvidenceError("CLAIMS_REQUIRED")
     for claim in item["claims"]:
@@ -488,6 +621,10 @@ def validate_evidence_item(item):
         raise IdentityWebEvidenceError("WARNING_ORDER_INVALID")
     if item["record_keys"] != sorted(set(item["record_keys"])):
         raise IdentityWebEvidenceError("RECORD_KEYS_ORDER_INVALID")
+    if not isinstance(item["bindings"], list):
+        raise IdentityWebEvidenceError("EVIDENCE_BINDINGS_REQUIRED")
+    for binding in item["bindings"]:
+        _validate_evidence_binding(binding)
     return item
 
 
@@ -507,6 +644,8 @@ def build_evidence_item(
     extraction_warnings=None,
     extractor_version=EXTRACTOR_VERSION,
     private_b0_domains=None,
+    bindings=None,
+    b0_domain_approved=False,
 ):
     validate_source_url(
         source_url,
@@ -548,6 +687,15 @@ def build_evidence_item(
         ),
         "extraction_warnings": sorted(set(extraction_warnings or [])),
         "record_keys": sorted(set(record_keys)),
+        "bindings": sorted(
+            [_validate_evidence_binding(item) for item in bindings or []],
+            key=lambda item: (
+                item["record_key"],
+                item["target_type"],
+                item["target_id"],
+            ),
+        ),
+        "b0_domain_approved": b0_domain_approved,
     }
     return validate_evidence_item(item)
 
@@ -661,6 +809,98 @@ def _claims_for_record(manifest, record_key):
     return claims
 
 
+def _claims_for_target(manifest, record_key, target_type, target_id):
+    claims = []
+    for item in manifest["items"]:
+        if record_key not in item["record_keys"]:
+            continue
+        matching_binding = next((
+            binding for binding in item["bindings"]
+            if (
+                binding["record_key"] == record_key
+                and binding["target_type"] == target_type
+                and binding["target_id"] == target_id
+            )
+        ), None)
+        if matching_binding is None:
+            continue
+        for claim in item["claims"]:
+            claims.append({
+                **claim,
+                "evidence_id": item["evidence_id"],
+                "binding_rationale": matching_binding["binding_rationale"],
+                "matched_claim_fields": list(
+                    matching_binding["matched_claim_fields"],
+                ),
+            })
+    return claims
+
+
+def bind_evidence_to_target(
+    *,
+    record_key,
+    target_type,
+    target_id,
+    matched_claim_fields,
+    binding_rationale,
+):
+    return _validate_evidence_binding({
+        "record_key": record_key,
+        "target_type": target_type,
+        "target_id": target_id,
+        "matched_claim_fields": sorted(set(matched_claim_fields)),
+        "binding_rationale": binding_rationale,
+    })
+
+
+def classify_candidate_evidence(
+    record_key,
+    *,
+    target_type,
+    target_id,
+    manifest,
+):
+    validate_evidence_manifest(manifest)
+    claims = _claims_for_target(
+        manifest,
+        record_key,
+        target_type,
+        target_id,
+    )
+    if not claims:
+        return "W4_DISCOVERY_SUPPORT", ["NO_TARGET_BOUND_OFFICIAL_EVIDENCE"]
+    evidence_ids = {claim["evidence_id"] for claim in claims}
+    person_ids = _person_ids(claims)
+    if len(person_ids) > 1:
+        return "WX_CONFLICT", ["OFFICIAL_PERSON_ID_CONFLICT"]
+    birth_dates = {
+        claim["normalized_value"]
+        for claim in claims
+        if claim["claim_type"] == "OFFICIAL_BIRTH_DATE"
+    }
+    if len(birth_dates) > 1:
+        return "WX_CONFLICT", ["OFFICIAL_BIRTH_DATE_CONFLICT"]
+    if person_ids:
+        return "W1_OFFICIAL_PERSON_ID_EXACT", []
+    names = {
+        claim["normalized_value"]
+        for claim in claims
+        if claim["claim_type"] == "OFFICIAL_PLAYER_NAME"
+    }
+    if names and birth_dates and len(evidence_ids) >= 2:
+        return "W2_OFFICIAL_BIO_MULTI_SOURCE", []
+    if names and any(
+        claim["claim_type"] in {
+            "OFFICIAL_TEAM",
+            "OFFICIAL_SEASON",
+            "OFFICIAL_REGISTRATION_UNIT",
+        }
+        for claim in claims
+    ):
+        return "W3_OFFICIAL_CONTINUITY", []
+    return "W4_DISCOVERY_SUPPORT", []
+
+
 def _person_ids(claims):
     return {
         claim["normalized_value"]
@@ -704,10 +944,15 @@ def classify_record_evidence(record_key, manifest):
     return "W4_DISCOVERY_SUPPORT", []
 
 
-def deterministic_group_id(member_review_ids, evidence_class):
+def deterministic_group_id(
+    member_review_ids,
+    evidence_class,
+    evidence_ids=None,
+):
     core = {
         "member_review_ids": sorted(set(member_review_ids)),
         "evidence_class": evidence_class,
+        "evidence_ids": sorted(set(evidence_ids or [])),
     }
     return "candidate_group_" + hashlib.sha256(
         canonical_bytes(core),
@@ -760,19 +1005,81 @@ def batch_predicate(proposal):
     return None
 
 
-def search_exhaustion_status(
+def build_collector_search_manifest(
     *,
-    collector_failures,
-    surviving_official_candidate,
+    record_key,
+    applicable_required_collectors,
+    completed_collectors,
+    failed_collectors,
+    attempted_official_urls,
+    collector_version,
     text_warning,
     identity_conflict,
+    surviving_candidate_count,
 ):
-    eligible = not any((
-        collector_failures,
-        surviving_official_candidate,
-        text_warning,
-        identity_conflict,
-    ))
+    core = {
+        "schema_version": SCHEMA_VERSION,
+        "record_key": record_key,
+        "applicable_required_collectors": sorted(
+            set(applicable_required_collectors),
+        ),
+        "completed_collectors": sorted(set(completed_collectors)),
+        "failed_collectors": sorted(set(failed_collectors)),
+        "attempted_official_urls": sorted(set(attempted_official_urls)),
+        "collector_version": collector_version,
+        "text_warning": bool(text_warning),
+        "identity_conflict": bool(identity_conflict),
+        "surviving_candidate_count": surviving_candidate_count,
+    }
+    return {
+        **core,
+        "collector_search_manifest_sha256": hashlib.sha256(
+            canonical_bytes(core),
+        ).hexdigest(),
+    }
+
+
+def validate_collector_search_manifest(value):
+    if not isinstance(value, dict):
+        raise IdentityWebEvidenceError("SEARCH_MANIFEST_OBJECT_REQUIRED")
+    required = {
+        "schema_version",
+        "record_key",
+        "applicable_required_collectors",
+        "completed_collectors",
+        "failed_collectors",
+        "attempted_official_urls",
+        "collector_version",
+        "text_warning",
+        "identity_conflict",
+        "surviving_candidate_count",
+        "collector_search_manifest_sha256",
+    }
+    if set(value) != required:
+        raise IdentityWebEvidenceError("SEARCH_MANIFEST_SCHEMA_INVALID")
+    core = {
+        key: value[key]
+        for key in value
+        if key != "collector_search_manifest_sha256"
+    }
+    if hashlib.sha256(canonical_bytes(core)).hexdigest() != value[
+        "collector_search_manifest_sha256"
+    ]:
+        raise IdentityWebEvidenceError("SEARCH_MANIFEST_HASH_MISMATCH")
+    return value
+
+
+def search_exhaustion_status(search_manifest):
+    validate_collector_search_manifest(search_manifest)
+    eligible = (
+        search_manifest["applicable_required_collectors"]
+        and set(search_manifest["applicable_required_collectors"])
+        == set(search_manifest["completed_collectors"])
+        and not search_manifest["failed_collectors"]
+        and not search_manifest["text_warning"]
+        and not search_manifest["identity_conflict"]
+        and search_manifest["surviving_candidate_count"] == 0
+    )
     return (
         "OFFICIAL_SEARCH_EXHAUSTED_NO_SAFE_MATCH"
         if eligible
@@ -794,19 +1101,36 @@ def enrich_candidates(
     enriched = []
     for proposal in candidates:
         record_key = proposal["record_key"]
-        evidence_class, reasons = classify_record_evidence(
-            record_key,
-            evidence_manifest,
+        search_manifest = search_statuses.get(record_key)
+        search_status = (
+            search_exhaustion_status(search_manifest)
+            if isinstance(search_manifest, dict)
+            else "SEARCH_NOT_ATTEMPTED"
         )
+        if proposal.get("candidate_player_uid"):
+            evidence_class, reasons = classify_candidate_evidence(
+                record_key,
+                target_type="EXISTING_UID",
+                target_id=proposal["candidate_player_uid"],
+                manifest=evidence_manifest,
+            )
+        elif proposal.get("candidate_group_id"):
+            evidence_class, reasons = classify_candidate_evidence(
+                record_key,
+                target_type="NEW_GROUP",
+                target_id=proposal["candidate_group_id"],
+                manifest=evidence_manifest,
+            )
+        else:
+            evidence_class, reasons = "W4_DISCOVERY_SUPPORT", [
+                "NO_EXPLICIT_CANDIDATE_TARGET",
+            ]
         item = {
             **proposal,
             "evidence_class": evidence_class,
             "conflict_count": int(evidence_class == "WX_CONFLICT"),
             "conflict_reasons": reasons,
-            "search_status": search_statuses.get(
-                record_key,
-                "SEARCH_NOT_ATTEMPTED",
-            ),
+            "search_status": search_status,
             "text_corruption_warning": any(
                 _SUSPICIOUS_TEXT.search(claim["raw_value"])
                 for claim in _claims_for_record(evidence_manifest, record_key)
@@ -819,22 +1143,10 @@ def enrich_candidates(
             ):
                 item["proposal_type"] = "NO_SAFE_CANDIDATE"
                 item["machine_reason"] = item["search_status"]
-            elif evidence_class == "W1_OFFICIAL_PERSON_ID_EXACT":
-                item["proposal_type"] = "EXISTING_IDENTITY_CANDIDATE"
-                item["proposed_relation"] = "KEEP_UNDECIDED"
-                item["machine_reason"] = "web_evidence_existing_candidate"
-            elif evidence_class in {
-                "W2_OFFICIAL_BIO_MULTI_SOURCE",
-                "W3_OFFICIAL_CONTINUITY",
-            }:
-                member_ids = [proposal["review_id"]] if "review_id" in proposal else []
-                item["proposal_type"] = "NEW_IDENTITY_CANDIDATE"
-                item["candidate_group_id"] = deterministic_group_id(
-                    member_ids,
-                    evidence_class,
-                )
-                item["proposed_relation"] = "KEEP_UNDECIDED"
-                item["machine_reason"] = "web_evidence_new_identity_group"
+            else:
+                item["proposal_type"] = "NO_SAFE_CANDIDATE"
+                item["proposed_relation"] = "NO_SAFE_CANDIDATE"
+                item["machine_reason"] = "no_target_bound_safe_candidate"
         item["batch_predicate"] = batch_predicate(item)
         enriched.append(item)
     return sorted(
@@ -865,6 +1177,12 @@ def build_batch_plan(
             proposal["record_key"],
             evidence_manifest,
         )
+        search_manifest = search_statuses.get(proposal["record_key"])
+        search_status = (
+            search_exhaustion_status(search_manifest)
+            if isinstance(search_manifest, dict)
+            else "SEARCH_NOT_ATTEMPTED"
+        )
         item = {
             **proposal,
             "evidence_class": evidence_class,
@@ -873,10 +1191,7 @@ def build_batch_plan(
                 _SUSPICIOUS_TEXT.search(claim["raw_value"])
                 for claim in claims
             ),
-            "search_status": search_statuses.get(
-                proposal["record_key"],
-                "SEARCH_NOT_ATTEMPTED",
-            ),
+            "search_status": search_status,
         }
         pred = batch_predicate(item)
         if pred is not None:
@@ -887,21 +1202,26 @@ def build_batch_plan(
         item["review_id"],
     ))
     batches = []
-    for start in range(0, len(eligible), batch_size):
-        members = eligible[start:start + batch_size]
-        predicate = members[0]["batch_predicate"]
-        if any(item["batch_predicate"] != predicate for item in members):
-            raise IdentityWebEvidenceError("BATCH_PREDICATE_MIXED")
-        batches.append({
-            "batch_id": "batch_" + hashlib.sha256(
-                canonical_bytes([
-                    item["review_id"] for item in members
-                ]),
-            ).hexdigest()[:24],
-            "batch_predicate": predicate,
-            "member_review_ids": [item["review_id"] for item in members],
-            "member_count": len(members),
-        })
+    by_predicate = defaultdict(list)
+    for item in eligible:
+        by_predicate[item["batch_predicate"]].append(item)
+    for predicate in sorted(by_predicate):
+        predicate_rows = sorted(
+            by_predicate[predicate],
+            key=lambda item: (item["record_key"], item["review_id"]),
+        )
+        for start in range(0, len(predicate_rows), batch_size):
+            members = predicate_rows[start:start + batch_size]
+            batches.append({
+                "batch_id": "batch_" + hashlib.sha256(
+                    canonical_bytes([
+                        item["review_id"] for item in members
+                    ]),
+                ).hexdigest()[:24],
+                "batch_predicate": predicate,
+                "member_review_ids": [item["review_id"] for item in members],
+                "member_count": len(members),
+            })
     return {
         "schema_version": SCHEMA_VERSION,
         "authority": "NON_CANONICAL_HUMAN_WORKFLOW_PROJECTION",
@@ -919,20 +1239,24 @@ def build_groups(packet, evidence_manifest):
     validate_evidence_manifest(evidence_manifest)
     grouped = defaultdict(list)
     for proposal in packet["reviews"]:
-        evidence_class, reasons = classify_record_evidence(
+        group_id = proposal.get("candidate_group_id")
+        if not group_id:
+            continue
+        evidence_class, reasons = classify_candidate_evidence(
             proposal["record_key"],
-            evidence_manifest,
+            target_type="NEW_GROUP",
+            target_id=group_id,
+            manifest=evidence_manifest,
         )
         if (
             proposal["proposal_type"] == "NEW_IDENTITY_CANDIDATE"
-            and proposal.get("candidate_group_id")
             and evidence_class in {
                 "W1_OFFICIAL_PERSON_ID_EXACT",
                 "W2_OFFICIAL_BIO_MULTI_SOURCE",
             }
             and not reasons
         ):
-            grouped[proposal["candidate_group_id"]].append(
+            grouped[group_id].append(
                 proposal["review_id"],
             )
     return [
@@ -940,18 +1264,24 @@ def build_groups(packet, evidence_manifest):
             "candidate_group_id": group_id,
             "member_review_ids": sorted(member_ids),
             "member_count": len(member_ids),
-            "evidence_class": classify_record_evidence(
+            "evidence_class": classify_candidate_evidence(
                 next(
                     item["record_key"]
                     for item in packet["reviews"]
                     if item["candidate_group_id"] == group_id
                 ),
-                evidence_manifest,
+                target_type="NEW_GROUP",
+                target_id=group_id,
+                manifest=evidence_manifest,
             )[0],
             "conflict_count": 0,
         }
         for group_id, member_ids in sorted(grouped.items())
     ]
+
+
+def plan_sha256(value):
+    return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
 def _validate_authority_event_common(event, packet, evidence_manifest):
@@ -997,7 +1327,10 @@ def expand_group_event(packet, evidence_manifest, groups, event):
         decisions.append({
             **item,
             "human_decision": "APPROVE",
-            "human_note": event["human_note"],
+            "human_note": (
+                f"{event['human_note']} "
+                f"[authority_event_id={event['event_id']}]"
+            ),
             "approved_player_uid": event["approved_player_uid"],
             "approved_canonical_name": event["approved_canonical_name"],
             "source_exception_reason": None,
@@ -1033,7 +1366,10 @@ def expand_batch_event(packet, evidence_manifest, batches, event):
         decisions.append({
             **item,
             "human_decision": "APPROVE",
-            "human_note": event["human_note"],
+            "human_note": (
+                f"{event['human_note']} "
+                f"[authority_event_id={event['event_id']}]"
+            ),
             "approved_player_uid": None,
             "approved_canonical_name": None,
             "source_exception_reason": None,
@@ -1089,6 +1425,7 @@ def export_review_workbook(
         machine_fields=MACHINE_REVIEW_FIELDS,
     )
     groups_sheet = workbook.create_sheet("Groups")
+    groups_plan_sha = plan_sha256(groups)
     _write_sheet(
         groups_sheet,
         [
@@ -1103,10 +1440,12 @@ def export_review_workbook(
             "approved_canonical_name",
             "allocation_attestation",
             "reviewed_at",
+            "plan_sha256",
         ],
         [
             {
                 **group,
+                "plan_sha256": groups_plan_sha,
                 "member_review_ids": json.dumps(
                     group["member_review_ids"],
                     separators=(",", ":"),
@@ -1120,9 +1459,11 @@ def export_review_workbook(
             "member_count",
             "evidence_class",
             "conflict_count",
+            "plan_sha256",
         },
     )
     batches_sheet = workbook.create_sheet("Batches")
+    batches_plan_sha = plan_sha256(batches)
     _write_sheet(
         batches_sheet,
         [
@@ -1133,10 +1474,12 @@ def export_review_workbook(
             "human_decision",
             "human_note",
             "reviewed_at",
+            "plan_sha256",
         ],
         [
             {
                 **batch,
+                "plan_sha256": batches_plan_sha,
                 "member_review_ids": json.dumps(
                     batch["member_review_ids"],
                     separators=(",", ":"),
@@ -1149,6 +1492,7 @@ def export_review_workbook(
             "batch_predicate",
             "member_review_ids",
             "member_count",
+            "plan_sha256",
         },
     )
     evidence_sheet = workbook.create_sheet("Evidence_Index")
@@ -1181,10 +1525,8 @@ def export_review_workbook(
         },
     )
     instructions = workbook.create_sheet("Instructions")
-    instructions.append(["Authority boundary"])
-    instructions.append(["Workbook is non-canonical human workflow projection only."])
-    instructions.append(["Only human-owned cells may be edited."])
-    instructions.append(["Do not paste source bodies into this workbook."])
+    for row in INSTRUCTIONS_ROWS:
+        instructions.append(list(row))
     instructions.protection.sheet = True
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1192,16 +1534,146 @@ def export_review_workbook(
     return path
 
 
-def _sheet_rows(path, sheet_name):
+def _sheet_table(path, sheet_name):
     workbook = load_workbook(path, read_only=False)
     sheet = workbook[sheet_name]
     values = list(sheet.values)
     headers = list(values[0])
-    return [
+    rows = [
         dict(zip(headers, row))
         for row in values[1:]
         if any(value is not None for value in row)
     ]
+    return headers, rows
+
+
+def _sheet_rows(path, sheet_name):
+    return _sheet_table(path, sheet_name)[1]
+
+
+def _verify_workbook_tables(path, *, packet, evidence_manifest, groups, batches):
+    workbook = load_workbook(path, read_only=False)
+    if tuple(workbook.sheetnames) != WORKBOOK_SHEETS:
+        raise IdentityWebEvidenceError("WORKBOOK_SHEET_SET_INVALID")
+    review_headers, review_rows = _sheet_table(path, "Review")
+    if review_headers != list(REVIEW_FIELDS):
+        raise IdentityWebEvidenceError("WORKBOOK_REVIEW_HEADERS_INVALID")
+    group_headers, group_rows = _sheet_table(path, "Groups")
+    expected_group_headers = [
+        "candidate_group_id",
+        "member_review_ids",
+        "member_count",
+        "evidence_class",
+        "conflict_count",
+        "human_decision",
+        "human_note",
+        "approved_player_uid",
+        "approved_canonical_name",
+        "allocation_attestation",
+        "reviewed_at",
+        "plan_sha256",
+    ]
+    if group_headers != expected_group_headers:
+        raise IdentityWebEvidenceError("WORKBOOK_GROUP_HEADERS_INVALID")
+    batch_headers, batch_rows = _sheet_table(path, "Batches")
+    expected_batch_headers = [
+        "batch_id",
+        "batch_predicate",
+        "member_review_ids",
+        "member_count",
+        "human_decision",
+        "human_note",
+        "reviewed_at",
+        "plan_sha256",
+    ]
+    if batch_headers != expected_batch_headers:
+        raise IdentityWebEvidenceError("WORKBOOK_BATCH_HEADERS_INVALID")
+    evidence_headers, evidence_rows = _sheet_table(path, "Evidence_Index")
+    expected_evidence_headers = [
+        "evidence_id",
+        "source_tier",
+        "source_url",
+        "source_kind",
+        "content_sha256",
+    ]
+    if evidence_headers != expected_evidence_headers:
+        raise IdentityWebEvidenceError("WORKBOOK_EVIDENCE_HEADERS_INVALID")
+    instructions_headers, instructions_rows = _sheet_table(
+        path,
+        "Instructions",
+    )
+    if instructions_headers != ["Authority boundary"]:
+        raise IdentityWebEvidenceError("WORKBOOK_INSTRUCTIONS_INVALID")
+    actual_instructions = tuple(
+        (row.get("Authority boundary"),)
+        for row in instructions_rows
+    )
+    if actual_instructions != INSTRUCTIONS_ROWS[1:]:
+        raise IdentityWebEvidenceError("WORKBOOK_INSTRUCTIONS_INVALID")
+
+    group_by_id = {item["candidate_group_id"]: item for item in groups}
+    expected_groups_plan_sha = plan_sha256(groups)
+    for row in group_rows:
+        expected = group_by_id.get(row["candidate_group_id"])
+        if expected is None:
+            raise IdentityWebEvidenceError("GROUP_UNKNOWN")
+        for field in (
+            "member_review_ids",
+            "member_count",
+            "evidence_class",
+            "conflict_count",
+        ):
+            actual = row[field]
+            if field == "member_review_ids" and isinstance(actual, str):
+                actual = json.loads(actual)
+            if actual != expected[field]:
+                raise IdentityWebEvidenceError(
+                    f"WORKBOOK_MACHINE_FIELD_TAMPER:Groups.{field}",
+                )
+        if row["plan_sha256"] != expected_groups_plan_sha:
+            raise IdentityWebEvidenceError(
+                "WORKBOOK_MACHINE_FIELD_TAMPER:Groups.plan_sha256",
+            )
+
+    batch_by_id = {item["batch_id"]: item for item in batches}
+    expected_batches_plan_sha = plan_sha256(batches)
+    for row in batch_rows:
+        expected = batch_by_id.get(row["batch_id"])
+        if expected is None:
+            raise IdentityWebEvidenceError("BATCH_UNKNOWN")
+        for field in ("batch_predicate", "member_review_ids", "member_count"):
+            actual = row[field]
+            if field == "member_review_ids" and isinstance(actual, str):
+                actual = json.loads(actual)
+            if actual != expected[field]:
+                raise IdentityWebEvidenceError(
+                    f"WORKBOOK_MACHINE_FIELD_TAMPER:Batches.{field}",
+                )
+        if row["plan_sha256"] != expected_batches_plan_sha:
+            raise IdentityWebEvidenceError(
+                "WORKBOOK_MACHINE_FIELD_TAMPER:Batches.plan_sha256",
+            )
+
+    expected_evidence = {
+        item["evidence_id"]: {
+            "source_tier": item["source_tier"],
+            "source_url": item["source_url"],
+            "source_kind": item["source_kind"],
+            "content_sha256": item["content_sha256"],
+        }
+        for item in evidence_manifest["items"]
+    }
+    if len(evidence_rows) != len(expected_evidence):
+        raise IdentityWebEvidenceError("WORKBOOK_EVIDENCE_ROWS_MISMATCH")
+    for row in evidence_rows:
+        expected = expected_evidence.get(row["evidence_id"])
+        if expected is None:
+            raise IdentityWebEvidenceError("WORKBOOK_EVIDENCE_UNKNOWN")
+        for field, value in expected.items():
+            if row[field] != value:
+                raise IdentityWebEvidenceError(
+                    f"WORKBOOK_MACHINE_FIELD_TAMPER:Evidence_Index.{field}",
+                )
 
 
 def import_review_workbook(
@@ -1214,6 +1686,13 @@ def import_review_workbook(
 ):
     validate_review_packet(packet)
     validate_evidence_manifest(evidence_manifest)
+    _verify_workbook_tables(
+        path,
+        packet=packet,
+        evidence_manifest=evidence_manifest,
+        groups=groups,
+        batches=batches,
+    )
     review_rows = _sheet_rows(path, "Review")
     review_by_id = {item["review_id"]: item for item in packet["reviews"]}
     if {row["review_id"] for row in review_rows} != set(review_by_id):
