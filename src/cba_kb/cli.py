@@ -178,6 +178,36 @@ def main():
     q.add_argument('--candidate-registry-manifest',type=Path,required=True)
     q.add_argument('--ledger',type=Path,required=True)
     q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('identity-web-evidence-discover')
+    q.add_argument('--input',type=Path,required=True)
+    q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('identity-web-evidence-collect')
+    q.add_argument('--responses',type=Path,required=True)
+    q.add_argument('--output-root',type=Path,required=True)
+    q.add_argument('--manifest',type=Path,required=True)
+    q.add_argument('--source-tier',required=True)
+    q.add_argument('--source-kind',required=True)
+    q.add_argument('--extracted-at',required=True)
+    q=sub.add_parser('identity-web-evidence-enrich')
+    q.add_argument('--candidates',type=Path,required=True)
+    q.add_argument('--evidence-manifest',type=Path,required=True)
+    q.add_argument('--search-statuses',type=Path,required=True)
+    q.add_argument('--output-candidates',type=Path,required=True)
+    q.add_argument('--output-conflicts',type=Path,required=True)
+    q.add_argument('--output-summary',type=Path,required=True)
+    q=sub.add_parser('identity-review-workbook-export')
+    q.add_argument('--packet',type=Path,required=True)
+    q.add_argument('--evidence-manifest',type=Path,required=True)
+    q.add_argument('--groups',type=Path,required=True)
+    q.add_argument('--batches',type=Path,required=True)
+    q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('identity-review-workbook-import')
+    q.add_argument('--packet',type=Path,required=True)
+    q.add_argument('--evidence-manifest',type=Path,required=True)
+    q.add_argument('--groups',type=Path,required=True)
+    q.add_argument('--batches',type=Path,required=True)
+    q.add_argument('--workbook',type=Path,required=True)
+    q.add_argument('--output-csv',type=Path,required=True)
     q=sub.add_parser('mention-validate')
     q.add_argument('--input',type=Path,required=True)
     q=sub.add_parser('mention-build')
@@ -474,9 +504,11 @@ def main():
                         load_registry(a.input),
                         expected_current_sha256=a.expected_current_sha256,
                     )
-        elif a.command.startswith('identity-coverage-') or (
-            a.command.startswith('identity-review-')
-        ):
+        elif a.command.startswith('identity-coverage-') or a.command in {
+            'identity-review-prepare',
+            'identity-review-validate',
+            'identity-review-apply',
+        }:
             from .identity_coverage import (
                 apply_reviewed_decisions,
                 build_candidate_registry_manifest,
@@ -651,6 +683,131 @@ def main():
                     coverage_ledger=json.loads(ledger_path.read_text()),
                 )
                 save(private_path(a.output),result)
+        elif a.command.startswith('identity-web-evidence-') or (
+            a.command.startswith('identity-review-workbook-')
+        ):
+            from .identity_web_evidence import (
+                build_discovery_record,
+                build_evidence_manifest,
+                build_batch_plan,
+                build_groups,
+                collect_evidence_from_responses,
+                enrich_candidates,
+                export_review_workbook,
+                import_review_workbook,
+            )
+            instance=private_instance()
+            instance_root=Path(instance.root).resolve()
+            def private_path(path):
+                candidate=Path(path)
+                if not candidate.is_absolute():
+                    candidate=instance_root/candidate
+                candidate=candidate.resolve()
+                if not candidate.is_relative_to(instance_root):
+                    raise ValueError(
+                        'IDENTITY_WEB_EVIDENCE_PATH_OUTSIDE_PRIVATE_INSTANCE'
+                    )
+                return candidate
+            if a.command=='identity-web-evidence-discover':
+                raw=json.loads(private_path(a.input).read_text())
+                records=[]
+                for item in raw:
+                    records.append(build_discovery_record(**item))
+                result=records
+                save(private_path(a.output),result)
+            elif a.command=='identity-web-evidence-collect':
+                responses=json.loads(
+                    private_path(a.responses).read_text()
+                )
+                hydrated=[]
+                for item in responses:
+                    item=dict(item)
+                    item['body']=private_path(item.pop('body_path')).read_bytes()
+                    hydrated.append(item)
+                manifest=collect_evidence_from_responses(
+                    hydrated,
+                    output_root=private_path(a.output_root),
+                    extracted_at=a.extracted_at,
+                    source_tier=a.source_tier,
+                    source_kind=a.source_kind,
+                )
+                save(private_path(a.manifest),manifest)
+                result={
+                    'evidence_count':len(manifest['items']),
+                    'web_evidence_manifest_sha256':manifest[
+                        'web_evidence_manifest_sha256'
+                    ],
+                }
+            elif a.command=='identity-web-evidence-enrich':
+                candidates=json.loads(
+                    private_path(a.candidates).read_text()
+                )
+                manifest=json.loads(
+                    private_path(a.evidence_manifest).read_text()
+                )
+                statuses=json.loads(
+                    private_path(a.search_statuses).read_text()
+                )
+                enriched=enrich_candidates(
+                    candidates,
+                    evidence_manifest=manifest,
+                    search_statuses=statuses,
+                )
+                conflicts=[{
+                    'record_key':item['record_key'],
+                    'conflict_class':reason,
+                } for item in enriched for reason in item['conflict_reasons']]
+                summary={
+                    'candidate_count':len(enriched),
+                    'conflict_count':len(conflicts),
+                    'evidence_class_counts':{
+                        evidence_class:sum(
+                            item['evidence_class']==evidence_class
+                            for item in enriched
+                        )
+                        for evidence_class in sorted({
+                            item['evidence_class'] for item in enriched
+                        })
+                    },
+                }
+                save(private_path(a.output_candidates),enriched)
+                save(private_path(a.output_conflicts),conflicts)
+                save(private_path(a.output_summary),summary)
+                result=summary
+            elif a.command=='identity-review-workbook-export':
+                packet=json.loads(private_path(a.packet).read_text())
+                manifest=json.loads(
+                    private_path(a.evidence_manifest).read_text()
+                )
+                groups=json.loads(private_path(a.groups).read_text())
+                batches=json.loads(private_path(a.batches).read_text())
+                output=export_review_workbook(
+                    private_path(a.output),
+                    packet=packet,
+                    evidence_manifest=manifest,
+                    groups=groups,
+                    batches=batches,
+                )
+                result={'workbook':str(output)}
+            else:
+                packet=json.loads(private_path(a.packet).read_text())
+                manifest=json.loads(
+                    private_path(a.evidence_manifest).read_text()
+                )
+                groups=json.loads(private_path(a.groups).read_text())
+                batches=json.loads(private_path(a.batches).read_text())
+                output=import_review_workbook(
+                    private_path(a.workbook),
+                    packet=packet,
+                    evidence_manifest=manifest,
+                    groups=groups,
+                    batches=batches,
+                )
+                atomic(private_path(a.output_csv),output)
+                result={
+                    'output_csv':str(private_path(a.output_csv)),
+                    'sha256':digest(output),
+                }
         elif a.command.startswith('mention-'):
             from .document_mentions import (
                 build_mention_artifact,
