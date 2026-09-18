@@ -1628,9 +1628,12 @@ def build_association_authority(
                 "STRONG"
                 if (
                     name_match
-                    and dob_match
                     and (
-                        bool(official_dobs)
+                        (
+                            bool(context["record_birth_date"])
+                            and bool(official_dobs)
+                            and context["record_birth_date"] in official_dobs
+                        )
                         or stable_context_match
                     )
                     and not ambiguity
@@ -1743,6 +1746,9 @@ def derive_existing_uid_bindings(
         item["normalized_identifier"]: item
         for item in bridge["entries"]
     }
+    evidence_by_id = {
+        item["evidence_id"]: item for item in evidence_manifest["items"]
+    }
     allowed_associations = None
     if association_authority is not None:
         authority = recompute_association_authority(
@@ -1751,16 +1757,38 @@ def derive_existing_uid_bindings(
             association_authority,
             fetch_provenance_authority=fetch_provenance_authority,
         )
-        allowed_associations = {
-            (item["record_key"], item["evidence_id"])
+        allowed_associations = [
+            item
             for item in authority["entries"]
             if (
                 item["association_class"] == "STRONG"
                 and not item["association_conflicts"]
                 and not item["association_warnings"]
             )
-        }
+        ]
     bindings = []
+    if allowed_associations is not None:
+        for association in allowed_associations:
+            item = evidence_by_id[association["evidence_id"]]
+            identifiers = _person_ids(item["claims"])
+            if len(identifiers) != 1:
+                continue
+            bridge_entry = by_identifier.get(next(iter(identifiers)))
+            if bridge_entry is None:
+                continue
+            bindings.append(_validate_evidence_binding({
+                "record_key": association["record_key"],
+                "target_type": "EXISTING_UID",
+                "target_id": bridge_entry["existing_uid"],
+                "matched_claim_fields": [
+                    "OFFICIAL_SOURCE_DECLARED_PERSON_ID",
+                ],
+                "binding_rationale": (
+                    f"association:{association['association_sha256']}:"
+                    f"bridge:{bridge_entry['entry_id']}"
+                ),
+            }))
+        return bindings
     for item in evidence_manifest["items"]:
         identifiers = _person_ids(item["claims"])
         if len(identifiers) != 1:
@@ -1769,12 +1797,6 @@ def derive_existing_uid_bindings(
         if bridge_entry is None:
             continue
         for context in by_url.get(item["source_url"], []):
-            if (
-                allowed_associations is not None
-                and (context["record_key"], item["evidence_id"])
-                not in allowed_associations
-            ):
-                continue
             record_name = normalize_claim(
                 "OFFICIAL_PLAYER_NAME",
                 context["record_name"],
@@ -1814,19 +1836,41 @@ def apply_existing_uid_bindings(
         association_authority=association_authority,
         fetch_provenance_authority=fetch_provenance_authority,
     )
-    by_url = defaultdict(list)
-    for context in validate_association_contexts(association_contexts):
-        by_url[context["discovered_url"]].append(context)
+    authority_entries = None
+    if association_authority is not None:
+        authority_entries = validate_association_authority(
+            association_authority,
+        )["entries"]
     items = []
     for item in evidence_manifest["items"]:
         item_bindings = list(item["bindings"])
-        for context in by_url.get(item["source_url"], []):
-            for binding in bindings:
+        if authority_entries is not None:
+            associated_records = {
+                entry["record_key"]
+                for entry in authority_entries
                 if (
-                    binding["record_key"] == context["record_key"]
-                    and binding["target_type"] == "EXISTING_UID"
-                ):
+                    entry["evidence_id"] == item["evidence_id"]
+                    and entry["association_class"] == "STRONG"
+                    and not entry["association_conflicts"]
+                    and not entry["association_warnings"]
+                )
+            }
+            for binding in bindings:
+                if binding["record_key"] in associated_records:
                     item_bindings.append(binding)
+        else:
+            by_url = defaultdict(list)
+            for context in validate_association_contexts(
+                association_contexts,
+            ):
+                by_url[context["discovered_url"]].append(context)
+            for context in by_url.get(item["source_url"], []):
+                for binding in bindings:
+                    if (
+                        binding["record_key"] == context["record_key"]
+                        and binding["target_type"] == "EXISTING_UID"
+                    ):
+                        item_bindings.append(binding)
         items.append({
             **item,
             "bindings": sorted(
@@ -1862,15 +1906,15 @@ def derive_new_identity_groups(
             association_authority,
             fetch_provenance_authority=fetch_provenance_authority,
         )
-        allowed_associations = {
-            (item["record_key"], item["evidence_id"])
+        allowed_associations = [
+            item
             for item in authority["entries"]
             if (
                 item["association_class"] == "STRONG"
                 and not item["association_conflicts"]
                 and not item["association_warnings"]
             )
-        }
+        ]
     candidates_by_key = {
         item["record_key"]: item for item in candidates
         if item.get("proposal_type") == "NO_SAFE_CANDIDATE"
@@ -1878,27 +1922,39 @@ def derive_new_identity_groups(
     key_members = defaultdict(set)
     key_evidence = defaultdict(set)
     key_class = {}
-    for item in evidence_manifest["items"]:
+    evidence_by_id = {
+        item["evidence_id"]: item for item in evidence_manifest["items"]
+    }
+    association_rows = []
+    if allowed_associations is not None:
+        association_rows = [
+            {
+                "record_key": item["record_key"],
+                "evidence_id": item["evidence_id"],
+            }
+            for item in allowed_associations
+        ]
+    else:
+        for context in contexts.values():
+            for item in evidence_manifest["items"]:
+                if context["discovered_url"] == item["source_url"]:
+                    association_rows.append({
+                        "record_key": context["record_key"],
+                        "evidence_id": item["evidence_id"],
+                    })
+    for association in association_rows:
+        item = evidence_by_id[association["evidence_id"]]
+        record_key = association["record_key"]
+        if record_key not in candidates_by_key:
+            continue
         person_ids = _person_ids(item["claims"])
         if len(person_ids) == 1:
             person_id = next(iter(person_ids))
-            for context in contexts.values():
-                if context["discovered_url"] != item["source_url"]:
-                    continue
-                record_key = context["record_key"]
-                if (
-                    allowed_associations is not None
-                    and (record_key, item["evidence_id"])
-                    not in allowed_associations
-                ):
-                    continue
-                if record_key not in candidates_by_key:
-                    continue
-                key_members[("W1", person_id)].add(record_key)
-                key_evidence[("W1", person_id)].add(item["evidence_id"])
-                key_class[("W1", person_id)] = (
-                    "W1_OFFICIAL_PERSON_ID_EXACT"
-                )
+            key_members[("W1", person_id)].add(record_key)
+            key_evidence[("W1", person_id)].add(item["evidence_id"])
+            key_class[("W1", person_id)] = (
+                "W1_OFFICIAL_PERSON_ID_EXACT"
+            )
         names = {
             claim["normalized_value"]
             for claim in item["claims"]
@@ -1919,22 +1975,10 @@ def derive_new_identity_groups(
                 for claim in item["claims"]
             )
             if extra:
-                for context in contexts.values():
-                    if context["discovered_url"] != item["source_url"]:
-                        continue
-                    record_key = context["record_key"]
-                    if (
-                        allowed_associations is not None
-                        and (record_key, item["evidence_id"])
-                        not in allowed_associations
-                    ):
-                        continue
-                    if record_key not in candidates_by_key:
-                        continue
-                    key = ("W2", next(iter(names)), next(iter(dates)))
-                    key_members[key].add(record_key)
-                    key_evidence[key].add(item["evidence_id"])
-                    key_class[key] = "W2_OFFICIAL_BIO_MULTI_SOURCE"
+                key = ("W2", next(iter(names)), next(iter(dates)))
+                key_members[key].add(record_key)
+                key_evidence[key].add(item["evidence_id"])
+                key_class[key] = "W2_OFFICIAL_BIO_MULTI_SOURCE"
     grouped = []
     for key, record_keys in sorted(key_members.items()):
         if len(record_keys) < 1:

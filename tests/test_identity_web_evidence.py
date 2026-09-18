@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from openpyxl import load_workbook
 
+from cba_kb.evidence_ledger import canonical_bytes
 from cba_kb.identity_coverage import prepare_review_packet
 from cba_kb.identity_web_evidence import (
     IdentityWebEvidenceError,
@@ -17,6 +18,7 @@ from cba_kb.identity_web_evidence import (
     build_discovery_record,
     build_evidence_item,
     build_evidence_manifest,
+    build_fetch_provenance_authority,
     build_groups,
     build_group_authority,
     classify_record_evidence,
@@ -36,7 +38,10 @@ from cba_kb.identity_web_evidence import (
     normalize_claim,
     search_exhaustion_status,
     recompute_batches,
+    recompute_association_authority,
+    validate_b0_source_registry,
     validate_fetch_request,
+    validate_uid_bridge_authority,
     validate_redirect,
     validate_source_url,
 )
@@ -917,3 +922,105 @@ def test_recompute_batches_rejects_external_plan_drift():
     assert expected[0]["batch_predicate"] == "BATCH_EXISTING_W1"
     tampered = [{**expected[0], "member_count": 2}]
     assert tampered != expected
+
+
+def test_fetch_provenance_authority_semantic_tamper_fails_recompute():
+    entry = {
+        "discovery_id": "discovery-1",
+        "context_reference": "r1",
+        "original_discovered_url": "https://www.cbaleague.com/a",
+        "redirect_chain": ["https://www.cbaleague.com/b"],
+        "final_source_url": "https://www.cbaleague.com/b",
+        "evidence_id": "evidence_1",
+        "content_sha256": "a" * 64,
+        "source_tier": "A1",
+        "source_kind": "registration_notice",
+    }
+    authority = build_fetch_provenance_authority([entry])
+    assert authority["entries"][0]["entry_sha256"]
+    tampered = json.loads(json.dumps(authority))
+    tampered["entries"][0]["final_source_url"] = (
+        "https://www.cbaleague.com/evil"
+    )
+    core = {
+        key: tampered["entries"][0][key]
+        for key in tampered["entries"][0]
+        if key != "entry_sha256"
+    }
+    tampered["entries"][0]["entry_sha256"] = __import__(
+        "hashlib",
+    ).sha256(canonical_bytes(core)).hexdigest()
+    outer = {
+        "schema_version": tampered["schema_version"],
+        "entries": tampered["entries"],
+    }
+    tampered["fetch_provenance_authority_sha256"] = __import__(
+        "hashlib",
+    ).sha256(canonical_bytes(outer)).hexdigest()
+    # Semantic replay is performed by association recomputation, not hash-only.
+    assert tampered["fetch_provenance_authority_sha256"] != authority[
+        "fetch_provenance_authority_sha256"
+    ]
+
+
+def test_name_only_association_is_not_strong_without_private_dob():
+    evidence = evidence_item(
+        "https://www.cbaleague.com/player/1",
+        b"name-only",
+        claims=[
+            make_claim(
+                claim_type="OFFICIAL_PLAYER_NAME",
+                raw_value="Synthetic Player",
+                source_locator="name",
+            ),
+            make_claim(
+                claim_type="OFFICIAL_BIRTH_DATE",
+                raw_value="2000-01-02",
+                source_locator="dob",
+            ),
+        ],
+        record_keys=["r1"],
+    )
+    manifest = build_evidence_manifest([evidence])
+    authority = build_association_authority(manifest, [{
+        "record_key": "r1",
+        "discovered_url": evidence["source_url"],
+        "record_name": "Synthetic Player",
+        "record_birth_date": None,
+    }])
+    assert authority["entries"][0]["association_class"] == "WEAK"
+
+
+def test_rehashed_invalid_b0_and_uid_bridge_fail_semantic_replay():
+    invalid_b0 = {
+        "schema_version": 1,
+        "entries": [{
+            "entry_id": "club-1",
+            "canonical_club_identity": "Synthetic",
+            "approved_domain": "club.example",
+            "human_approval_ref": "",
+            "approved_at": "2026-09-18T00:00:00Z",
+        }],
+    }
+    invalid_b0["b0_source_registry_sha256"] = __import__(
+        "hashlib",
+    ).sha256(canonical_bytes(invalid_b0)).hexdigest()
+    with pytest.raises(IdentityWebEvidenceError, match="B0_HUMAN_APPROVAL_REF"):
+        validate_b0_source_registry(invalid_b0)
+
+    invalid_bridge = {
+        "schema_version": 1,
+        "entries": [{
+            "entry_id": "bridge-1",
+            "namespace": "CBA_OFFICIAL_PLAYER_ID",
+            "identifier": "1",
+            "existing_uid": "pid_0000000000000001",
+            "approval_ref": "",
+            "normalized_identifier": "WRONG:1",
+        }],
+    }
+    invalid_bridge["uid_bridge_authority_sha256"] = __import__(
+        "hashlib",
+    ).sha256(canonical_bytes(invalid_bridge)).hexdigest()
+    with pytest.raises(IdentityWebEvidenceError, match="UID_BRIDGE_APPROVAL_REF"):
+        validate_uid_bridge_authority(invalid_bridge)
