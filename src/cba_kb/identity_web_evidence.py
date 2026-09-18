@@ -399,17 +399,24 @@ def fetch_official_resource(
     )
     domain = source_domain(url)
     transport = transport or _urllib_transport
-    last_request = _DOMAIN_LAST_REQUEST.get(domain)
-    current = clock()
-    if last_request is not None and current - last_request < per_domain_interval:
-        sleep(per_domain_interval - (current - last_request))
-    _DOMAIN_LAST_REQUEST[domain] = clock()
+    def throttle(url_value):
+        current_domain = source_domain(url_value)
+        last_request = _DOMAIN_LAST_REQUEST.get(current_domain)
+        current = clock()
+        if (
+            last_request is not None
+            and current - last_request < per_domain_interval
+        ):
+            sleep(per_domain_interval - (current - last_request))
+        _DOMAIN_LAST_REQUEST[current_domain] = clock()
+
     last_error = None
     for attempt in range(max_retries + 1):
         try:
             current_url = url
             redirect_count = 0
             while True:
+                throttle(current_url)
                 try:
                     response = transport(
                         current_url,
@@ -600,7 +607,7 @@ def _validate_evidence_binding(binding):
     return binding
 
 
-def validate_evidence_item(item):
+def validate_evidence_item(item, *, b0_source_registry=None):
     if not isinstance(item, dict):
         raise IdentityWebEvidenceError("EVIDENCE_ITEM_OBJECT_REQUIRED")
     required = {
@@ -642,6 +649,20 @@ def validate_evidence_item(item):
     if item["source_tier"] == "B0":
         _required_sha256(item["b0_registry_sha256"], "B0_REGISTRY_SHA256")
         _required_text(item["b0_entry_id"], "B0_ENTRY_ID")
+        registry = validate_b0_source_registry(b0_source_registry)
+        if item["b0_registry_sha256"] != registry[
+            "b0_source_registry_sha256"
+        ]:
+            raise IdentityWebEvidenceError("B0_REGISTRY_HASH_MISMATCH")
+        entry = next((
+            entry for entry in registry["entries"]
+            if (
+                entry["entry_id"] == item["b0_entry_id"]
+                and entry["approved_domain"] == item["source_domain"]
+            )
+        ), None)
+        if entry is None:
+            raise IdentityWebEvidenceError("B0_DOMAIN_NOT_APPROVED")
     else:
         validate_source_url(
             item["source_url"],
@@ -698,6 +719,57 @@ def build_b0_source_registry(entries):
             canonical_bytes(core),
         ).hexdigest(),
     }
+
+
+def build_uid_bridge_authority(entries):
+    normalized = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise IdentityWebEvidenceError("UID_BRIDGE_ENTRY_INVALID")
+        required = {
+            "entry_id",
+            "namespace",
+            "identifier",
+            "existing_uid",
+            "approval_ref",
+        }
+        if set(entry) != required:
+            raise IdentityWebEvidenceError("UID_BRIDGE_ENTRY_INVALID")
+        normalized.append({
+            **entry,
+            "normalized_identifier": (
+                f"{entry['namespace']}:{entry['identifier']}"
+            ),
+        })
+    normalized.sort(key=lambda item: item["entry_id"])
+    core = {
+        "schema_version": SCHEMA_VERSION,
+        "entries": normalized,
+    }
+    return {
+        **core,
+        "uid_bridge_authority_sha256": hashlib.sha256(
+            canonical_bytes(core),
+        ).hexdigest(),
+    }
+
+
+def validate_uid_bridge_authority(value):
+    if not isinstance(value, dict):
+        raise IdentityWebEvidenceError("UID_BRIDGE_AUTHORITY_OBJECT_REQUIRED")
+    required = {"schema_version", "entries", "uid_bridge_authority_sha256"}
+    if set(value) != required:
+        raise IdentityWebEvidenceError("UID_BRIDGE_AUTHORITY_SCHEMA_INVALID")
+    core = {
+        key: value[key]
+        for key in value
+        if key != "uid_bridge_authority_sha256"
+    }
+    if hashlib.sha256(canonical_bytes(core)).hexdigest() != value[
+        "uid_bridge_authority_sha256"
+    ]:
+        raise IdentityWebEvidenceError("UID_BRIDGE_AUTHORITY_HASH_MISMATCH")
+    return value
 
 
 def validate_b0_source_registry(value):
@@ -807,7 +879,10 @@ def build_evidence_item(
         "b0_registry_sha256": b0_registry_sha256,
         "b0_entry_id": b0_entry_id,
     }
-    return validate_evidence_item(item)
+    return validate_evidence_item(
+        item,
+        b0_source_registry=b0_source_registry,
+    )
 
 
 class _ClaimHTMLParser(HTMLParser):
@@ -863,9 +938,15 @@ def extract_pdf_claims(content, *, text_extractor=None):
     return claims
 
 
-def build_evidence_manifest(items):
+def build_evidence_manifest(items, *, b0_source_registry=None):
     normalized = sorted(
-        [validate_evidence_item(item) for item in items],
+        [
+            validate_evidence_item(
+                item,
+                b0_source_registry=b0_source_registry,
+            )
+            for item in items
+        ],
         key=lambda item: item["evidence_id"],
     )
     ids = [item["evidence_id"] for item in normalized]
@@ -884,7 +965,7 @@ def build_evidence_manifest(items):
     }
 
 
-def validate_evidence_manifest(value):
+def validate_evidence_manifest(value, *, b0_source_registry=None):
     if not isinstance(value, dict):
         raise IdentityWebEvidenceError("EVIDENCE_MANIFEST_OBJECT_REQUIRED")
     required = {
@@ -905,7 +986,7 @@ def validate_evidence_manifest(value):
     ]:
         raise IdentityWebEvidenceError("EVIDENCE_MANIFEST_HASH_MISMATCH")
     for item in value["items"]:
-        validate_evidence_item(item)
+        validate_evidence_item(item, b0_source_registry=b0_source_registry)
     return value
 
 
@@ -1202,6 +1283,8 @@ def enrich_candidates(
     *,
     evidence_manifest,
     search_statuses=None,
+    association_contexts=None,
+    bridge_authority=None,
 ):
     validate_evidence_manifest(evidence_manifest)
     search_statuses = search_statuses or {}
@@ -1259,6 +1342,18 @@ def enrich_candidates(
                 item["machine_reason"] = "no_target_bound_safe_candidate"
         item["batch_predicate"] = batch_predicate(item)
         enriched.append(item)
+    if association_contexts is not None:
+        derived = derive_new_identity_groups(
+            candidates,
+            evidence_manifest=evidence_manifest,
+            association_contexts=association_contexts,
+        )
+        derived_keys = {item["record_key"] for item in derived}
+        enriched = [
+            item for item in enriched
+            if item["record_key"] not in derived_keys
+        ]
+        enriched.extend(derived)
     return sorted(
         enriched,
         key=lambda item: (
@@ -1270,51 +1365,169 @@ def enrich_candidates(
     )
 
 
-def derive_new_identity_groups(candidates, *, evidence_manifest):
+def validate_association_contexts(value):
+    if not isinstance(value, list):
+        raise IdentityWebEvidenceError("ASSOCIATION_CONTEXTS_REQUIRED")
+    normalized = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise IdentityWebEvidenceError("ASSOCIATION_CONTEXT_INVALID")
+        required = {
+            "record_key",
+            "discovered_url",
+            "record_name",
+            "record_birth_date",
+        }
+        if set(item) != required:
+            raise IdentityWebEvidenceError("ASSOCIATION_CONTEXT_INVALID")
+        normalized.append(item)
+    return normalized
+
+
+def derive_existing_uid_bindings(
+    evidence_manifest,
+    association_contexts,
+    bridge_authority,
+):
     validate_evidence_manifest(evidence_manifest)
-    target_members = defaultdict(list)
-    target_evidence = defaultdict(set)
-    for proposal in candidates:
-        if proposal.get("proposal_type") != "NO_SAFE_CANDIDATE":
+    contexts = validate_association_contexts(association_contexts)
+    bridge = validate_uid_bridge_authority(bridge_authority)
+    by_url = defaultdict(list)
+    for context in contexts:
+        by_url[context["discovered_url"]].append(context)
+    by_identifier = {
+        item["normalized_identifier"]: item
+        for item in bridge["entries"]
+    }
+    bindings = []
+    for item in evidence_manifest["items"]:
+        identifiers = _person_ids(item["claims"])
+        if len(identifiers) != 1:
             continue
-        record_key = proposal["record_key"]
-        for item in evidence_manifest["items"]:
-            for binding in item["bindings"]:
-                if (
-                    binding["record_key"] == record_key
-                    and binding["target_type"] == "NEW_GROUP"
-                ):
-                    target_members[binding["target_id"]].append(proposal)
-                    target_evidence[binding["target_id"]].add(
-                        item["evidence_id"],
-                    )
+        bridge_entry = by_identifier.get(next(iter(identifiers)))
+        if bridge_entry is None:
+            continue
+        for context in by_url.get(item["source_url"], []):
+            record_name = normalize_claim(
+                "OFFICIAL_PLAYER_NAME",
+                context["record_name"],
+            )
+            name_claims = {
+                claim["normalized_value"]
+                for claim in item["claims"]
+                if claim["claim_type"] == "OFFICIAL_PLAYER_NAME"
+            }
+            if name_claims and record_name not in name_claims:
+                continue
+            bindings.append(_validate_evidence_binding({
+                "record_key": context["record_key"],
+                "target_type": "EXISTING_UID",
+                "target_id": bridge_entry["existing_uid"],
+                "matched_claim_fields": [
+                    "OFFICIAL_SOURCE_DECLARED_PERSON_ID",
+                ],
+                "binding_rationale": (
+                    f"bridge:{bridge_entry['entry_id']}"
+                ),
+            }))
+    return bindings
+
+
+def derive_new_identity_groups(
+    candidates,
+    *,
+    evidence_manifest,
+    association_contexts,
+):
+    validate_evidence_manifest(evidence_manifest)
+    contexts = {
+        item["record_key"]: item
+        for item in validate_association_contexts(association_contexts)
+    }
+    candidates_by_key = {
+        item["record_key"]: item for item in candidates
+        if item.get("proposal_type") == "NO_SAFE_CANDIDATE"
+    }
+    key_members = defaultdict(set)
+    key_evidence = defaultdict(set)
+    key_class = {}
+    for item in evidence_manifest["items"]:
+        person_ids = _person_ids(item["claims"])
+        if len(person_ids) == 1:
+            person_id = next(iter(person_ids))
+            for context in contexts.values():
+                if context["discovered_url"] != item["source_url"]:
+                    continue
+                record_key = context["record_key"]
+                if record_key not in candidates_by_key:
+                    continue
+                key_members[("W1", person_id)].add(record_key)
+                key_evidence[("W1", person_id)].add(item["evidence_id"])
+                key_class[("W1", person_id)] = (
+                    "W1_OFFICIAL_PERSON_ID_EXACT"
+                )
+        names = {
+            claim["normalized_value"]
+            for claim in item["claims"]
+            if claim["claim_type"] == "OFFICIAL_PLAYER_NAME"
+        }
+        dates = {
+            claim["normalized_value"]
+            for claim in item["claims"]
+            if claim["claim_type"] == "OFFICIAL_BIRTH_DATE"
+        }
+        if len(names) == 1 and len(dates) == 1:
+            extra = any(
+                claim["claim_type"] in {
+                    "OFFICIAL_REGISTRATION_UNIT",
+                    "OFFICIAL_TEAM",
+                    "OFFICIAL_JERSEY_NUMBER",
+                }
+                for claim in item["claims"]
+            )
+            if extra:
+                for context in contexts.values():
+                    if context["discovered_url"] != item["source_url"]:
+                        continue
+                    record_key = context["record_key"]
+                    if record_key not in candidates_by_key:
+                        continue
+                    key = ("W2", next(iter(names)), next(iter(dates)))
+                    key_members[key].add(record_key)
+                    key_evidence[key].add(item["evidence_id"])
+                    key_class[key] = "W2_OFFICIAL_BIO_MULTI_SOURCE"
     grouped = []
-    for target_id, members in sorted(target_members.items()):
+    for key, record_keys in sorted(key_members.items()):
+        if len(record_keys) < 1:
+            continue
+        evidence_ids = sorted(key_evidence[key])
+        if key[0] == "W2" and len(evidence_ids) < 2:
+            continue
         member_review_ids = [
-            item.get("review_id") or item["record_key"]
-            for item in members
+            candidates_by_key[record_key].get("review_id") or record_key
+            for record_key in sorted(record_keys)
         ]
-        evidence_ids = sorted(target_evidence[target_id])
         group_id = deterministic_group_id(
             member_review_ids,
-            "W1_OFFICIAL_PERSON_ID_EXACT",
+            key_class[key],
             evidence_ids,
         )
-        for item in members:
+        for record_key in sorted(record_keys):
+            item = candidates_by_key[record_key]
             grouped.append({
                 **item,
                 "proposal_type": "NEW_IDENTITY_CANDIDATE",
                 "candidate_group_id": group_id,
+                "candidate_player_uid": None,
                 "proposed_relation": "KEEP_UNDECIDED",
                 "machine_reason": "shared_target_bound_official_evidence",
+                "evidence_class": key_class[key],
+                "evidence_refs": evidence_ids,
             })
-    return sorted(
-        grouped,
-        key=lambda item: (
-            item.get("candidate_group_id") or "",
-            item["record_key"],
-        ),
-    )
+    return sorted(grouped, key=lambda item: (
+        item["candidate_group_id"],
+        item["record_key"],
+    ))
 
 
 def build_batch_plan(

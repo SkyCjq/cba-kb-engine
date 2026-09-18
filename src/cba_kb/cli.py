@@ -194,6 +194,8 @@ def main():
     q.add_argument('--candidates',type=Path,required=True)
     q.add_argument('--evidence-manifest',type=Path,required=True)
     q.add_argument('--search-statuses',type=Path,required=True)
+    q.add_argument('--association-contexts',type=Path)
+    q.add_argument('--bridge-authority',type=Path)
     q.add_argument('--output-candidates',type=Path,required=True)
     q.add_argument('--output-conflicts',type=Path,required=True)
     q.add_argument('--output-summary',type=Path,required=True)
@@ -768,7 +770,7 @@ def main():
                         items.append(build_evidence_item(
                             source_tier=a.source_tier,
                             source_kind=a.source_kind,
-                            source_url=discovery['discovered_url'],
+                            source_url=fetched['url'],
                             fetched_at=a.extracted_at,
                             http_status=fetched['status'],
                             content_type=content_type,
@@ -800,10 +802,24 @@ def main():
                 statuses=json.loads(
                     private_path(a.search_statuses).read_text()
                 )
+                associations=(
+                    json.loads(
+                        private_path(a.association_contexts).read_text()
+                    )
+                    if a.association_contexts else None
+                )
+                bridges=(
+                    json.loads(
+                        private_path(a.bridge_authority).read_text()
+                    )
+                    if a.bridge_authority else None
+                )
                 enriched=enrich_candidates(
                     candidates,
                     evidence_manifest=manifest,
                     search_statuses=statuses,
+                    association_contexts=associations,
+                    bridge_authority=bridges,
                 )
                 conflicts=[{
                     'record_key':item['record_key'],

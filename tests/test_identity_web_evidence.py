@@ -9,6 +9,7 @@ from cba_kb.identity_web_evidence import (
     IdentityWebEvidenceError,
     batch_predicate,
     build_b0_source_registry,
+    build_uid_bridge_authority,
     build_batch_plan,
     build_conflicts,
     build_collector_search_manifest,
@@ -20,6 +21,8 @@ from cba_kb.identity_web_evidence import (
     classify_candidate_evidence,
     collect_evidence_from_responses,
     deterministic_group_id,
+    derive_existing_uid_bindings,
+    derive_new_identity_groups,
     expand_batch_event,
     expand_group_event,
     export_review_workbook,
@@ -643,6 +646,71 @@ def test_candidate_bound_evidence_blocks_wrong_attachment():
         target_id="pid_0000000000000002",
         manifest=manifest,
     )[0] == "W4_DISCOVERY_SUPPORT"
+
+
+def test_uid_bridge_and_w1_group_derivation_are_recomputed():
+    bridge = build_uid_bridge_authority([{
+        "entry_id": "bridge-1",
+        "namespace": "CBA_OFFICIAL_PLAYER_ID",
+        "identifier": "1",
+        "existing_uid": "pid_0000000000000001",
+        "approval_ref": "human-approval-1",
+    }])
+    evidence = evidence_item(
+        "https://www.cbaleague.com/player/1",
+        b"bridge",
+        claims=[external_person_id_claim(
+            namespace="CBA_OFFICIAL_PLAYER_ID",
+            identifier="1",
+            source_semantics="PLAYER_ENTITY",
+            source_locator="id",
+        )],
+        record_keys=["r1"],
+    )
+    manifest = build_evidence_manifest([evidence])
+    contexts = [{
+        "record_key": "r1",
+        "discovered_url": "https://www.cbaleague.com/player/1",
+        "record_name": "Synthetic Player",
+        "record_birth_date": "2000-01-02",
+    }]
+    bindings = derive_existing_uid_bindings(manifest, contexts, bridge)
+    assert bindings[0]["target_id"] == "pid_0000000000000001"
+
+    no_safe = [
+        {
+            "record_key": "r1",
+            "proposal_type": "NO_SAFE_CANDIDATE",
+        },
+        {
+            "record_key": "r2",
+            "proposal_type": "NO_SAFE_CANDIDATE",
+        },
+    ]
+    contexts = [
+        {
+            "record_key": "r1",
+            "discovered_url": "https://www.cbaleague.com/player/1",
+            "record_name": "Synthetic Player",
+            "record_birth_date": "2000-01-02",
+        },
+        {
+            "record_key": "r2",
+            "discovered_url": "https://www.cbaleague.com/player/1",
+            "record_name": "Synthetic Player",
+            "record_birth_date": "2000-01-02",
+        },
+    ]
+    groups = derive_new_identity_groups(
+        no_safe,
+        evidence_manifest=manifest,
+        association_contexts=contexts,
+    )
+    assert len(groups) == 2
+    assert groups[0]["candidate_group_id"] == groups[1][
+        "candidate_group_id"
+    ]
+    assert all(item["candidate_player_uid"] is None for item in groups)
 
 
 def test_workbook_export_import_unicode_and_machine_tamper(tmp_path):
