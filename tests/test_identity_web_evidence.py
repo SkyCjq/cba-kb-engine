@@ -8,6 +8,7 @@ from cba_kb.identity_coverage import prepare_review_packet
 from cba_kb.identity_web_evidence import (
     IdentityWebEvidenceError,
     batch_predicate,
+    build_b0_source_registry,
     build_batch_plan,
     build_conflicts,
     build_collector_search_manifest,
@@ -83,6 +84,50 @@ def test_source_policy_and_redirect_guard():
         validate_source_url(
             "https://evil.example/notice",
             source_tier="A0",
+        )
+
+
+def test_b0_registry_binding_is_required():
+    registry = build_b0_source_registry([{
+        "entry_id": "club-1",
+        "canonical_club_identity": "Synthetic Club",
+        "approved_domain": "club.example",
+        "human_approval_ref": "approval-1",
+        "approved_at": "2026-09-18T00:00:00Z",
+    }])
+    item = build_evidence_item(
+        source_tier="B0",
+        source_kind="club_notice",
+        source_url="https://club.example/player/1",
+        fetched_at="2026-09-18T00:00:00Z",
+        http_status=200,
+        content_type="text/html",
+        content=b"b0",
+        raw_snapshot_path="raw/b0.bin",
+        claims=[],
+        record_keys=[],
+        b0_registry_sha256=registry["b0_source_registry_sha256"],
+        b0_entry_id="club-1",
+        b0_source_registry=registry,
+    )
+    assert item["b0_registry_sha256"] == registry[
+        "b0_source_registry_sha256"
+    ]
+    with pytest.raises(IdentityWebEvidenceError, match="B0_DOMAIN_NOT_APPROVED"):
+        build_evidence_item(
+            source_tier="B0",
+            source_kind="club_notice",
+            source_url="https://evil.example/player/1",
+            fetched_at="2026-09-18T00:00:00Z",
+            http_status=200,
+            content_type="text/html",
+            content=b"bad",
+            raw_snapshot_path="raw/bad.bin",
+            claims=[],
+            record_keys=[],
+            b0_registry_sha256=registry["b0_source_registry_sha256"],
+            b0_entry_id="club-1",
+            b0_source_registry=registry,
         )
     with pytest.raises(IdentityWebEvidenceError, match="B0_DOMAIN_NOT_APPROVED"):
         validate_source_url(
@@ -521,11 +566,19 @@ def test_fetch_boundary_retry_redirect_timeout_and_size():
 
     def transport(url, *, method, timeout, headers):
         calls.append((url, method, timeout, headers))
+        if url.endswith("/start"):
+            return {
+                "status": 302,
+                "content_type": "text/html",
+                "body": b"",
+                "location": "https://www.cbaleague.com/player/1",
+                "redirects": [],
+            }
         return {
             "status": 200,
             "content_type": "text/html",
             "body": b"<html>ok</html>",
-            "redirects": ["https://www.cbaleague.com/player/1"],
+            "redirects": [],
         }
 
     result = fetch_official_resource(

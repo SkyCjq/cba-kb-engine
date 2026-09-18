@@ -112,6 +112,7 @@ def test_cli_web_evidence_private_workflow(tmp_path):
         "identity-web-evidence-collect",
         "--responses",
         "inputs/responses.json",
+        "--synthetic-responses",
         "--output-root",
         "outputs/collected",
         "--manifest",

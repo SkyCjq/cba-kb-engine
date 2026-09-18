@@ -104,6 +104,11 @@ _SUSPICIOUS_TEXT = re.compile(r"[�]|Ã|Â|锟|拷|娌|鎹")
 _DOMAIN_LAST_REQUEST = {}
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 class IdentityWebEvidenceError(RuntimeError):
     pass
 
@@ -348,21 +353,24 @@ def validate_response_guard(
     }
 
 
-def _urllib_transport(url, *, method, timeout, headers):
+def _urllib_transport(url, *, method, timeout, headers, max_bytes=10_000_000):
     request = urllib.request.Request(url, method=method, headers=headers)
+    opener = urllib.request.build_opener(_NoRedirectHandler())
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with opener.open(request, timeout=timeout) as response:
             return {
                 "status": response.status,
                 "content_type": response.headers.get_content_type(),
-                "body": response.read(),
+                "body": response.read(max_bytes + 1),
+                "location": response.headers.get("Location"),
                 "redirects": [],
             }
     except urllib.error.HTTPError as exc:
         return {
             "status": exc.code,
             "content_type": exc.headers.get_content_type(),
-            "body": exc.read(),
+            "body": exc.read(max_bytes + 1),
+            "location": exc.headers.get("Location"),
             "redirects": [],
         }
 
@@ -376,6 +384,7 @@ def fetch_official_resource(
     timeout_seconds=10,
     max_bytes=10_000_000,
     max_retries=2,
+    max_redirects=5,
     per_domain_interval=1.0,
     transport=None,
     sleep=time.sleep,
@@ -398,19 +407,43 @@ def fetch_official_resource(
     last_error = None
     for attempt in range(max_retries + 1):
         try:
-            response = transport(
-                url,
-                method=request["method"],
-                timeout=timeout_seconds,
-                headers=request["headers"],
-            )
-            for redirect in response.get("redirects", []):
-                validate_redirect(
-                    url,
-                    redirect,
-                    source_tier=source_tier,
-                    private_b0_domains=private_b0_domains,
-                )
+            current_url = url
+            redirect_count = 0
+            while True:
+                try:
+                    response = transport(
+                        current_url,
+                        method=request["method"],
+                        timeout=timeout_seconds,
+                        headers=request["headers"],
+                        max_bytes=max_bytes,
+                    )
+                except TypeError:
+                    response = transport(
+                        current_url,
+                        method=request["method"],
+                        timeout=timeout_seconds,
+                        headers=request["headers"],
+                    )
+                redirects = list(response.get("redirects", []))
+                if response.get("location"):
+                    redirects.append(response["location"])
+                if redirects:
+                    for redirect in redirects:
+                        validate_redirect(
+                            current_url,
+                            redirect,
+                            source_tier=source_tier,
+                            private_b0_domains=private_b0_domains,
+                        )
+                    redirect_count += len(redirects)
+                    if redirect_count > max_redirects:
+                        raise IdentityWebEvidenceError(
+                            "REDIRECT_LIMIT_EXCEEDED",
+                        )
+                    current_url = redirects[-1]
+                    continue
+                break
             validate_response_guard(
                 status=response["status"],
                 content_type=response["content_type"],
@@ -419,8 +452,8 @@ def fetch_official_resource(
                 timeout_seconds=timeout_seconds,
             )
             return {
-                "url": url,
-                "domain": domain,
+                "url": current_url,
+                "domain": source_domain(current_url),
                 "status": response["status"],
                 "content_type": response["content_type"],
                 "content": response["body"],
@@ -588,7 +621,8 @@ def validate_evidence_item(item):
         "extraction_warnings",
         "record_keys",
         "bindings",
-        "b0_domain_approved",
+        "b0_registry_sha256",
+        "b0_entry_id",
     }
     if set(item) != required:
         raise IdentityWebEvidenceError("EVIDENCE_ITEM_SCHEMA_INVALID")
@@ -606,8 +640,8 @@ def validate_evidence_item(item):
     if item["source_domain"] != source_domain(item["source_url"]):
         raise IdentityWebEvidenceError("EVIDENCE_DOMAIN_MISMATCH")
     if item["source_tier"] == "B0":
-        if item["b0_domain_approved"] is not True:
-            raise IdentityWebEvidenceError("B0_DOMAIN_NOT_APPROVED")
+        _required_sha256(item["b0_registry_sha256"], "B0_REGISTRY_SHA256")
+        _required_text(item["b0_entry_id"], "B0_ENTRY_ID")
     else:
         validate_source_url(
             item["source_url"],
@@ -623,9 +657,65 @@ def validate_evidence_item(item):
         raise IdentityWebEvidenceError("RECORD_KEYS_ORDER_INVALID")
     if not isinstance(item["bindings"], list):
         raise IdentityWebEvidenceError("EVIDENCE_BINDINGS_REQUIRED")
+    claim_types = {claim["claim_type"] for claim in item["claims"]}
     for binding in item["bindings"]:
         _validate_evidence_binding(binding)
+        if not binding["matched_claim_fields"]:
+            raise IdentityWebEvidenceError("MATCHED_CLAIM_FIELDS_REQUIRED")
+        if not set(binding["matched_claim_fields"]) <= claim_types:
+            raise IdentityWebEvidenceError(
+                "BINDING_MATCHED_CLAIM_NOT_PRESENT",
+            )
     return item
+
+
+def build_b0_source_registry(entries):
+    normalized = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise IdentityWebEvidenceError("B0_REGISTRY_ENTRY_INVALID")
+        required = {
+            "entry_id",
+            "canonical_club_identity",
+            "approved_domain",
+            "human_approval_ref",
+            "approved_at",
+        }
+        if set(entry) != required:
+            raise IdentityWebEvidenceError("B0_REGISTRY_ENTRY_INVALID")
+        normalized.append({
+            **entry,
+            "approved_domain": entry["approved_domain"].lower(),
+        })
+    normalized.sort(key=lambda item: item["entry_id"])
+    core = {
+        "schema_version": SCHEMA_VERSION,
+        "entries": normalized,
+    }
+    return {
+        **core,
+        "b0_source_registry_sha256": hashlib.sha256(
+            canonical_bytes(core),
+        ).hexdigest(),
+    }
+
+
+def validate_b0_source_registry(value):
+    if not isinstance(value, dict):
+        raise IdentityWebEvidenceError("B0_REGISTRY_OBJECT_REQUIRED")
+    required = {"schema_version", "entries", "b0_source_registry_sha256"}
+    if set(value) != required:
+        raise IdentityWebEvidenceError("B0_REGISTRY_SCHEMA_INVALID")
+    core = {
+        key: value[key]
+        for key in value
+        if key != "b0_source_registry_sha256"
+    }
+    if hashlib.sha256(canonical_bytes(core)).hexdigest() != value[
+        "b0_source_registry_sha256"
+    ]:
+        raise IdentityWebEvidenceError("B0_REGISTRY_HASH_MISMATCH")
+    return value
 
 
 def build_evidence_item(
@@ -645,13 +735,32 @@ def build_evidence_item(
     extractor_version=EXTRACTOR_VERSION,
     private_b0_domains=None,
     bindings=None,
-    b0_domain_approved=False,
+    b0_registry_sha256=None,
+    b0_entry_id=None,
+    b0_source_registry=None,
 ):
-    validate_source_url(
-        source_url,
-        source_tier=source_tier,
-        private_b0_domains=private_b0_domains,
-    )
+    if source_tier == "B0":
+        registry = validate_b0_source_registry(b0_source_registry)
+        if b0_registry_sha256 != registry["b0_source_registry_sha256"]:
+            raise IdentityWebEvidenceError("B0_REGISTRY_HASH_MISMATCH")
+        entry = next(
+            (
+                item for item in registry["entries"]
+                if (
+                    item["entry_id"] == b0_entry_id
+                    and item["approved_domain"] == source_domain(source_url)
+                )
+            ),
+            None,
+        )
+        if entry is None:
+            raise IdentityWebEvidenceError("B0_DOMAIN_NOT_APPROVED")
+    else:
+        validate_source_url(
+            source_url,
+            source_tier=source_tier,
+            private_b0_domains=private_b0_domains,
+        )
     digest = content_sha256(content)
     item_id = evidence_id(
         source_tier=source_tier,
@@ -695,7 +804,8 @@ def build_evidence_item(
                 item["target_id"],
             ),
         ),
-        "b0_domain_approved": b0_domain_approved,
+        "b0_registry_sha256": b0_registry_sha256,
+        "b0_entry_id": b0_entry_id,
     }
     return validate_evidence_item(item)
 
@@ -1160,6 +1270,53 @@ def enrich_candidates(
     )
 
 
+def derive_new_identity_groups(candidates, *, evidence_manifest):
+    validate_evidence_manifest(evidence_manifest)
+    target_members = defaultdict(list)
+    target_evidence = defaultdict(set)
+    for proposal in candidates:
+        if proposal.get("proposal_type") != "NO_SAFE_CANDIDATE":
+            continue
+        record_key = proposal["record_key"]
+        for item in evidence_manifest["items"]:
+            for binding in item["bindings"]:
+                if (
+                    binding["record_key"] == record_key
+                    and binding["target_type"] == "NEW_GROUP"
+                ):
+                    target_members[binding["target_id"]].append(proposal)
+                    target_evidence[binding["target_id"]].add(
+                        item["evidence_id"],
+                    )
+    grouped = []
+    for target_id, members in sorted(target_members.items()):
+        member_review_ids = [
+            item.get("review_id") or item["record_key"]
+            for item in members
+        ]
+        evidence_ids = sorted(target_evidence[target_id])
+        group_id = deterministic_group_id(
+            member_review_ids,
+            "W1_OFFICIAL_PERSON_ID_EXACT",
+            evidence_ids,
+        )
+        for item in members:
+            grouped.append({
+                **item,
+                "proposal_type": "NEW_IDENTITY_CANDIDATE",
+                "candidate_group_id": group_id,
+                "proposed_relation": "KEEP_UNDECIDED",
+                "machine_reason": "shared_target_bound_official_evidence",
+            })
+    return sorted(
+        grouped,
+        key=lambda item: (
+            item.get("candidate_group_id") or "",
+            item["record_key"],
+        ),
+    )
+
+
 def build_batch_plan(
     packet,
     evidence_manifest,
@@ -1173,10 +1330,22 @@ def build_batch_plan(
     eligible = []
     for proposal in packet["reviews"]:
         claims = _claims_for_record(evidence_manifest, proposal["record_key"])
-        evidence_class, reasons = classify_record_evidence(
-            proposal["record_key"],
-            evidence_manifest,
-        )
+        if proposal.get("candidate_player_uid"):
+            evidence_class, reasons = classify_candidate_evidence(
+                proposal["record_key"],
+                target_type="EXISTING_UID",
+                target_id=proposal["candidate_player_uid"],
+                manifest=evidence_manifest,
+            )
+        elif proposal.get("candidate_group_id"):
+            evidence_class, reasons = classify_candidate_evidence(
+                proposal["record_key"],
+                target_type="NEW_GROUP",
+                target_id=proposal["candidate_group_id"],
+                manifest=evidence_manifest,
+            )
+        else:
+            evidence_class, reasons = "W4_DISCOVERY_SUPPORT", []
         search_manifest = search_statuses.get(proposal["record_key"])
         search_status = (
             search_exhaustion_status(search_manifest)
@@ -1202,6 +1371,7 @@ def build_batch_plan(
         item["review_id"],
     ))
     batches = []
+    collector_manifest_hashes = {}
     by_predicate = defaultdict(list)
     for item in eligible:
         by_predicate[item["batch_predicate"]].append(item)
@@ -1221,7 +1391,25 @@ def build_batch_plan(
                 "batch_predicate": predicate,
                 "member_review_ids": [item["review_id"] for item in members],
                 "member_count": len(members),
+                "collector_manifest_hashes": {
+                    item["record_key"]: (
+                        search_statuses[item["record_key"]][
+                            "collector_search_manifest_sha256"
+                        ]
+                        if isinstance(
+                            search_statuses.get(item["record_key"]),
+                            dict,
+                        )
+                        else None
+                    )
+                    for item in members
+                },
             })
+    for record_key, value in search_statuses.items():
+        if isinstance(value, dict):
+            collector_manifest_hashes[record_key] = value[
+                "collector_search_manifest_sha256"
+            ]
     return {
         "schema_version": SCHEMA_VERSION,
         "authority": "NON_CANONICAL_HUMAN_WORKFLOW_PROJECTION",
@@ -1230,6 +1418,9 @@ def build_batch_plan(
             "web_evidence_manifest_sha256"
         ],
         "batch_size": batch_size,
+        "collector_search_manifest_set_sha256": hashlib.sha256(
+            canonical_bytes(collector_manifest_hashes),
+        ).hexdigest(),
         "batches": batches,
     }
 

@@ -183,6 +183,7 @@ def main():
     q.add_argument('--output',type=Path,required=True)
     q=sub.add_parser('identity-web-evidence-collect')
     q.add_argument('--responses',type=Path)
+    q.add_argument('--synthetic-responses',action='store_true')
     q.add_argument('--discoveries',type=Path)
     q.add_argument('--output-root',type=Path,required=True)
     q.add_argument('--manifest',type=Path,required=True)
@@ -721,6 +722,10 @@ def main():
                 save(private_path(a.output),result)
             elif a.command=='identity-web-evidence-collect':
                 if a.responses:
+                    if not a.synthetic_responses:
+                        raise ValueError(
+                            'SYNTHETIC_RESPONSES_FLAG_REQUIRED'
+                        )
                     responses=json.loads(
                         private_path(a.responses).read_text()
                     )
