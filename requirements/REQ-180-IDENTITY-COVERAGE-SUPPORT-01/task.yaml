@@ -1,0 +1,280 @@
+req_id: REQ-180-IDENTITY-COVERAGE-SUPPORT-01
+requirement_revision: r3-20260917-identity-coverage-tooling-final-contract
+development_baseline_sha: 1f1defe6999c33001ff5d67b7a7238ed870a6447
+upstream_requirement: REQ-180-IDENTITY-COVERAGE-01
+upstream_requirement_sha256: 065218c82485152cc9551f6ce2e4a17457f81db93d9fb47e199db0bda19cf2ba
+base_branch: main
+lane: CODE_CONFIG
+risk: HIGH
+status: FROZEN_SPEC
+private_data_in_git: false
+synthetic_tests_only: true
+automatic_same_from_name: false
+automatic_same_from_alias: false
+automatic_new_identity_creation: false
+canonical_registry_direct_write: false
+existing_identity_authority_preserved: true
+coverage_ledger_required: true
+coverage_certificate_required: true
+human_review_required: true
+release_infrastructure_mode: 'OFF'
+production_access: forbidden
+publish_allowed: false
+restore_allowed: false
+context_policy: allowlist_only
+stage2_authorized: false
+new_dependency_required: false
+uid_allocation_policy: CALLER_SUPPLIED_OPAQUE
+uid_policy:
+  allocation: CALLER_SUPPLIED_OPAQUE
+  generator_in_support_module: false
+  validate_opaque_uid_format: true
+  reject_direct_semantic_equality: true
+  forbidden_semantic_fields:
+  - canonical_or_display_name
+  - record_key
+  - team_or_club
+  - season
+  forbidden_hash_derivations:
+    algorithm:
+    - SHA256
+    input:
+    - each_individual_normalized_semantic_field
+  semantic_normalization:
+  - unicode_nfkc
+  - trim_outer_whitespace
+  - collapse_internal_whitespace_to_ascii_space
+  - preserve_case
+  - encode_utf8_before_sha256
+  forbidden_hash_check: sha256(normalized_field.encode("utf-8")).hexdigest()
+  forbidden_hash_input_scope: each_semantic_field_individually
+  concatenated_field_hash_forbidden: true
+  additional_digest_algorithms_forbidden: true
+  claim_absence_of_arbitrary_custom_derivation: false
+  allocation_attestation_required: true
+review_packet_format:
+  authority: canonical_json
+  human_projection: csv
+  xlsx_required: false
+review_estimate:
+  estimated_review_rows: 3353
+  recommended_batch_size: 200
+  estimated_batches: 17
+  collision_reaudit_required: true
+coverage_contract:
+  dispositions:
+  - RESOLVED_SAME
+  - UNRESOLVED_CANDIDATES
+  - NO_SAFE_CANDIDATE
+  - SOURCE_EXCEPTION
+  proposal_types:
+  - EXISTING_IDENTITY_CANDIDATE
+  - NEW_IDENTITY_CANDIDATE
+  - NO_SAFE_CANDIDATE
+  - SOURCE_EXCEPTION_CANDIDATE
+  proposed_relation_enum:
+  - PROPOSED_SAME
+  - PROPOSED_SEPARATE
+  - KEEP_UNDECIDED
+  - NO_SAFE_CANDIDATE
+  - SOURCE_EXCEPTION
+  proposal_type_relation_compatibility:
+    EXISTING_IDENTITY_CANDIDATE:
+    - PROPOSED_SAME
+    - PROPOSED_SEPARATE
+    - KEEP_UNDECIDED
+    NEW_IDENTITY_CANDIDATE:
+    - PROPOSED_SAME
+    - KEEP_UNDECIDED
+    NO_SAFE_CANDIDATE:
+    - NO_SAFE_CANDIDATE
+    SOURCE_EXCEPTION_CANDIDATE:
+    - SOURCE_EXCEPTION
+  every_record_key_exactly_one_disposition: true
+  missing_record_fail_closed: true
+  unknown_record_fail_closed: true
+  duplicate_disposition_fail_closed: true
+  silent_drop_fail_closed: true
+review_schema:
+  machine_owned_review_fields:
+  - review_id
+  - record_key
+  - proposal_type
+  - candidate_group_id
+  - candidate_player_uid
+  - candidate_name_display_only
+  - proposed_relation
+  - machine_suggestion
+  - machine_reason
+  - evidence_refs
+  human_owned_review_fields:
+  - human_decision
+  - human_note
+  - approved_player_uid
+  - approved_canonical_name
+  - source_exception_reason
+  - reviewed_at
+  machine_owned_fields_csv_editable: false
+  reviewed_decisions_authority: reviewed_decisions.json
+  review_packet_sha256_required: true
+  reviewed_decisions_sha256_required: true
+  csv_authority: convenience_projection_only
+review_semantics:
+  approve: approve_proposed_relation_exactly
+  reject: reject_proposal_only
+  reject_infers_opposite: false
+  reject_alone_can_complete_record: false
+  undecided: remain_unresolved
+  missing_human_decision: fail_closed
+  machine_suggestion_fills_human_decision: false
+  new_identity_requires_approved_uid: true
+  new_identity_requires_canonical_name: true
+  new_identity_requires_evidence: true
+  new_identity_auto_links_same_name_records: false
+  source_exception_approval_requires_reason: true
+  source_exception_reason_inferred_from_other_fields: false
+new_identity_group_consistency:
+  candidate_group_id_is_player_uid: false
+  candidate_group_id_copied_to_player_uid: false
+  approve_proposed_same_requires_one_approved_player_uid: true
+  approve_proposed_same_requires_one_approved_canonical_name: true
+  conflict_error: NEW_IDENTITY_GROUP_AUTHORITY_CONFLICT
+  max_players_created_per_group: 1
+  each_record_requires_reviewed_relation: true
+  unreviewed_rows_auto_linked: false
+decision_mutation_matrix:
+  APPROVE:
+    PROPOSED_SAME: registry_same_relation
+    PROPOSED_SEPARATE: registry_not_same_relation
+    KEEP_UNDECIDED: coverage_unresolved_candidates
+    NO_SAFE_CANDIDATE: coverage_no_safe_candidate
+    SOURCE_EXCEPTION: coverage_source_exception
+  REJECT:
+    mutation: none
+    opposite_relation_inferred: false
+    incomplete_without_other_final_disposition: true
+  UNDECIDED:
+    mutation: none
+    coverage: unresolved_when_candidate_enumerable
+architecture:
+  module: src/cba_kb/identity_coverage.py
+  player_identity_core_change_required: false
+  candidate_registry_output: candidate_registry.json
+  candidate_registry_manifest_output: candidate_registry_manifest.json
+  candidate_registry_pure_identity_v18: true
+  candidate_registry_manifest_separate: true
+  candidate_registry_manifest_minimum_fields:
+  - schema_version
+  - base_registry_sha256
+  - candidate_registry_sha256
+  - MASTER_sha256
+  - master_authority_mode
+  - MASTER_rows
+  - MASTER_unique_record_keys
+  - review_packet_sha256
+  - reviewed_decisions_sha256
+  - created_at
+  canonical_registry_direct_write: false
+  canonical_write_owner: IdentityStore_CAS
+  coverage_ledger:
+    path: data/player_identity/coverage/identity_coverage_ledger.json
+    grain: master_record_key
+  coverage_certificate:
+    path: data/player_identity/coverage/identity_coverage_certificate.json
+    completeness_booleans: reconciliation_computed
+    review_manifest_authority: absent
+    provenance_bindings:
+    - MASTER_sha256
+    - master_authority_mode
+    - MASTER_rows
+    - MASTER_unique_record_keys
+    - base_registry_sha256
+    - final_registry_sha256
+    - review_packet_sha256
+    - reviewed_decisions_sha256
+    - candidate_registry_manifest_sha256
+    - coverage_ledger_sha256
+    full_identity_resolution_algorithm: true_iff_all_master_records_resolved_same
+    source_exception_excluded_from_denominator: false
+master_authority_contract:
+  sha_representation:
+  - valid_sha256
+  - null
+  sentinel_strings_forbidden:
+  - NOT_AVAILABLE
+  - UNKNOWN
+  - NONE
+  - ""
+  modes:
+  - FILE_SHA256_VERIFIED
+  - ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA
+  valid_sha_requires: FILE_SHA256_VERIFIED
+  null_sha_requires: ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA
+  rows_required: true
+  unique_record_keys_required: true
+  null_sha_bypasses_record_key_reconciliation: false
+  applies_to:
+  - candidate_registry_manifest.json
+  - identity_coverage_certificate.json
+private_outputs:
+- review_packet.json
+- review_packet.csv
+- reviewed_decisions.json
+- candidate_registry.json
+- candidate_registry_manifest.json
+- identity_coverage_ledger.json
+- identity_coverage_certificate.json
+cli_commands:
+- identity-coverage-inventory
+- identity-coverage-candidates
+- identity-review-prepare
+- identity-review-validate
+- identity-review-apply
+- identity-coverage-reconcile
+- identity-coverage-certify
+allowed_paths:
+- requirements/REQ-180-IDENTITY-COVERAGE-SUPPORT-01/requirement-r3-20260917.md
+- requirements/REQ-180-IDENTITY-COVERAGE-SUPPORT-01/task-brief.md
+- requirements/REQ-180-IDENTITY-COVERAGE-SUPPORT-01/task.yaml
+- src/cba_kb/identity_coverage.py
+- src/cba_kb/cli.py
+- tests/test_identity_coverage.py
+- tests/test_cli_identity_coverage.py
+focused_tests:
+- tests/test_identity_coverage.py
+- tests/test_cli_identity_coverage.py
+- tests/test_player_identity.py
+- tests/test_cli_identity_v18.py
+- tests/test_player_profile_v2.py
+- tests/test_cli_profile_v2.py
+- tests/test_engine_instance_boundary.py
+- tests/test_security_guards.py
+- tests/test_current_history_separation.py
+must_not_change:
+- src/cba_kb/player_identity.py
+- src/cba_kb/document_mentions.py
+- src/cba_kb/player_profile.py
+- src/cba_kb/document_lane.py
+- src/cba_kb/consumer_projection.py
+- src/cba_kb/consumer_package.py
+- src/cba_kb/event_closure.py
+- src/cba_kb/master.py
+- src/cba_kb/facts.py
+- src/cba_kb/release.py
+- src/cba_kb/drive.py
+- src/cba_kb/transport.py
+- src/cba_kb/native.py
+- scripts/prepare_production.py
+- config/production.json
+- config/runtime.json
+- config/sandbox.json
+- config/drive_map.yaml
+- config/taxonomy.yaml
+- MASTER
+- Facts
+- Events
+- production_manifest
+- production_release_status
+profile_followup:
+  required_after_coverage: true
+  implementation_in_this_requirement: false

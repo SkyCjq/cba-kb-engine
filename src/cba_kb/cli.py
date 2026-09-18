@@ -135,6 +135,49 @@ def main():
     q.add_argument('--expected-current-sha256')
     q=sub.add_parser('identity-candidates')
     q.add_argument('--name',required=True)
+    q=sub.add_parser('identity-coverage-inventory')
+    q.add_argument('--master',type=Path,required=True)
+    q.add_argument('--identity-registry',type=Path,required=True)
+    q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('identity-coverage-candidates')
+    q.add_argument('--master',type=Path,required=True)
+    q.add_argument('--identity-registry',type=Path,required=True)
+    q.add_argument('--hints',type=Path)
+    q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('identity-review-prepare')
+    q.add_argument('--candidates',type=Path,required=True)
+    q.add_argument('--output-json',type=Path,required=True)
+    q.add_argument('--output-csv',type=Path,required=True)
+    q=sub.add_parser('identity-review-validate')
+    q.add_argument('--packet',type=Path,required=True)
+    q.add_argument('--reviewed-csv',type=Path,required=True)
+    q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('identity-review-apply')
+    q.add_argument('--master',type=Path,required=True)
+    q.add_argument('--base-registry',type=Path,required=True)
+    q.add_argument('--packet',type=Path,required=True)
+    q.add_argument('--reviewed-decisions',type=Path,required=True)
+    q.add_argument('--output-registry',type=Path,required=True)
+    q.add_argument('--output-manifest',type=Path,required=True)
+    q.add_argument('--output-ledger',type=Path,required=True)
+    q.add_argument('--created-at',required=True)
+    q=sub.add_parser('identity-coverage-reconcile')
+    q.add_argument('--master',type=Path,required=True)
+    q.add_argument('--ledger',type=Path,required=True)
+    q.add_argument('--final-registry',type=Path,required=True)
+    q.add_argument('--base-registry',type=Path,required=True)
+    q.add_argument('--review-packet',type=Path,required=True)
+    q.add_argument('--reviewed-decisions',type=Path,required=True)
+    q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('identity-coverage-certify')
+    q.add_argument('--master',type=Path,required=True)
+    q.add_argument('--base-registry',type=Path,required=True)
+    q.add_argument('--final-registry',type=Path,required=True)
+    q.add_argument('--review-packet',type=Path,required=True)
+    q.add_argument('--reviewed-decisions',type=Path,required=True)
+    q.add_argument('--candidate-registry-manifest',type=Path,required=True)
+    q.add_argument('--ledger',type=Path,required=True)
+    q.add_argument('--output',type=Path,required=True)
     q=sub.add_parser('mention-validate')
     q.add_argument('--input',type=Path,required=True)
     q=sub.add_parser('mention-build')
@@ -406,7 +449,12 @@ def main():
             )
             if a.output:
                 save(a.output,result)
-        elif a.command.startswith('identity-'):
+        elif a.command in {
+            'identity-validate',
+            'identity-read',
+            'identity-write',
+            'identity-candidates',
+        }:
             from .player_identity import (
                 IdentityStore,
                 discover_candidates,
@@ -426,6 +474,183 @@ def main():
                         load_registry(a.input),
                         expected_current_sha256=a.expected_current_sha256,
                     )
+        elif a.command.startswith('identity-coverage-') or (
+            a.command.startswith('identity-review-')
+        ):
+            from .identity_coverage import (
+                apply_reviewed_decisions,
+                build_candidate_registry_manifest,
+                build_coverage_inventory,
+                build_coverage_ledger,
+                certify_coverage,
+                coverage_candidates,
+                prepare_review_packet,
+                reconcile_coverage,
+                review_packet_to_csv,
+                validate_reviewed_csv,
+            )
+            from .player_identity import (
+                load_registry,
+                serialize_registry,
+            )
+            instance=private_instance()
+            instance_root=Path(instance.root).resolve()
+            def private_path(path):
+                candidate=Path(path)
+                if not candidate.is_absolute():
+                    candidate=instance_root/candidate
+                candidate=candidate.resolve()
+                if not candidate.is_relative_to(instance_root):
+                    raise ValueError(
+                        'IDENTITY_COVERAGE_PATH_OUTSIDE_PRIVATE_INSTANCE'
+                    )
+                return candidate
+            if a.command=='identity-coverage-inventory':
+                rows,_=inspect(private_path(a.master))
+                result=build_coverage_inventory(
+                    rows,
+                    load_registry(private_path(a.identity_registry)),
+                )
+                save(private_path(a.output),result)
+            elif a.command=='identity-coverage-candidates':
+                rows,_=inspect(private_path(a.master))
+                hints=(
+                    json.loads(private_path(a.hints).read_text())
+                    if a.hints else None
+                )
+                result=coverage_candidates(
+                    rows,
+                    load_registry(private_path(a.identity_registry)),
+                    candidate_hints=hints,
+                )
+                save(private_path(a.output),result)
+            elif a.command=='identity-review-prepare':
+                proposals=json.loads(
+                    private_path(a.candidates).read_text()
+                )
+                packet=prepare_review_packet(proposals)
+                save(private_path(a.output_json),packet)
+                atomic(
+                    private_path(a.output_csv),
+                    review_packet_to_csv(packet),
+                )
+                result={
+                    'review_packet_sha256':packet[
+                        'review_packet_sha256'
+                    ],
+                    'review_count':len(packet['reviews']),
+                }
+            elif a.command=='identity-review-validate':
+                packet=json.loads(private_path(a.packet).read_text())
+                reviewed=validate_reviewed_csv(
+                    packet,
+                    private_path(a.reviewed_csv).read_bytes(),
+                )
+                save(private_path(a.output),reviewed)
+                result=reviewed
+            elif a.command=='identity-review-apply':
+                rows,_=inspect(private_path(a.master))
+                base_path=private_path(a.base_registry)
+                base_registry=load_registry(base_path)
+                packet=json.loads(private_path(a.packet).read_text())
+                reviewed=json.loads(
+                    private_path(a.reviewed_decisions).read_text()
+                )
+                candidate,groups=apply_reviewed_decisions(
+                    rows,
+                    base_registry,
+                    packet,
+                    reviewed,
+                )
+                candidate_bytes=serialize_registry(candidate)
+                candidate_path=private_path(a.output_registry)
+                atomic(candidate_path,candidate_bytes)
+                ledger=build_coverage_ledger(
+                    rows,
+                    candidate,
+                    packet,
+                    reviewed,
+                )
+                ledger_path=private_path(a.output_ledger)
+                save(ledger_path,ledger)
+                manifest=build_candidate_registry_manifest(
+                    base_registry_sha256=base_registry[
+                        'registry_sha256'
+                    ],
+                    candidate_registry_sha256=candidate[
+                        'registry_sha256'
+                    ],
+                    master_sha256=digest(private_path(a.master).read_bytes()),
+                    master_authority_mode='FILE_SHA256_VERIFIED',
+                    master_rows=len(rows),
+                    master_unique_record_keys=len({
+                        row['record_key'] for row in rows
+                    }),
+                    review_packet_sha256=packet[
+                        'review_packet_sha256'
+                    ],
+                    reviewed_decisions_sha256=reviewed[
+                        'reviewed_decisions_sha256'
+                    ],
+                    created_at=a.created_at,
+                )
+                save(private_path(a.output_manifest),manifest)
+                result={
+                    'candidate_registry_sha256':candidate[
+                        'registry_sha256'
+                    ],
+                    'coverage_ledger_sha256':ledger[
+                        'coverage_ledger_sha256'
+                    ],
+                    'candidate_registry_manifest_sha256':manifest[
+                        'candidate_registry_manifest_sha256'
+                    ],
+                    'new_identity_group_count':len(groups),
+                }
+            elif a.command=='identity-coverage-reconcile':
+                rows,_=inspect(private_path(a.master))
+                ledger=json.loads(private_path(a.ledger).read_text())
+                packet=json.loads(private_path(a.review_packet).read_text())
+                reviewed=json.loads(
+                    private_path(a.reviewed_decisions).read_text()
+                )
+                result=reconcile_coverage(
+                    rows,
+                    ledger,
+                    load_registry(private_path(a.final_registry)),
+                    base_registry=load_registry(
+                        private_path(a.base_registry)
+                    ),
+                    review_packet=packet,
+                    reviewed_decisions=reviewed,
+                )
+                save(private_path(a.output),result)
+            else:
+                rows,summary=inspect(private_path(a.master))
+                base_path=private_path(a.base_registry)
+                final_path=private_path(a.final_registry)
+                packet_path=private_path(a.review_packet)
+                decisions_path=private_path(a.reviewed_decisions)
+                manifest_path=private_path(
+                    a.candidate_registry_manifest
+                )
+                ledger_path=private_path(a.ledger)
+                result=certify_coverage(
+                    master_rows=rows,
+                    master_sha256=summary['sha256'],
+                    master_authority_mode='FILE_SHA256_VERIFIED',
+                    base_registry=load_registry(base_path),
+                    final_registry=load_registry(final_path),
+                    review_packet=json.loads(packet_path.read_text()),
+                    reviewed_decisions=json.loads(
+                        decisions_path.read_text()
+                    ),
+                    candidate_registry_manifest=json.loads(
+                        manifest_path.read_text()
+                    ),
+                    coverage_ledger=json.loads(ledger_path.read_text()),
+                )
+                save(private_path(a.output),result)
         elif a.command.startswith('mention-'):
             from .document_mentions import (
                 build_mention_artifact,
