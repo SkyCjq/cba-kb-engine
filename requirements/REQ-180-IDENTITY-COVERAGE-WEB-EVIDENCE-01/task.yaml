@@ -1,0 +1,153 @@
+req_id: REQ-180-IDENTITY-COVERAGE-WEB-EVIDENCE-01
+requirement_revision: r1-20260918-web-evidence-and-batch-review
+development_baseline_sha: 02ad7f8061d184dfefd2fa802073154eb83fa9f5
+base_branch: main
+lane: CODE_CONFIG
+risk: HIGH
+status: FROZEN_SPEC
+upstream_requirement: REQ-180-IDENTITY-COVERAGE-01
+upstream_revision: r1-20260917-full-private-identity-coverage
+prerequisite_tooling_requirement: REQ-180-IDENTITY-COVERAGE-SUPPORT-01
+prerequisite_tooling_state: MERGED
+release_infrastructure_mode: 'OFF'
+production_access: forbidden
+publish_allowed: false
+restore_allowed: false
+stage2_authorized: false
+new_dependency_allowed: false
+private_instance_root: /Users/skychengneo/Agent/CBA_kb_instance
+identity_semantics:
+  auto_same_from_web: false
+  auto_same_from_exact_name: false
+  auto_same_from_alias: false
+  auto_same_from_team: false
+  auto_same_from_adjacent_season: false
+  auto_same_from_jersey_number: false
+  auto_same_from_fuzzy_name: false
+  auto_same_from_llm: false
+  automatic_final_uid: false
+  candidate_group_id_is_player_uid: false
+  human_authority_required: true
+source_policy:
+  A0_OFFICIAL_ASSOCIATION:
+  - cba.net.cn
+  - www.cba.net.cn
+  - cbanetcdn.cba.net.cn
+  A1_OFFICIAL_LEAGUE_REGISTRATION:
+  - cbaleague.com
+  - www.cbaleague.com
+  - image.cbaleague.com
+  A2_OFFICIAL_LEAGUE_DATA:
+  - cbaleague.com
+  - www.cbaleague.com
+  B0_OFFICIAL_CLUB: human_curated_private_registry_only
+  D0_DISCOVERY_ONLY:
+  - search_engine
+  - mainstream_media
+  - encyclopedia
+  - forum
+  - social_post
+  - search_snippet
+  public_unauthenticated_only: true
+  credentials_forbidden: true
+  captcha_bypass_forbidden: true
+  paywall_bypass_forbidden: true
+web_evidence:
+  raw_snapshots_private: true
+  content_sha256_required: true
+  source_url_required: true
+  fetch_timestamp_required: true
+  extractor_version_required: true
+  source_locator_required: true
+  web_body_in_git_forbidden: true
+  llm_output_is_evidence: false
+candidate_classes:
+- W1_OFFICIAL_PERSON_ID_EXACT
+- W2_OFFICIAL_BIO_MULTI_SOURCE
+- W3_OFFICIAL_CONTINUITY
+- W4_DISCOVERY_SUPPORT
+- WX_CONFLICT
+batch_review:
+  enabled: true
+  row_level_expansion_required: true
+  exact_membership_required: true
+  packet_hash_binding_required: true
+  evidence_manifest_hash_binding_required: true
+  eligible_predicates:
+  - BATCH_EXISTING_W1
+  - BATCH_EXISTING_W2
+  - BATCH_NO_SAFE_SEARCH_EXHAUSTED
+  conflict_batch_forbidden: true
+  new_identity_batch_without_uid_forbidden: true
+group_review:
+  enabled: true
+  new_identity_group_human_uid_required: true
+  new_identity_group_human_name_required: true
+  uid_allocation_attestation_required: true
+  unlisted_group_member_auto_link_forbidden: true
+workbook:
+  required: true
+  filename: review_packet_workbook.xlsx
+  canonical: false
+  library: openpyxl
+  sheets:
+  - Review
+  - Groups
+  - Batches
+  - Evidence_Index
+  - Instructions
+  machine_owned_cells_verified_on_import: true
+  source_body_embedding_forbidden: true
+  unicode_roundtrip_required: true
+required_cli:
+- identity-web-evidence-discover
+- identity-web-evidence-collect
+- identity-web-evidence-enrich
+- identity-review-workbook-export
+- identity-review-workbook-import
+current_review_universe:
+  MASTER_record_keys: 3465
+  resolved_same: 112
+  existing_identity_candidate: 40
+  no_safe_candidate: 3313
+  review_rows: 3353
+  run_id: 20260918T045146Z
+  status_after_this_requirement: IMMUTABLE_AUDIT_HISTORY
+private_acceptance_required: true
+allowed_paths:
+- requirements/REQ-180-IDENTITY-COVERAGE-WEB-EVIDENCE-01/requirement-r1-20260918.md
+- requirements/REQ-180-IDENTITY-COVERAGE-WEB-EVIDENCE-01/task-brief.md
+- requirements/REQ-180-IDENTITY-COVERAGE-WEB-EVIDENCE-01/task.yaml
+- src/cba_kb/identity_web_evidence.py
+- src/cba_kb/identity_coverage.py
+- src/cba_kb/cli.py
+- tests/test_identity_web_evidence.py
+- tests/test_cli_identity_web_evidence.py
+must_not_change:
+- src/cba_kb/player_identity.py
+- src/cba_kb/master.py
+- src/cba_kb/facts.py
+- src/cba_kb/event_closure.py
+- src/cba_kb/player_profile.py
+- src/cba_kb/document_mentions.py
+- src/cba_kb/document_lane.py
+- src/cba_kb/consumer_package.py
+- pyproject.toml
+- canonical_MASTER_Facts_Events
+- canonical_identity_registry
+- production_release_state
+- existing_frozen_upstream_drive_artifacts
+corridor_exit:
+- NEW_DEFAULT_SOURCE_DOMAIN_REQUIRED
+- AUTHENTICATION_REQUIRED
+- CAPTCHA_OR_ANTIBOT_BYPASS_REQUIRED
+- NEW_DEPENDENCY_REQUIRED
+- MATERIAL_OFFICIAL_SOURCE_CONFLICT
+- EVIDENCE_CLASS_SEMANTIC_CHANGE
+- AUTO_SAME_REQUIRED
+- AMBIGUOUS_CANDIDATE_GROUP
+- BATCH_PREDICATE_EXTENSION_REQUIRED
+- TEXT_OR_OCR_CORRUPTION
+- PRIVATE_DATA_TO_GIT_REQUIRED
+- PRODUCTION_ACCESS_REQUIRED
+- CONTEXT_EXPANSION_REQUIRED

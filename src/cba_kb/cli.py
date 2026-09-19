@@ -178,6 +178,45 @@ def main():
     q.add_argument('--candidate-registry-manifest',type=Path,required=True)
     q.add_argument('--ledger',type=Path,required=True)
     q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('identity-web-evidence-discover')
+    q.add_argument('--input',type=Path,required=True)
+    q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('identity-web-evidence-collect')
+    q.add_argument('--responses',type=Path)
+    q.add_argument('--synthetic-responses',action='store_true')
+    q.add_argument('--discoveries',type=Path)
+    q.add_argument('--output-root',type=Path,required=True)
+    q.add_argument('--manifest',type=Path,required=True)
+    q.add_argument('--provenance-output',type=Path)
+    q.add_argument('--source-tier',required=True)
+    q.add_argument('--source-kind',required=True)
+    q.add_argument('--extracted-at',required=True)
+    q=sub.add_parser('identity-web-evidence-enrich')
+    q.add_argument('--candidates',type=Path,required=True)
+    q.add_argument('--evidence-manifest',type=Path,required=True)
+    q.add_argument('--search-statuses',type=Path,required=True)
+    q.add_argument('--association-contexts',type=Path)
+    q.add_argument('--bridge-authority',type=Path)
+    q.add_argument('--fetch-provenance',type=Path)
+    q.add_argument('--output-candidates',type=Path,required=True)
+    q.add_argument('--output-conflicts',type=Path,required=True)
+    q.add_argument('--output-summary',type=Path,required=True)
+    q=sub.add_parser('identity-review-workbook-export')
+    q.add_argument('--packet',type=Path,required=True)
+    q.add_argument('--evidence-manifest',type=Path,required=True)
+    q.add_argument('--groups',type=Path,required=True)
+    q.add_argument('--batches',type=Path,required=True)
+    q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('identity-review-workbook-import')
+    q.add_argument('--packet',type=Path,required=True)
+    q.add_argument('--evidence-manifest',type=Path,required=True)
+    q.add_argument('--groups',type=Path,required=True)
+    q.add_argument('--batches',type=Path,required=True)
+    q.add_argument('--workbook',type=Path,required=True)
+    q.add_argument('--group-authority',type=Path)
+    q.add_argument('--association-authority',type=Path)
+    q.add_argument('--search-statuses',type=Path)
+    q.add_argument('--output-csv',type=Path,required=True)
     q=sub.add_parser('mention-validate')
     q.add_argument('--input',type=Path,required=True)
     q=sub.add_parser('mention-build')
@@ -474,9 +513,11 @@ def main():
                         load_registry(a.input),
                         expected_current_sha256=a.expected_current_sha256,
                     )
-        elif a.command.startswith('identity-coverage-') or (
-            a.command.startswith('identity-review-')
-        ):
+        elif a.command.startswith('identity-coverage-') or a.command in {
+            'identity-review-prepare',
+            'identity-review-validate',
+            'identity-review-apply',
+        }:
             from .identity_coverage import (
                 apply_reviewed_decisions,
                 build_candidate_registry_manifest,
@@ -651,6 +692,270 @@ def main():
                     coverage_ledger=json.loads(ledger_path.read_text()),
                 )
                 save(private_path(a.output),result)
+        elif a.command.startswith('identity-web-evidence-') or (
+            a.command.startswith('identity-review-workbook-')
+        ):
+            from .identity_web_evidence import (
+                build_discovery_record,
+                build_evidence_manifest,
+                build_fetch_provenance_authority,
+                build_batch_plan,
+                build_groups,
+                collect_evidence_from_responses,
+                enrich_candidates,
+                export_review_workbook,
+                extract_html_claims,
+                extract_pdf_claims,
+                fetch_official_resource,
+                import_review_workbook,
+            )
+            instance=private_instance()
+            instance_root=Path(instance.root).resolve()
+            def private_path(path):
+                candidate=Path(path)
+                if not candidate.is_absolute():
+                    candidate=instance_root/candidate
+                candidate=candidate.resolve()
+                if not candidate.is_relative_to(instance_root):
+                    raise ValueError(
+                        'IDENTITY_WEB_EVIDENCE_PATH_OUTSIDE_PRIVATE_INSTANCE'
+                    )
+                return candidate
+            if a.command=='identity-web-evidence-discover':
+                raw=json.loads(private_path(a.input).read_text())
+                records=[]
+                for item in raw:
+                    records.append(build_discovery_record(**item))
+                result=records
+                save(private_path(a.output),result)
+            elif a.command=='identity-web-evidence-collect':
+                if a.responses:
+                    if not a.synthetic_responses:
+                        raise ValueError(
+                            'SYNTHETIC_RESPONSES_FLAG_REQUIRED'
+                        )
+                    responses=json.loads(
+                        private_path(a.responses).read_text()
+                    )
+                    hydrated=[]
+                    for item in responses:
+                        item=dict(item)
+                        item['body']=private_path(item.pop('body_path')).read_bytes()
+                        hydrated.append(item)
+                    manifest=collect_evidence_from_responses(
+                        hydrated,
+                        output_root=private_path(a.output_root),
+                        extracted_at=a.extracted_at,
+                        source_tier=a.source_tier,
+                        source_kind=a.source_kind,
+                    )
+                elif a.discoveries:
+                    discoveries=json.loads(
+                        private_path(a.discoveries).read_text()
+                    )
+                    raw_root=private_path(a.output_root)/'raw'
+                    raw_root.mkdir(parents=True,exist_ok=True)
+                    items=[]
+                    provenance_entries=[]
+                    for discovery in discoveries:
+                        fetched=fetch_official_resource(
+                            discovery['discovered_url'],
+                            source_tier=a.source_tier,
+                        )
+                        body=fetched['content']
+                        content_type=fetched['content_type']
+                        if content_type.startswith('text/html'):
+                            claims=extract_html_claims(body)
+                        elif content_type=='application/pdf':
+                            claims=extract_pdf_claims(body)
+                        else:
+                            claims=[]
+                        snapshot=raw_root/(digest(body)+'.bin')
+                        if not snapshot.exists():
+                            atomic(snapshot,body)
+                        from .identity_web_evidence import build_evidence_item
+                        items.append(build_evidence_item(
+                            source_tier=a.source_tier,
+                            source_kind=a.source_kind,
+                            source_url=fetched['url'],
+                            fetched_at=a.extracted_at,
+                            http_status=fetched['status'],
+                            content_type=content_type,
+                            content=body,
+                            raw_snapshot_path=str(snapshot),
+                            claims=claims,
+                            record_keys=[],
+                        ))
+                        provenance_entries.append({
+                            'discovery_id': digest(json.dumps(
+                                discovery,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ).encode()),
+                            'context_reference': discovery.get(
+                                'context_reference',
+                                discovery['discovered_url'],
+                            ),
+                            'original_discovered_url': discovery[
+                                'discovered_url'
+                            ],
+                            'redirect_chain': fetched.get(
+                                'redirect_chain',
+                                [],
+                            ),
+                            'final_source_url': fetched['url'],
+                            'evidence_id': items[-1]['evidence_id'],
+                            'content_sha256': items[-1]['content_sha256'],
+                            'source_tier': a.source_tier,
+                            'source_kind': a.source_kind,
+                        })
+                    from .identity_web_evidence import build_evidence_manifest
+                    manifest=build_evidence_manifest(items)
+                    if a.provenance_output:
+                        save(
+                            private_path(a.provenance_output),
+                            build_fetch_provenance_authority(
+                                provenance_entries
+                            ),
+                        )
+                else:
+                    raise ValueError(
+                        'IDENTITY_WEB_EVIDENCE_RESPONSES_OR_DISCOVERIES_REQUIRED'
+                    )
+                save(private_path(a.manifest),manifest)
+                result={
+                    'evidence_count':len(manifest['items']),
+                    'web_evidence_manifest_sha256':manifest[
+                        'web_evidence_manifest_sha256'
+                    ],
+                }
+            elif a.command=='identity-web-evidence-enrich':
+                candidates=json.loads(
+                    private_path(a.candidates).read_text()
+                )
+                manifest=json.loads(
+                    private_path(a.evidence_manifest).read_text()
+                )
+                statuses=json.loads(
+                    private_path(a.search_statuses).read_text()
+                )
+                associations=(
+                    json.loads(
+                        private_path(a.association_contexts).read_text()
+                    )
+                    if a.association_contexts else None
+                )
+                bridges=(
+                    json.loads(
+                        private_path(a.bridge_authority).read_text()
+                    )
+                    if a.bridge_authority else None
+                )
+                provenance=(
+                    json.loads(
+                        private_path(a.fetch_provenance).read_text()
+                    )
+                    if a.fetch_provenance else None
+                )
+                strong_potential=any(
+                    any(
+                        claim['claim_type'] in {
+                            'OFFICIAL_SOURCE_DECLARED_PERSON_ID',
+                            'OFFICIAL_BIRTH_DATE',
+                        }
+                        for claim in item['claims']
+                    )
+                    for item in manifest['items']
+                )
+                if strong_potential and (
+                    associations is None
+                    or bridges is None
+                    or provenance is None
+                ):
+                    raise ValueError(
+                        'STRONG_EVIDENCE_REQUIRES_ASSOCIATION_AND_BRIDGE_AUTHORITY'
+                    )
+                enriched=enrich_candidates(
+                    candidates,
+                    evidence_manifest=manifest,
+                    search_statuses=statuses,
+                    association_contexts=associations,
+                    bridge_authority=bridges,
+                    fetch_provenance_authority=provenance,
+                )
+                conflicts=[{
+                    'record_key':item['record_key'],
+                    'conflict_class':reason,
+                } for item in enriched for reason in item['conflict_reasons']]
+                summary={
+                    'candidate_count':len(enriched),
+                    'conflict_count':len(conflicts),
+                    'evidence_class_counts':{
+                        evidence_class:sum(
+                            item['evidence_class']==evidence_class
+                            for item in enriched
+                        )
+                        for evidence_class in sorted({
+                            item['evidence_class'] for item in enriched
+                        })
+                    },
+                }
+                save(private_path(a.output_candidates),enriched)
+                save(private_path(a.output_conflicts),conflicts)
+                save(private_path(a.output_summary),summary)
+                result=summary
+            elif a.command=='identity-review-workbook-export':
+                packet=json.loads(private_path(a.packet).read_text())
+                manifest=json.loads(
+                    private_path(a.evidence_manifest).read_text()
+                )
+                groups=json.loads(private_path(a.groups).read_text())
+                batches=json.loads(private_path(a.batches).read_text())
+                output=export_review_workbook(
+                    private_path(a.output),
+                    packet=packet,
+                    evidence_manifest=manifest,
+                    groups=groups,
+                    batches=batches,
+                )
+                result={'workbook':str(output)}
+            else:
+                packet=json.loads(private_path(a.packet).read_text())
+                manifest=json.loads(
+                    private_path(a.evidence_manifest).read_text()
+                )
+                groups=json.loads(private_path(a.groups).read_text())
+                batches=json.loads(private_path(a.batches).read_text())
+                output=import_review_workbook(
+                    private_path(a.workbook),
+                    packet=packet,
+                    evidence_manifest=manifest,
+                    groups=groups,
+                    batches=batches,
+                    group_authority=(
+                        json.loads(
+                            private_path(a.group_authority).read_text()
+                        )
+                        if a.group_authority else None
+                    ),
+                    association_authority=(
+                        json.loads(
+                            private_path(a.association_authority).read_text()
+                        )
+                        if a.association_authority else None
+                    ),
+                    search_statuses=(
+                        json.loads(
+                            private_path(a.search_statuses).read_text()
+                        )
+                        if a.search_statuses else None
+                    ),
+                )
+                atomic(private_path(a.output_csv),output)
+                result={
+                    'output_csv':str(private_path(a.output_csv)),
+                    'sha256':digest(output),
+                }
         elif a.command.startswith('mention-'):
             from .document_mentions import (
                 build_mention_artifact,
