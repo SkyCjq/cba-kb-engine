@@ -162,6 +162,7 @@ def main():
     q.add_argument('--output-ledger',type=Path,required=True)
     q.add_argument('--created-at',required=True)
     q.add_argument('--r2',action='store_true')
+    q.add_argument('--provenance-overlay',type=Path)
     q=sub.add_parser('identity-coverage-reconcile')
     q.add_argument('--master',type=Path,required=True)
     q.add_argument('--ledger',type=Path,required=True)
@@ -624,6 +625,12 @@ def main():
                     packet,
                     reviewed,
                     r2=a.r2,
+                    provenance_overlay=(
+                        json.loads(
+                            private_path(a.provenance_overlay).read_text()
+                        )
+                        if a.provenance_overlay else None
+                    ),
                 )
                 ledger_path=private_path(a.output_ledger)
                 save(ledger_path,ledger)

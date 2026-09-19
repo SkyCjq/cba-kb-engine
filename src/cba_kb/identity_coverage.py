@@ -1027,6 +1027,7 @@ def build_coverage_ledger(
     reviewed_decisions,
     *,
     r2=False,
+    provenance_overlay=None,
 ):
     rows = _validated_rows(master_rows)
     registry = validate_registry(registry)
@@ -1041,6 +1042,11 @@ def build_coverage_ledger(
     links_by_record = defaultdict(list)
     for link in registry["record_links"]:
         links_by_record[link["record_key"]].append(link)
+    overlay_by_record = _validate_r2_provenance_overlay(
+        provenance_overlay,
+        proposals_by_record,
+        links_by_record,
+    ) if provenance_overlay is not None else {}
 
     entries = []
     for row in sorted(rows, key=_record_key):
@@ -1063,6 +1069,15 @@ def build_coverage_ledger(
         if same_count == 1:
             disposition = "RESOLVED_SAME"
             review_required = False
+        elif r2 and any(
+            item["proposal_type"] in {
+                "EXISTING_IDENTITY_CANDIDATE",
+                "NEW_IDENTITY_CANDIDATE",
+            }
+            for item in proposals_for_record
+        ):
+            disposition = "UNRESOLVED_CANDIDATES"
+            review_required = True
         elif any(
             item["proposal_type"] == "SOURCE_EXCEPTION_CANDIDATE"
             for item in approved
@@ -1110,6 +1125,11 @@ def build_coverage_ledger(
             for item in record_decisions
             for ref in item["evidence_refs"]
         })
+        if record_key in overlay_by_record:
+            evidence_refs = sorted(
+                set(evidence_refs)
+                | set(overlay_by_record[record_key]["existing_evidence_refs"])
+            )
         entry = {
             "record_key": record_key,
             "coverage_disposition": disposition,
@@ -1162,6 +1182,82 @@ def build_coverage_ledger(
         "entries": entries,
     }
     return _add_hash(core, "coverage_ledger_sha256")
+
+
+def _validate_r2_provenance_overlay(
+    overlay,
+    proposals_by_record,
+    links_by_record,
+):
+    if not isinstance(overlay, dict):
+        raise IdentityCoverageError("R2_OVERLAY_OBJECT_REQUIRED")
+    if set(overlay) != {"schema_version", "task_id", "entries"}:
+        raise IdentityCoverageError("R2_OVERLAY_SCHEMA_INVALID")
+    if overlay["schema_version"] != (
+        "cba-kb.r2-unresolved-candidate-evidence-overlay.v1"
+    ):
+        raise IdentityCoverageError("R2_OVERLAY_VERSION_INVALID")
+    _required_text(overlay["task_id"], "R2_OVERLAY_TASK_ID")
+    if not isinstance(overlay["entries"], list):
+        raise IdentityCoverageError("R2_OVERLAY_ENTRIES_REQUIRED")
+    required = {
+        "record_key",
+        "candidate_player_uid",
+        "existing_evidence_refs",
+        "evidence_tier",
+        "provenance_status",
+        "source_artifact_path",
+        "source_artifact_sha256",
+        "source_locator",
+        "source_type",
+        "why_non_negative_candidate_evidence",
+    }
+    seen = set()
+    result = {}
+    for item in overlay["entries"]:
+        if not isinstance(item, dict) or set(item) != required:
+            raise IdentityCoverageError("R2_OVERLAY_ENTRY_SCHEMA_INVALID")
+        record_key = _required_text(item["record_key"], "RECORD_KEY")
+        if record_key in seen:
+            raise IdentityCoverageError("R2_OVERLAY_DUPLICATE_RECORD")
+        seen.add(record_key)
+        proposals = proposals_by_record.get(record_key, [])
+        candidate_uids = {
+            proposal["candidate_player_uid"]
+            for proposal in proposals
+            if proposal["proposal_type"] == "EXISTING_IDENTITY_CANDIDATE"
+        }
+        if not candidate_uids:
+            raise IdentityCoverageError("R2_OVERLAY_NOT_UNRESOLVED_CANDIDATE")
+        if item["candidate_player_uid"] not in candidate_uids:
+            raise IdentityCoverageError("R2_OVERLAY_CANDIDATE_TARGET_MISMATCH")
+        if any(
+            link["link_status"] == "same"
+            for link in links_by_record.get(record_key, [])
+        ):
+            raise IdentityCoverageError("R2_OVERLAY_RESOLVED_RECORD_FORBIDDEN")
+        _evidence_refs(
+            item["existing_evidence_refs"], "R2_OVERLAY_EVIDENCE_REFS",
+        )
+        if not item["existing_evidence_refs"]:
+            raise IdentityCoverageError("R2_OVERLAY_EVIDENCE_REFS_REQUIRED")
+        if item["evidence_tier"] != "VERIFIED_SOURCE_EVIDENCE":
+            raise IdentityCoverageError("R2_OVERLAY_EVIDENCE_TIER_INVALID")
+        if item["provenance_status"] not in PROVENANCE_STATUSES:
+            raise IdentityCoverageError("R2_OVERLAY_PROVENANCE_STATUS_INVALID")
+        for field in (
+            "source_artifact_path",
+            "source_locator",
+            "source_type",
+            "why_non_negative_candidate_evidence",
+        ):
+            _required_text(item[field], field.upper())
+        _required_sha256(
+            item["source_artifact_sha256"],
+            "R2_OVERLAY_SOURCE_ARTIFACT_SHA256",
+        )
+        result[record_key] = item
+    return result
 
 
 def validate_coverage_ledger(value):

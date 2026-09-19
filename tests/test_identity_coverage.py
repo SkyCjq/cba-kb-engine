@@ -1152,3 +1152,85 @@ def test_r2_unresolved_without_verified_evidence_fails_closed():
         IdentityCoverageError, match="R2_UNRESOLVED_EVIDENCE_REQUIRED",
     ):
         build_coverage_ledger(rows, candidate, packet, reviewed, r2=True)
+
+
+def test_r2_overlay_adds_provenance_without_identity_mutation():
+    rows = [row("r2", "Synthetic Alpha")]
+    base = base_registry()
+    packet = prepare_review_packet(
+        generate_candidate_proposals(rows, base)
+    )
+    reviewed = reviewed_for(packet)
+    candidate, _ = apply_reviewed_decisions(rows, base, packet, reviewed)
+    proposal = packet["reviews"][0]
+    overlay = {
+        "schema_version": (
+            "cba-kb.r2-unresolved-candidate-evidence-overlay.v1"
+        ),
+        "task_id": "synthetic-overlay",
+        "entries": [{
+            "record_key": "r2",
+            "candidate_player_uid": proposal["candidate_player_uid"],
+            "existing_evidence_refs": ["registry-canonical:synthetic"],
+            "evidence_tier": "VERIFIED_SOURCE_EVIDENCE",
+            "provenance_status": "COMPLETE",
+            "source_artifact_path": "/private/synthetic/registry.json",
+            "source_artifact_sha256": "a" * 64,
+            "source_locator": "players[0].canonical_name",
+            "source_type": "canonical_approved_registry_name",
+            "why_non_negative_candidate_evidence": "exact canonical match",
+        }],
+    }
+    ledger = build_coverage_ledger(
+        rows, candidate, packet, reviewed, r2=True,
+        provenance_overlay=overlay,
+    )
+    entry = ledger["entries"][0]
+    assert entry["coverage_disposition"] == "UNRESOLVED_CANDIDATES"
+    assert entry["evidence_tier"] == "VERIFIED_SOURCE_EVIDENCE"
+    assert entry["evidence_refs"] == ["registry-canonical:synthetic"]
+    assert candidate == base
+    assert build_coverage_ledger(
+        rows, candidate, packet, reviewed, r2=True,
+        provenance_overlay=overlay,
+    ) == ledger
+
+    bad_target = {
+        **overlay,
+        "entries": [{
+            **overlay["entries"][0],
+            "candidate_player_uid": UID_B,
+        }],
+    }
+    with pytest.raises(
+        IdentityCoverageError, match="CANDIDATE_TARGET_MISMATCH",
+    ):
+        build_coverage_ledger(
+            rows, candidate, packet, reviewed, r2=True,
+            provenance_overlay=bad_target,
+        )
+    no_safe_packet = prepare_review_packet(
+        generate_candidate_proposals(
+            [row("r4", "Synthetic Gamma")], base,
+        )
+    )
+    no_safe_reviewed = reviewed_for(no_safe_packet)
+    no_safe_candidate, _ = apply_reviewed_decisions(
+        [row("r4", "Synthetic Gamma")], base,
+        no_safe_packet, no_safe_reviewed,
+    )
+    no_safe_overlay = {
+        **overlay,
+        "entries": [{
+            **overlay["entries"][0],
+            "record_key": "r4",
+        }],
+    }
+    with pytest.raises(
+        IdentityCoverageError, match="NOT_UNRESOLVED_CANDIDATE",
+    ):
+        build_coverage_ledger(
+            [row("r4", "Synthetic Gamma")], no_safe_candidate,
+            no_safe_packet, no_safe_reviewed, r2=True,
+            provenance_overlay=no_safe_overlay,
+        )
