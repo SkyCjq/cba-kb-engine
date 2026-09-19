@@ -13,6 +13,7 @@ from cba_kb.identity_coverage import (
     build_coverage_certificate,
     build_coverage_inventory,
     build_coverage_ledger,
+    coverage_semantic_hash,
     certify_coverage,
     generate_candidate_proposals,
     normalize_semantic_field,
@@ -21,6 +22,7 @@ from cba_kb.identity_coverage import (
     review_packet_to_csv,
     validate_candidate_uid,
     validate_machine_proposal,
+    validate_coverage_ledger,
     validate_reviewed_csv,
 )
 from cba_kb.evidence_ledger import canonical_bytes
@@ -1008,3 +1010,64 @@ def test_manifest_created_at_is_deterministic_when_explicit():
             reviewed_decisions_sha256="d" * 64,
             created_at="2026-09-17T00:00:00Z",
         )
+
+
+def test_r2_ledger_certificate_and_semantic_replay():
+    rows, base, packet, reviewed, candidate, manifest, _ = (
+        _completed_authority()
+    )
+    ledger = build_coverage_ledger(
+        rows, candidate, packet, reviewed, r2=True,
+    )
+    entry = ledger["entries"][0]
+    assert entry["coverage_disposition"] == "NO_SAFE_CANDIDATE"
+    assert entry["evidence_tier"] == "BEST_EFFORT_NEGATIVE"
+    assert entry["provenance_status"] == "PARTIAL"
+    assert entry["recheck_allowed"] is True
+    assert entry["identity_authority_effect"] == "NONE"
+    validate_coverage_ledger(ledger)
+    report = reconcile_coverage(
+        rows, ledger, candidate, base_registry=base,
+        review_packet=packet, reviewed_decisions=reviewed,
+    )
+    assert report["full_record_coverage_complete"] is True
+    assert report["full_identity_resolution_complete"] is False
+    r2 = {
+        "frozen_requirement_file_id": "req-file",
+        "frozen_requirement_sha256": "a" * 64,
+        "freeze_decision_file_id": "decision-file",
+        "freeze_decision_sha256": "b" * 64,
+        "created_at": "2026-09-19T00:00:00Z",
+        "search_enrichment_complete": False,
+        "evidence_tier_counts": {"BEST_EFFORT_NEGATIVE": 1},
+        "provenance_status_counts": {"PARTIAL": 1},
+    }
+    certificate = certify_coverage(
+        master_rows=rows, master_sha256=None,
+        master_authority_mode="ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA",
+        base_registry=base, final_registry=candidate, review_packet=packet,
+        reviewed_decisions=reviewed,
+        candidate_registry_manifest=manifest, coverage_ledger=ledger, r2=r2,
+    )
+    assert certificate["coverage_certificate_version"] == "v2"
+    assert certificate["search_enrichment_complete"] is False
+    assert certificate["best_effort_negative_count"] == 1
+    changed_timestamp = {**certificate, "created_at": "2026-09-20T00:00:00Z"}
+    assert coverage_semantic_hash(certificate) == coverage_semantic_hash(
+        changed_timestamp,
+    )
+    changed_semantic = {**certificate, "search_enrichment_complete": True}
+    assert coverage_semantic_hash(certificate) != coverage_semantic_hash(
+        changed_semantic,
+    )
+
+
+def test_r2_ledger_rejects_invalid_no_safe_semantics():
+    rows, base, packet, reviewed, candidate, _, _ = _completed_authority()
+    ledger = build_coverage_ledger(
+        rows, candidate, packet, reviewed, r2=True,
+    )
+    ledger["entries"][0]["recheck_allowed"] = False
+    ledger = rehash_ledger(ledger)
+    with pytest.raises(IdentityCoverageError, match="R2_NO_SAFE_INVALID"):
+        validate_coverage_ledger(ledger)
