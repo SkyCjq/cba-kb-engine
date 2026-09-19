@@ -1130,14 +1130,13 @@ def build_coverage_ledger(
                     "identity_authority_effect": "EXISTING_AUTHORITY",
                 })
             elif disposition == "UNRESOLVED_CANDIDATES":
+                if not evidence_refs:
+                    raise IdentityCoverageError(
+                        "R2_UNRESOLVED_EVIDENCE_REQUIRED",
+                    )
                 entry.update({
-                    "evidence_tier": (
-                        "VERIFIED_SOURCE_EVIDENCE"
-                        if evidence_refs else "BEST_EFFORT_NEGATIVE"
-                    ),
-                    "provenance_status": (
-                        "COMPLETE" if evidence_refs else "PARTIAL"
-                    ),
+                    "evidence_tier": "VERIFIED_SOURCE_EVIDENCE",
+                    "provenance_status": "COMPLETE",
                     "recheck_allowed": True,
                     "identity_authority_effect": (
                         "NONE_UNTIL_HUMAN_DECISION"
@@ -1481,6 +1480,7 @@ def build_coverage_certificate(
             "search_enrichment_complete",
             "evidence_tier_counts",
             "provenance_status_counts",
+            "partial_negative_provenance_count",
         }
         if set(r2) != required:
             raise IdentityCoverageError("R2_CERTIFICATE_INPUT_INVALID")
@@ -1517,9 +1517,9 @@ def build_coverage_certificate(
             "best_effort_negative_count": tier_counts.get(
                 "BEST_EFFORT_NEGATIVE", 0,
             ),
-            "partial_negative_provenance_count": provenance_counts.get(
-                "PARTIAL", 0,
-            ),
+            "partial_negative_provenance_count": r2[
+                "partial_negative_provenance_count"
+            ],
             "search_enrichment_complete": r2[
                 "search_enrichment_complete"
             ],
@@ -1538,10 +1538,9 @@ def build_coverage_certificate(
     return _add_hash(core, "coverage_certificate_sha256")
 
 
-def coverage_semantic_hash(value, *, excluded_timestamp_fields=("created_at",)):
-    """Hash a coverage artifact while excluding only named timestamp fields."""
-    excluded = frozenset(excluded_timestamp_fields)
-
+def coverage_semantic_hash(value):
+    """Hash a coverage artifact excluding only its authorized timestamp."""
+    excluded = frozenset({"created_at"})
     def clean(item):
         if isinstance(item, dict):
             return {
@@ -1552,9 +1551,21 @@ def coverage_semantic_hash(value, *, excluded_timestamp_fields=("created_at",)):
         if isinstance(item, list):
             return [clean(child) for child in item]
         return item
-
     return hashlib.sha256(canonical_bytes(clean(value))).hexdigest()
 
+
+def verify_r2_certificate_bindings(certificate, expected):
+    required = {
+        "frozen_r2_requirement_file_id",
+        "frozen_r2_requirement_sha256",
+        "r2_freeze_decision_file_id",
+        "r2_freeze_decision_sha256",
+    }
+    if set(expected) != required:
+        raise IdentityCoverageError("R2_BINDING_EXPECTATION_INVALID")
+    for field in required:
+        if certificate.get(field) != expected[field]:
+            raise IdentityCoverageError(f"R2_BINDING_MISMATCH_{field.upper()}")
 
 def certify_coverage(
     *,
@@ -1625,6 +1636,14 @@ def certify_coverage(
             raise IdentityCoverageError(
                 "R2_PROVENANCE_STATUS_COUNTS_MISMATCH",
             )
+        r2 = {
+            **r2,
+            "partial_negative_provenance_count": sum(
+                entry["evidence_tier"] == "BEST_EFFORT_NEGATIVE"
+                and entry["provenance_status"] == "PARTIAL"
+                for entry in ledger["entries"]
+            ),
+        }
     return build_coverage_certificate(
         master_sha256=master_sha256,
         master_authority_mode=master_authority_mode,

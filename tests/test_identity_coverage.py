@@ -23,6 +23,7 @@ from cba_kb.identity_coverage import (
     validate_candidate_uid,
     validate_machine_proposal,
     validate_coverage_ledger,
+    verify_r2_certificate_bindings,
     validate_reviewed_csv,
 )
 from cba_kb.evidence_ledger import canonical_bytes
@@ -1071,3 +1072,83 @@ def test_r2_ledger_rejects_invalid_no_safe_semantics():
     ledger = rehash_ledger(ledger)
     with pytest.raises(IdentityCoverageError, match="R2_NO_SAFE_INVALID"):
         validate_coverage_ledger(ledger)
+
+
+def test_r2_partial_negative_and_binding_verifier_are_fail_closed():
+    rows, base, packet, reviewed, candidate, manifest, _ = (
+        _completed_authority()
+    )
+    ledger = build_coverage_ledger(
+        rows, candidate, packet, reviewed, r2=True,
+    )
+    r2 = {
+        "frozen_requirement_file_id": "requirement-file",
+        "frozen_requirement_sha256": "a" * 64,
+        "freeze_decision_file_id": "decision-file",
+        "freeze_decision_sha256": "b" * 64,
+        "created_at": "2026-09-19T00:00:00Z",
+        "search_enrichment_complete": False,
+        "evidence_tier_counts": {"BEST_EFFORT_NEGATIVE": 1},
+        "provenance_status_counts": {"PARTIAL": 1},
+    }
+    certificate = certify_coverage(
+        master_rows=rows, master_sha256=None,
+        master_authority_mode="ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA",
+        base_registry=base, final_registry=candidate, review_packet=packet,
+        reviewed_decisions=reviewed,
+        candidate_registry_manifest=manifest, coverage_ledger=ledger, r2=r2,
+    )
+    assert certificate["partial_negative_provenance_count"] == 1
+    expected = {
+        "frozen_r2_requirement_file_id": "requirement-file",
+        "frozen_r2_requirement_sha256": "a" * 64,
+        "r2_freeze_decision_file_id": "decision-file",
+        "r2_freeze_decision_sha256": "b" * 64,
+    }
+    verify_r2_certificate_bindings(certificate, expected)
+    for field in expected:
+        mismatch = {**expected, field: "mismatch"}
+        with pytest.raises(IdentityCoverageError, match="R2_BINDING_MISMATCH"):
+            verify_r2_certificate_bindings(certificate, mismatch)
+
+    partial_verified = {
+        **ledger,
+        "entries": [{
+            **ledger["entries"][0],
+            "coverage_disposition": "UNRESOLVED_CANDIDATES",
+            "evidence_tier": "VERIFIED_SOURCE_EVIDENCE",
+            "provenance_status": "PARTIAL",
+            "identity_authority_effect": "NONE_UNTIL_HUMAN_DECISION",
+            "review_required": True,
+        }],
+    }
+    partial_verified = rehash_ledger(partial_verified)
+    r2_verified = {
+        **r2,
+        "evidence_tier_counts": {"VERIFIED_SOURCE_EVIDENCE": 1},
+        "provenance_status_counts": {"PARTIAL": 1},
+    }
+    verified_certificate = certify_coverage(
+        master_rows=rows, master_sha256=None,
+        master_authority_mode="ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA",
+        base_registry=base, final_registry=candidate, review_packet=packet,
+        reviewed_decisions=reviewed,
+        candidate_registry_manifest=manifest,
+        coverage_ledger=partial_verified, r2=r2_verified,
+    )
+    assert verified_certificate["partial_negative_provenance_count"] == 0
+
+
+def test_r2_unresolved_without_verified_evidence_fails_closed():
+    rows = [row("r2", "Synthetic Alpha")]
+    packet = prepare_review_packet(
+        generate_candidate_proposals(rows, base_registry())
+    )
+    reviewed = reviewed_for(packet)
+    candidate, _ = apply_reviewed_decisions(
+        rows, base_registry(), packet, reviewed,
+    )
+    with pytest.raises(
+        IdentityCoverageError, match="R2_UNRESOLVED_EVIDENCE_REQUIRED",
+    ):
+        build_coverage_ledger(rows, candidate, packet, reviewed, r2=True)

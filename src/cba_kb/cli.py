@@ -185,6 +185,10 @@ def main():
     q.add_argument('--r2-freeze-decision-file-id')
     q.add_argument('--r2-freeze-decision-sha256')
     q.add_argument('--created-at')
+    q.add_argument('--expected-frozen-r2-requirement-file-id')
+    q.add_argument('--expected-frozen-r2-requirement-sha256')
+    q.add_argument('--expected-r2-freeze-decision-file-id')
+    q.add_argument('--expected-r2-freeze-decision-sha256')
     q=sub.add_parser('identity-web-evidence-discover')
     q.add_argument('--input',type=Path,required=True)
     q.add_argument('--output',type=Path,required=True)
@@ -535,6 +539,7 @@ def main():
                 prepare_review_packet,
                 reconcile_coverage,
                 review_packet_to_csv,
+                verify_r2_certificate_bindings,
                 validate_reviewed_csv,
             )
             from .player_identity import (
@@ -724,6 +729,23 @@ def main():
                     coverage_ledger=ledger,
                     r2=r2,
                 )
+                expected_fields=(
+                    a.expected_frozen_r2_requirement_file_id,
+                    a.expected_frozen_r2_requirement_sha256,
+                    a.expected_r2_freeze_decision_file_id,
+                    a.expected_r2_freeze_decision_sha256,
+                )
+                if any(value is not None for value in expected_fields):
+                    if not all(expected_fields):
+                        raise ValueError(
+                            'R2_BINDING_EXPECTATION_INCOMPLETE',
+                        )
+                    verify_r2_certificate_bindings(result, {
+                        'frozen_r2_requirement_file_id':expected_fields[0],
+                        'frozen_r2_requirement_sha256':expected_fields[1],
+                        'r2_freeze_decision_file_id':expected_fields[2],
+                        'r2_freeze_decision_sha256':expected_fields[3],
+                    })
                 save(private_path(a.output),result)
         elif a.command.startswith('identity-web-evidence-') or (
             a.command.startswith('identity-review-workbook-')

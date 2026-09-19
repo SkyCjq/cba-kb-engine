@@ -342,6 +342,14 @@ def test_cli_full_synthetic_private_workflow(tmp_path):
         "b" * 64,
         "--created-at",
         "2026-09-19T00:00:00Z",
+        "--expected-frozen-r2-requirement-file-id",
+        "requirement-file",
+        "--expected-frozen-r2-requirement-sha256",
+        "a" * 64,
+        "--expected-r2-freeze-decision-file-id",
+        "decision-file",
+        "--expected-r2-freeze-decision-sha256",
+        "b" * 64,
     )
     assert result.returncode == 0, result.stderr
     r2_certificate = json.loads(
