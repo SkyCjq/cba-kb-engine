@@ -289,3 +289,73 @@ def test_cli_full_synthetic_private_workflow(tmp_path):
     assert (
         instance / "data/player_identity/registry.json"
     ).read_bytes() == base_registry_before
+
+    result = command(
+        *common,
+        "identity-review-apply",
+        "--master",
+        "inputs/master.xlsx",
+        "--base-registry",
+        "data/player_identity/registry.json",
+        "--packet",
+        "outputs/review_packet.json",
+        "--reviewed-decisions",
+        "outputs/reviewed_decisions.json",
+        "--output-registry",
+        "outputs/r2_candidate_registry.json",
+        "--output-manifest",
+        "outputs/r2_candidate_registry_manifest.json",
+        "--output-ledger",
+        "outputs/r2_coverage_ledger.json",
+        "--created-at",
+        "2026-09-19T00:00:00Z",
+        "--r2",
+    )
+    assert result.returncode == 0, result.stderr
+    result = command(
+        *common,
+        "identity-coverage-certify",
+        "--master",
+        "inputs/master.xlsx",
+        "--base-registry",
+        "data/player_identity/registry.json",
+        "--final-registry",
+        "outputs/r2_candidate_registry.json",
+        "--review-packet",
+        "outputs/review_packet.json",
+        "--reviewed-decisions",
+        "outputs/reviewed_decisions.json",
+        "--candidate-registry-manifest",
+        "outputs/r2_candidate_registry_manifest.json",
+        "--ledger",
+        "outputs/r2_coverage_ledger.json",
+        "--output",
+        "outputs/r2_certificate.json",
+        "--r2",
+        "--frozen-r2-requirement-file-id",
+        "requirement-file",
+        "--frozen-r2-requirement-sha256",
+        "a" * 64,
+        "--r2-freeze-decision-file-id",
+        "decision-file",
+        "--r2-freeze-decision-sha256",
+        "b" * 64,
+        "--created-at",
+        "2026-09-19T00:00:00Z",
+        "--expected-frozen-r2-requirement-file-id",
+        "requirement-file",
+        "--expected-frozen-r2-requirement-sha256",
+        "a" * 64,
+        "--expected-r2-freeze-decision-file-id",
+        "decision-file",
+        "--expected-r2-freeze-decision-sha256",
+        "b" * 64,
+    )
+    assert result.returncode == 0, result.stderr
+    r2_certificate = json.loads(
+        (instance / "outputs/r2_certificate.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert r2_certificate["coverage_certificate_version"] == "v2"
+    assert r2_certificate["search_enrichment_complete"] is False
