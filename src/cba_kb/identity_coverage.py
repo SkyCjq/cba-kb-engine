@@ -26,9 +26,11 @@ from .player_identity import (
 
 SCHEMA_VERSION = 1
 COVERAGE_LEDGER_VERSION = "v1"
+COVERAGE_LEDGER_R2_VERSION = "v2"
 REVIEW_PACKET_VERSION = "v1"
 REVIEWED_DECISIONS_VERSION = "v1"
 COVERAGE_CERTIFICATE_VERSION = "v1"
+COVERAGE_CERTIFICATE_R2_VERSION = "v2"
 
 DISPOSITIONS = frozenset({
     "RESOLVED_SAME",
@@ -111,6 +113,26 @@ COVERAGE_LEDGER_ENTRY_FIELDS = frozenset({
     "review_required",
     "source_exception_reason",
     "evidence_refs",
+})
+R2_COVERAGE_LEDGER_ENTRY_FIELDS = (
+    COVERAGE_LEDGER_ENTRY_FIELDS
+    | {
+        "evidence_tier",
+        "provenance_status",
+        "recheck_allowed",
+        "identity_authority_effect",
+    }
+)
+EVIDENCE_TIERS = frozenset({
+    "AUDITED_AUTHORITY",
+    "VERIFIED_SOURCE_EVIDENCE",
+    "BEST_EFFORT_NEGATIVE",
+})
+PROVENANCE_STATUSES = frozenset({"COMPLETE", "PARTIAL"})
+IDENTITY_AUTHORITY_EFFECTS = frozenset({
+    "EXISTING_AUTHORITY",
+    "NONE_UNTIL_HUMAN_DECISION",
+    "NONE",
 })
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -998,15 +1020,65 @@ def validate_candidate_registry_manifest(value):
     return value
 
 
+def _coverage_disposition(
+    same_count,
+    undecided_count,
+    record_decisions,
+):
+    """Derive coverage disposition without R2 or provenance inputs."""
+    approved = [
+        item for item in record_decisions
+        if item["human_decision"] == "APPROVE"
+    ]
+    if same_count == 1:
+        disposition = "RESOLVED_SAME"
+        review_required = False
+    elif any(
+        item["proposal_type"] == "SOURCE_EXCEPTION_CANDIDATE"
+        for item in approved
+    ):
+        disposition = "SOURCE_EXCEPTION"
+        review_required = False
+    elif undecided_count or any(
+        item["human_decision"] in {"APPROVE", "UNDECIDED"}
+        and item["proposed_relation"] == "KEEP_UNDECIDED"
+        for item in record_decisions
+    ):
+        disposition = "UNRESOLVED_CANDIDATES"
+        review_required = not record_decisions
+    elif any(
+        item["proposal_type"] == "NO_SAFE_CANDIDATE"
+        for item in approved
+    ) or (
+        same_count == 0 and undecided_count == 0 and record_decisions
+    ):
+        disposition = "NO_SAFE_CANDIDATE"
+        review_required = not record_decisions
+    else:
+        disposition = "NO_SAFE_CANDIDATE"
+        review_required = True
+    if record_decisions and all(
+        item["human_decision"] == "REJECT"
+        for item in record_decisions
+    ):
+        review_required = True
+    return disposition, review_required
+
+
 def build_coverage_ledger(
     master_rows,
     registry,
     review_packet,
     reviewed_decisions,
+    *,
+    r2=False,
+    provenance_overlay=None,
 ):
     rows = _validated_rows(master_rows)
     registry = validate_registry(registry)
     reviewed = validate_reviewed_decisions(reviewed_decisions)
+    if provenance_overlay is not None and not r2:
+        raise IdentityCoverageError("R2_OVERLAY_REQUIRES_R2")
     proposals = _proposal_index(review_packet)
     decisions_by_record = defaultdict(list)
     proposals_by_record = defaultdict(list)
@@ -1017,6 +1089,10 @@ def build_coverage_ledger(
     links_by_record = defaultdict(list)
     for link in registry["record_links"]:
         links_by_record[link["record_key"]].append(link)
+    overlay_by_record = _validate_r2_provenance_overlay(
+        provenance_overlay,
+        proposals_by_record,
+    ) if provenance_overlay is not None else {}
 
     entries = []
     for row in sorted(rows, key=_record_key):
@@ -1036,38 +1112,11 @@ def build_coverage_ledger(
             for item in approved
             if item["proposal_type"] == "SOURCE_EXCEPTION_CANDIDATE"
         ), None)
-        if same_count == 1:
-            disposition = "RESOLVED_SAME"
-            review_required = False
-        elif any(
-            item["proposal_type"] == "SOURCE_EXCEPTION_CANDIDATE"
-            for item in approved
-        ):
-            disposition = "SOURCE_EXCEPTION"
-            review_required = False
-        elif undecided_count or any(
-            item["human_decision"] in {"APPROVE", "UNDECIDED"}
-            and item["proposed_relation"] == "KEEP_UNDECIDED"
-            for item in record_decisions
-        ):
-            disposition = "UNRESOLVED_CANDIDATES"
-            review_required = not record_decisions
-        elif any(
-            item["proposal_type"] == "NO_SAFE_CANDIDATE"
-            for item in approved
-        ) or (
-            same_count == 0 and undecided_count == 0 and record_decisions
-        ):
-            disposition = "NO_SAFE_CANDIDATE"
-            review_required = not record_decisions
-        else:
-            disposition = "NO_SAFE_CANDIDATE"
-            review_required = True
-        if record_decisions and all(
-            item["human_decision"] == "REJECT"
-            for item in record_decisions
-        ):
-            review_required = True
+        disposition, review_required = _coverage_disposition(
+            same_count,
+            undecided_count,
+            record_decisions,
+        )
         candidate_uids = {
             item["candidate_player_uid"]
             for item in proposals_for_record
@@ -1086,7 +1135,25 @@ def build_coverage_ledger(
             for item in record_decisions
             for ref in item["evidence_refs"]
         })
-        entries.append({
+        if r2 and disposition == "UNRESOLVED_CANDIDATES":
+            evidence_refs = sorted(
+                set(evidence_refs)
+                | {
+                    ref
+                    for item in proposals_for_record
+                    for ref in item["evidence_refs"]
+                }
+            )
+        if record_key in overlay_by_record:
+            if disposition != "UNRESOLVED_CANDIDATES":
+                raise IdentityCoverageError(
+                    "R2_OVERLAY_FINAL_DISPOSITION_FORBIDDEN",
+                )
+            evidence_refs = sorted(
+                set(evidence_refs)
+                | set(overlay_by_record[record_key]["existing_evidence_refs"])
+            )
+        entry = {
             "record_key": record_key,
             "coverage_disposition": disposition,
             "same_count": same_count,
@@ -1096,13 +1163,121 @@ def build_coverage_ledger(
             "review_required": review_required,
             "source_exception_reason": source_reason,
             "evidence_refs": evidence_refs,
-        })
+        }
+        if r2:
+            if disposition == "RESOLVED_SAME":
+                entry.update({
+                    "evidence_tier": "AUDITED_AUTHORITY",
+                    "provenance_status": "COMPLETE",
+                    "recheck_allowed": False,
+                    "identity_authority_effect": "EXISTING_AUTHORITY",
+                })
+            elif disposition == "UNRESOLVED_CANDIDATES":
+                if not evidence_refs:
+                    raise IdentityCoverageError(
+                        "R2_UNRESOLVED_EVIDENCE_REQUIRED",
+                    )
+                entry.update({
+                    "evidence_tier": "VERIFIED_SOURCE_EVIDENCE",
+                    "provenance_status": (
+                        overlay_by_record[record_key]["provenance_status"]
+                        if record_key in overlay_by_record else "COMPLETE"
+                    ),
+                    "recheck_allowed": True,
+                    "identity_authority_effect": (
+                        "NONE_UNTIL_HUMAN_DECISION"
+                    ),
+                })
+            else:
+                entry.update({
+                    "evidence_tier": "BEST_EFFORT_NEGATIVE",
+                    "provenance_status": (
+                        "COMPLETE" if evidence_refs else "PARTIAL"
+                    ),
+                    "recheck_allowed": True,
+                    "identity_authority_effect": "NONE",
+                })
+            if disposition == "NO_SAFE_CANDIDATE":
+                entry["review_required"] = False
+        entries.append(entry)
     core = {
         "schema_version": SCHEMA_VERSION,
-        "coverage_ledger_version": COVERAGE_LEDGER_VERSION,
+        "coverage_ledger_version": (
+            COVERAGE_LEDGER_R2_VERSION if r2 else COVERAGE_LEDGER_VERSION
+        ),
         "entries": entries,
     }
     return _add_hash(core, "coverage_ledger_sha256")
+
+
+def _validate_r2_provenance_overlay(
+    overlay,
+    proposals_by_record,
+):
+    if not isinstance(overlay, dict):
+        raise IdentityCoverageError("R2_OVERLAY_OBJECT_REQUIRED")
+    if set(overlay) != {"schema_version", "task_id", "entries"}:
+        raise IdentityCoverageError("R2_OVERLAY_SCHEMA_INVALID")
+    if overlay["schema_version"] != (
+        "cba-kb.r2-unresolved-candidate-evidence-overlay.v1"
+    ):
+        raise IdentityCoverageError("R2_OVERLAY_VERSION_INVALID")
+    _required_text(overlay["task_id"], "R2_OVERLAY_TASK_ID")
+    if not isinstance(overlay["entries"], list):
+        raise IdentityCoverageError("R2_OVERLAY_ENTRIES_REQUIRED")
+    required = {
+        "record_key",
+        "candidate_player_uid",
+        "existing_evidence_refs",
+        "evidence_tier",
+        "provenance_status",
+        "source_artifact_path",
+        "source_artifact_sha256",
+        "source_locator",
+        "source_type",
+        "why_non_negative_candidate_evidence",
+    }
+    seen = set()
+    result = {}
+    for item in overlay["entries"]:
+        if not isinstance(item, dict) or set(item) != required:
+            raise IdentityCoverageError("R2_OVERLAY_ENTRY_SCHEMA_INVALID")
+        record_key = _required_text(item["record_key"], "RECORD_KEY")
+        if record_key in seen:
+            raise IdentityCoverageError("R2_OVERLAY_DUPLICATE_RECORD")
+        seen.add(record_key)
+        proposals = proposals_by_record.get(record_key, [])
+        candidate_uids = {
+            proposal["candidate_player_uid"]
+            for proposal in proposals
+            if proposal["proposal_type"] == "EXISTING_IDENTITY_CANDIDATE"
+        }
+        if not candidate_uids:
+            raise IdentityCoverageError("R2_OVERLAY_NOT_UNRESOLVED_CANDIDATE")
+        if item["candidate_player_uid"] not in candidate_uids:
+            raise IdentityCoverageError("R2_OVERLAY_CANDIDATE_TARGET_MISMATCH")
+        _evidence_refs(
+            item["existing_evidence_refs"], "R2_OVERLAY_EVIDENCE_REFS",
+        )
+        if not item["existing_evidence_refs"]:
+            raise IdentityCoverageError("R2_OVERLAY_EVIDENCE_REFS_REQUIRED")
+        if item["evidence_tier"] != "VERIFIED_SOURCE_EVIDENCE":
+            raise IdentityCoverageError("R2_OVERLAY_EVIDENCE_TIER_INVALID")
+        if item["provenance_status"] not in PROVENANCE_STATUSES:
+            raise IdentityCoverageError("R2_OVERLAY_PROVENANCE_STATUS_INVALID")
+        for field in (
+            "source_artifact_path",
+            "source_locator",
+            "source_type",
+            "why_non_negative_candidate_evidence",
+        ):
+            _required_text(item[field], field.upper())
+        _required_sha256(
+            item["source_artifact_sha256"],
+            "R2_OVERLAY_SOURCE_ARTIFACT_SHA256",
+        )
+        result[record_key] = item
+    return result
 
 
 def validate_coverage_ledger(value):
@@ -1126,10 +1301,18 @@ def validate_coverage_ledger(value):
     ]:
         raise IdentityCoverageError("COVERAGE_LEDGER_HASH_MISMATCH")
     seen = set()
+    r2 = value["coverage_ledger_version"] == COVERAGE_LEDGER_R2_VERSION
+    if value["coverage_ledger_version"] not in {
+        COVERAGE_LEDGER_VERSION, COVERAGE_LEDGER_R2_VERSION,
+    }:
+        raise IdentityCoverageError("COVERAGE_LEDGER_VERSION_INVALID")
     for entry in value["entries"]:
         if (
             not isinstance(entry, dict)
-            or set(entry) != COVERAGE_LEDGER_ENTRY_FIELDS
+            or set(entry) != (
+                R2_COVERAGE_LEDGER_ENTRY_FIELDS
+                if r2 else COVERAGE_LEDGER_ENTRY_FIELDS
+            )
         ):
             raise IdentityCoverageError("COVERAGE_ENTRY_OBJECT_REQUIRED")
         record_key = _required_text(entry.get("record_key"), "RECORD_KEY")
@@ -1163,6 +1346,37 @@ def validate_coverage_ledger(value):
                 "SOURCE_EXCEPTION_REASON_FORBIDDEN",
             )
         _evidence_refs(entry["evidence_refs"], "COVERAGE_EVIDENCE_REFS")
+        if r2:
+            if entry["evidence_tier"] not in EVIDENCE_TIERS:
+                raise IdentityCoverageError("EVIDENCE_TIER_INVALID")
+            if entry["provenance_status"] not in PROVENANCE_STATUSES:
+                raise IdentityCoverageError("PROVENANCE_STATUS_INVALID")
+            if not isinstance(entry["recheck_allowed"], bool):
+                raise IdentityCoverageError("RECHECK_ALLOWED_BOOLEAN_INVALID")
+            if entry["identity_authority_effect"] not in (
+                IDENTITY_AUTHORITY_EFFECTS
+            ):
+                raise IdentityCoverageError(
+                    "IDENTITY_AUTHORITY_EFFECT_INVALID",
+                )
+            disposition = entry["coverage_disposition"]
+            if disposition == "RESOLVED_SAME" and (
+                entry["evidence_tier"] != "AUDITED_AUTHORITY"
+                or entry["identity_authority_effect"] != "EXISTING_AUTHORITY"
+            ):
+                raise IdentityCoverageError("R2_RESOLVED_SAME_INVALID")
+            if disposition == "UNRESOLVED_CANDIDATES" and (
+                not entry["review_required"]
+                or entry["identity_authority_effect"]
+                != "NONE_UNTIL_HUMAN_DECISION"
+            ):
+                raise IdentityCoverageError("R2_UNRESOLVED_INVALID")
+            if disposition == "NO_SAFE_CANDIDATE" and (
+                entry["evidence_tier"] != "BEST_EFFORT_NEGATIVE"
+                or entry["recheck_allowed"] is not True
+                or entry["identity_authority_effect"] != "NONE"
+            ):
+                raise IdentityCoverageError("R2_NO_SAFE_INVALID")
     return value
 
 
@@ -1253,12 +1467,13 @@ def reconcile_coverage(
         if link["record_key"] in seen_same:
             multiple_same_count += 1
         seen_same.add(link["record_key"])
+    r2 = ledger["coverage_ledger_version"] == COVERAGE_LEDGER_R2_VERSION
     full_record_coverage_complete = (
         not missing
         and not unknown
         and duplicate_count == 0
         and silent_drop_count == 0
-        and review_required_count == 0
+        and (r2 or review_required_count == 0)
         and false_merge_count == 0
     )
     full_identity_resolution_complete = (
@@ -1287,6 +1502,7 @@ def reconcile_coverage(
         "full_identity_resolution_complete": (
             full_identity_resolution_complete
         ),
+        "coverage_ledger_version": ledger["coverage_ledger_version"],
     }
     return _add_hash(core, "coverage_reconciliation_sha256")
 
@@ -1304,6 +1520,7 @@ def build_coverage_certificate(
     candidate_registry_manifest_sha256,
     coverage_ledger_sha256,
     reconciliation,
+    r2=None,
 ):
     master_sha256 = _required_sha256_or_null(
         master_sha256,
@@ -1369,8 +1586,102 @@ def build_coverage_certificate(
     core["full_identity_resolution_complete"] = reconciliation[
         "full_identity_resolution_complete"
     ]
+    if r2 is not None:
+        required = {
+            "frozen_requirement_file_id",
+            "frozen_requirement_sha256",
+            "freeze_decision_file_id",
+            "freeze_decision_sha256",
+            "created_at",
+            "search_enrichment_complete",
+            "evidence_tier_counts",
+            "provenance_status_counts",
+            "partial_negative_provenance_count",
+        }
+        if set(r2) != required:
+            raise IdentityCoverageError("R2_CERTIFICATE_INPUT_INVALID")
+        if not isinstance(r2["search_enrichment_complete"], bool):
+            raise IdentityCoverageError(
+                "SEARCH_ENRICHMENT_COMPLETE_BOOLEAN_INVALID",
+            )
+        for field in (
+            "frozen_requirement_file_id",
+            "freeze_decision_file_id",
+            "created_at",
+        ):
+            _required_text(r2[field], field.upper())
+        for field in (
+            "frozen_requirement_sha256",
+            "freeze_decision_sha256",
+        ):
+            _required_sha256(r2[field], field.upper())
+        tier_counts = dict(r2["evidence_tier_counts"])
+        provenance_counts = dict(r2["provenance_status_counts"])
+        if set(tier_counts) - EVIDENCE_TIERS:
+            raise IdentityCoverageError("EVIDENCE_TIER_COUNTS_INVALID")
+        if set(provenance_counts) - PROVENANCE_STATUSES:
+            raise IdentityCoverageError("PROVENANCE_STATUS_COUNTS_INVALID")
+        if any(
+            not isinstance(value, int) or value < 0
+            for value in (*tier_counts.values(), *provenance_counts.values())
+        ):
+            raise IdentityCoverageError("R2_CERTIFICATE_COUNT_INVALID")
+        core.update({
+            "coverage_certificate_version": COVERAGE_CERTIFICATE_R2_VERSION,
+            "evidence_tier_counts": tier_counts,
+            "provenance_status_counts": provenance_counts,
+            "best_effort_negative_count": tier_counts.get(
+                "BEST_EFFORT_NEGATIVE", 0,
+            ),
+            "partial_negative_provenance_count": r2[
+                "partial_negative_provenance_count"
+            ],
+            "search_enrichment_complete": r2[
+                "search_enrichment_complete"
+            ],
+            "frozen_r2_requirement_file_id": r2[
+                "frozen_requirement_file_id"
+            ],
+            "frozen_r2_requirement_sha256": r2[
+                "frozen_requirement_sha256"
+            ],
+            "r2_freeze_decision_file_id": r2["freeze_decision_file_id"],
+            "r2_freeze_decision_sha256": r2[
+                "freeze_decision_sha256"
+            ],
+            "created_at": r2["created_at"],
+        })
     return _add_hash(core, "coverage_certificate_sha256")
 
+
+def coverage_semantic_hash(value):
+    """Hash a coverage artifact excluding only its authorized timestamp."""
+    excluded = frozenset({"created_at"})
+    def clean(item):
+        if isinstance(item, dict):
+            return {
+                key: clean(child)
+                for key, child in item.items()
+                if key not in excluded
+            }
+        if isinstance(item, list):
+            return [clean(child) for child in item]
+        return item
+    return hashlib.sha256(canonical_bytes(clean(value))).hexdigest()
+
+
+def verify_r2_certificate_bindings(certificate, expected):
+    required = {
+        "frozen_r2_requirement_file_id",
+        "frozen_r2_requirement_sha256",
+        "r2_freeze_decision_file_id",
+        "r2_freeze_decision_sha256",
+    }
+    if set(expected) != required:
+        raise IdentityCoverageError("R2_BINDING_EXPECTATION_INVALID")
+    for field in required:
+        if certificate.get(field) != expected[field]:
+            raise IdentityCoverageError(f"R2_BINDING_MISMATCH_{field.upper()}")
 
 def certify_coverage(
     *,
@@ -1383,6 +1694,7 @@ def certify_coverage(
     reviewed_decisions,
     candidate_registry_manifest,
     coverage_ledger,
+    r2=None,
 ):
     rows = _validated_rows(master_rows)
     base = validate_registry(base_registry)
@@ -1424,6 +1736,30 @@ def certify_coverage(
         review_packet=packet,
         reviewed_decisions=reviewed,
     )
+    if r2 is not None:
+        if ledger["coverage_ledger_version"] != COVERAGE_LEDGER_R2_VERSION:
+            raise IdentityCoverageError("R2_LEDGER_REQUIRED")
+        tier_counts = defaultdict(int)
+        provenance_counts = defaultdict(int)
+        for entry in ledger["entries"]:
+            tier_counts[entry["evidence_tier"]] += 1
+            provenance_counts[entry["provenance_status"]] += 1
+        if dict(r2.get("evidence_tier_counts", {})) != dict(tier_counts):
+            raise IdentityCoverageError("R2_EVIDENCE_TIER_COUNTS_MISMATCH")
+        if dict(r2.get("provenance_status_counts", {})) != dict(
+            provenance_counts
+        ):
+            raise IdentityCoverageError(
+                "R2_PROVENANCE_STATUS_COUNTS_MISMATCH",
+            )
+        r2 = {
+            **r2,
+            "partial_negative_provenance_count": sum(
+                entry["evidence_tier"] == "BEST_EFFORT_NEGATIVE"
+                and entry["provenance_status"] == "PARTIAL"
+                for entry in ledger["entries"]
+            ),
+        }
     return build_coverage_certificate(
         master_sha256=master_sha256,
         master_authority_mode=master_authority_mode,
@@ -1438,6 +1774,7 @@ def certify_coverage(
         ],
         coverage_ledger_sha256=ledger["coverage_ledger_sha256"],
         reconciliation=reconciliation,
+        r2=r2,
     )
 
 

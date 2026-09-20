@@ -13,6 +13,7 @@ from cba_kb.identity_coverage import (
     build_coverage_certificate,
     build_coverage_inventory,
     build_coverage_ledger,
+    coverage_semantic_hash,
     certify_coverage,
     generate_candidate_proposals,
     normalize_semantic_field,
@@ -21,6 +22,8 @@ from cba_kb.identity_coverage import (
     review_packet_to_csv,
     validate_candidate_uid,
     validate_machine_proposal,
+    validate_coverage_ledger,
+    verify_r2_certificate_bindings,
     validate_reviewed_csv,
 )
 from cba_kb.evidence_ledger import canonical_bytes
@@ -1007,4 +1010,313 @@ def test_manifest_created_at_is_deterministic_when_explicit():
             review_packet_sha256="c" * 64,
             reviewed_decisions_sha256="d" * 64,
             created_at="2026-09-17T00:00:00Z",
+        )
+
+
+def test_r2_ledger_certificate_and_semantic_replay():
+    rows, base, packet, reviewed, candidate, manifest, _ = (
+        _completed_authority()
+    )
+    ledger = build_coverage_ledger(
+        rows, candidate, packet, reviewed, r2=True,
+    )
+    entry = ledger["entries"][0]
+    assert entry["coverage_disposition"] == "NO_SAFE_CANDIDATE"
+    assert entry["evidence_tier"] == "BEST_EFFORT_NEGATIVE"
+    assert entry["provenance_status"] == "PARTIAL"
+    assert entry["recheck_allowed"] is True
+    assert entry["identity_authority_effect"] == "NONE"
+    validate_coverage_ledger(ledger)
+    report = reconcile_coverage(
+        rows, ledger, candidate, base_registry=base,
+        review_packet=packet, reviewed_decisions=reviewed,
+    )
+    assert report["full_record_coverage_complete"] is True
+    assert report["full_identity_resolution_complete"] is False
+    r2 = {
+        "frozen_requirement_file_id": "req-file",
+        "frozen_requirement_sha256": "a" * 64,
+        "freeze_decision_file_id": "decision-file",
+        "freeze_decision_sha256": "b" * 64,
+        "created_at": "2026-09-19T00:00:00Z",
+        "search_enrichment_complete": False,
+        "evidence_tier_counts": {"BEST_EFFORT_NEGATIVE": 1},
+        "provenance_status_counts": {"PARTIAL": 1},
+    }
+    certificate = certify_coverage(
+        master_rows=rows, master_sha256=None,
+        master_authority_mode="ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA",
+        base_registry=base, final_registry=candidate, review_packet=packet,
+        reviewed_decisions=reviewed,
+        candidate_registry_manifest=manifest, coverage_ledger=ledger, r2=r2,
+    )
+    assert certificate["coverage_certificate_version"] == "v2"
+    assert certificate["search_enrichment_complete"] is False
+    assert certificate["best_effort_negative_count"] == 1
+    changed_timestamp = {**certificate, "created_at": "2026-09-20T00:00:00Z"}
+    assert coverage_semantic_hash(certificate) == coverage_semantic_hash(
+        changed_timestamp,
+    )
+    changed_semantic = {**certificate, "search_enrichment_complete": True}
+    assert coverage_semantic_hash(certificate) != coverage_semantic_hash(
+        changed_semantic,
+    )
+
+
+def test_r2_ledger_rejects_invalid_no_safe_semantics():
+    rows, base, packet, reviewed, candidate, _, _ = _completed_authority()
+    ledger = build_coverage_ledger(
+        rows, candidate, packet, reviewed, r2=True,
+    )
+    ledger["entries"][0]["recheck_allowed"] = False
+    ledger = rehash_ledger(ledger)
+    with pytest.raises(IdentityCoverageError, match="R2_NO_SAFE_INVALID"):
+        validate_coverage_ledger(ledger)
+
+
+def test_r2_partial_negative_and_binding_verifier_are_fail_closed():
+    rows, base, packet, reviewed, candidate, manifest, _ = (
+        _completed_authority()
+    )
+    ledger = build_coverage_ledger(
+        rows, candidate, packet, reviewed, r2=True,
+    )
+    r2 = {
+        "frozen_requirement_file_id": "requirement-file",
+        "frozen_requirement_sha256": "a" * 64,
+        "freeze_decision_file_id": "decision-file",
+        "freeze_decision_sha256": "b" * 64,
+        "created_at": "2026-09-19T00:00:00Z",
+        "search_enrichment_complete": False,
+        "evidence_tier_counts": {"BEST_EFFORT_NEGATIVE": 1},
+        "provenance_status_counts": {"PARTIAL": 1},
+    }
+    certificate = certify_coverage(
+        master_rows=rows, master_sha256=None,
+        master_authority_mode="ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA",
+        base_registry=base, final_registry=candidate, review_packet=packet,
+        reviewed_decisions=reviewed,
+        candidate_registry_manifest=manifest, coverage_ledger=ledger, r2=r2,
+    )
+    assert certificate["partial_negative_provenance_count"] == 1
+    expected = {
+        "frozen_r2_requirement_file_id": "requirement-file",
+        "frozen_r2_requirement_sha256": "a" * 64,
+        "r2_freeze_decision_file_id": "decision-file",
+        "r2_freeze_decision_sha256": "b" * 64,
+    }
+    verify_r2_certificate_bindings(certificate, expected)
+    for field in expected:
+        mismatch = {**expected, field: "mismatch"}
+        with pytest.raises(IdentityCoverageError, match="R2_BINDING_MISMATCH"):
+            verify_r2_certificate_bindings(certificate, mismatch)
+
+    partial_verified = {
+        **ledger,
+        "entries": [{
+            **ledger["entries"][0],
+            "coverage_disposition": "UNRESOLVED_CANDIDATES",
+            "evidence_tier": "VERIFIED_SOURCE_EVIDENCE",
+            "provenance_status": "PARTIAL",
+            "identity_authority_effect": "NONE_UNTIL_HUMAN_DECISION",
+            "review_required": True,
+        }],
+    }
+    partial_verified = rehash_ledger(partial_verified)
+    r2_verified = {
+        **r2,
+        "evidence_tier_counts": {"VERIFIED_SOURCE_EVIDENCE": 1},
+        "provenance_status_counts": {"PARTIAL": 1},
+    }
+    verified_certificate = certify_coverage(
+        master_rows=rows, master_sha256=None,
+        master_authority_mode="ROWSET_RECONCILIATION_WITHOUT_RUNTIME_FILE_SHA",
+        base_registry=base, final_registry=candidate, review_packet=packet,
+        reviewed_decisions=reviewed,
+        candidate_registry_manifest=manifest,
+        coverage_ledger=partial_verified, r2=r2_verified,
+    )
+    assert verified_certificate["partial_negative_provenance_count"] == 0
+
+
+def test_r2_unresolved_without_verified_evidence_fails_closed():
+    rows = [row("r2", "Synthetic Alpha")]
+    packet = prepare_review_packet(
+        generate_candidate_proposals(rows, base_registry())
+    )
+    reviewed = reviewed_for(packet)
+    candidate, _ = apply_reviewed_decisions(
+        rows, base_registry(), packet, reviewed,
+    )
+    with pytest.raises(
+        IdentityCoverageError, match="R2_UNRESOLVED_EVIDENCE_REQUIRED",
+    ):
+        build_coverage_ledger(rows, candidate, packet, reviewed, r2=True)
+
+
+def test_r2_proposal_only_without_decision_remains_no_safe():
+    """R2 metadata cannot turn a proposal-only record into unresolved."""
+    rows = [row("r2", "Synthetic Alpha")]
+    base = base_registry()
+    packet = prepare_review_packet(
+        generate_candidate_proposals(rows, base)
+    )
+    reviewed_core = {
+        "schema_version": 1,
+        "reviewed_decisions_version": "v1",
+        "review_packet_sha256": packet["review_packet_sha256"],
+        "decisions": [],
+    }
+    reviewed = {
+        **reviewed_core,
+        "reviewed_decisions_sha256": hashlib.sha256(
+            canonical_bytes(reviewed_core)
+        ).hexdigest(),
+    }
+    r1 = build_coverage_ledger(rows, base, packet, reviewed)
+    r2 = build_coverage_ledger(rows, base, packet, reviewed, r2=True)
+    assert r1["entries"][0]["coverage_disposition"] == "NO_SAFE_CANDIDATE"
+    assert r2["entries"][0]["coverage_disposition"] == "NO_SAFE_CANDIDATE"
+
+
+def test_r2_overlay_adds_provenance_without_identity_mutation():
+    rows = [row("r2", "Synthetic Alpha")]
+    base = base_registry()
+    packet = prepare_review_packet(
+        generate_candidate_proposals(rows, base)
+    )
+    reviewed = reviewed_for(packet)
+    candidate, _ = apply_reviewed_decisions(rows, base, packet, reviewed)
+    proposal = packet["reviews"][0]
+    overlay = {
+        "schema_version": (
+            "cba-kb.r2-unresolved-candidate-evidence-overlay.v1"
+        ),
+        "task_id": "synthetic-overlay",
+        "entries": [{
+            "record_key": "r2",
+            "candidate_player_uid": proposal["candidate_player_uid"],
+            "existing_evidence_refs": ["registry-canonical:synthetic"],
+            "evidence_tier": "VERIFIED_SOURCE_EVIDENCE",
+            "provenance_status": "COMPLETE",
+            "source_artifact_path": "/private/synthetic/registry.json",
+            "source_artifact_sha256": "a" * 64,
+            "source_locator": "players[0].canonical_name",
+            "source_type": "canonical_approved_registry_name",
+            "why_non_negative_candidate_evidence": "exact canonical match",
+        }],
+    }
+    ledger = build_coverage_ledger(
+        rows, candidate, packet, reviewed, r2=True,
+        provenance_overlay=overlay,
+    )
+    entry = ledger["entries"][0]
+    assert entry["coverage_disposition"] == "UNRESOLVED_CANDIDATES"
+    assert entry["evidence_tier"] == "VERIFIED_SOURCE_EVIDENCE"
+    assert entry["evidence_refs"] == ["registry-canonical:synthetic"]
+    assert candidate == base
+    assert build_coverage_ledger(
+        rows, candidate, packet, reviewed, r2=True,
+        provenance_overlay=overlay,
+    ) == ledger
+
+    def assert_rejected(changed, error):
+        with pytest.raises(IdentityCoverageError, match=error):
+            build_coverage_ledger(
+                rows, candidate, packet, reviewed, r2=True,
+                provenance_overlay=changed,
+            )
+
+    proposal_with_ref = {
+        key: value for key, value in proposal.items()
+        if key not in {
+            "review_id", "human_decision", "human_note",
+            "approved_player_uid", "approved_canonical_name",
+            "source_exception_reason", "reviewed_at",
+        }
+    }
+    proposal_with_ref["evidence_refs"] = ["existing-candidate-evidence"]
+    packet_with_ref = prepare_review_packet([proposal_with_ref])
+    reviewed_with_ref = reviewed_for(packet_with_ref)
+    preserved = build_coverage_ledger(
+        rows, candidate, packet_with_ref, reviewed_with_ref, r2=True,
+        provenance_overlay=overlay,
+    )
+    assert preserved["entries"][0]["evidence_refs"] == [
+        "existing-candidate-evidence",
+        "registry-canonical:synthetic",
+    ]
+    assert build_coverage_ledger(
+        rows, candidate, packet_with_ref, reviewed_with_ref, r2=True,
+        provenance_overlay=overlay,
+    ) == preserved
+
+    bad_target = {
+        **overlay,
+        "entries": [{
+            **overlay["entries"][0],
+            "candidate_player_uid": UID_B,
+        }],
+    }
+    assert_rejected(bad_target, "CANDIDATE_TARGET_MISMATCH")
+    assert_rejected({**overlay, "schema_version": "bad"}, "VERSION_INVALID")
+    assert_rejected({
+        **overlay,
+        "entries": [overlay["entries"][0], overlay["entries"][0]],
+    }, "DUPLICATE_RECORD")
+    for field, value, error in (
+        ("evidence_tier", "AUDITED_AUTHORITY", "EVIDENCE_TIER_INVALID"),
+        ("provenance_status", "UNKNOWN", "PROVENANCE_STATUS_INVALID"),
+        ("source_artifact_path", "", "SOURCE_ARTIFACT_PATH"),
+        ("source_artifact_sha256", "not-a-sha", "SHA256"),
+        ("source_locator", "", "SOURCE_LOCATOR"),
+        ("source_type", "", "SOURCE_TYPE"),
+        ("existing_evidence_refs", [], "EVIDENCE_REFS"),
+        ("existing_evidence_refs", [""], "EVIDENCE_REFS"),
+    ):
+        assert_rejected({
+            **overlay,
+            "entries": [{**overlay["entries"][0], field: value}],
+        }, error)
+    no_safe_packet = prepare_review_packet(
+        generate_candidate_proposals(
+            [row("r4", "Synthetic Gamma")], base,
+        )
+    )
+    no_safe_reviewed = reviewed_for(no_safe_packet)
+    no_safe_candidate, _ = apply_reviewed_decisions(
+        [row("r4", "Synthetic Gamma")], base,
+        no_safe_packet, no_safe_reviewed,
+    )
+    no_safe_overlay = {
+        **overlay,
+        "entries": [{
+            **overlay["entries"][0],
+            "record_key": "r4",
+        }],
+    }
+    with pytest.raises(
+        IdentityCoverageError, match="NOT_UNRESOLVED_CANDIDATE",
+    ):
+        build_coverage_ledger(
+            [row("r4", "Synthetic Gamma")], no_safe_candidate,
+            no_safe_packet, no_safe_reviewed, r2=True,
+            provenance_overlay=no_safe_overlay,
+        )
+    partial_overlay = {
+        **overlay,
+        "entries": [{
+            **overlay["entries"][0],
+            "provenance_status": "PARTIAL",
+        }],
+    }
+    partial_ledger = build_coverage_ledger(
+        rows, candidate, packet, reviewed, r2=True,
+        provenance_overlay=partial_overlay,
+    )
+    assert partial_ledger["entries"][0]["provenance_status"] == "PARTIAL"
+    with pytest.raises(IdentityCoverageError, match="R2_OVERLAY_REQUIRES_R2"):
+        build_coverage_ledger(
+            rows, candidate, packet, reviewed,
+            provenance_overlay=overlay,
         )
