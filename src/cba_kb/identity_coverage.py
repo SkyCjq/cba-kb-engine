@@ -1020,6 +1020,51 @@ def validate_candidate_registry_manifest(value):
     return value
 
 
+def _coverage_disposition(
+    same_count,
+    undecided_count,
+    record_decisions,
+):
+    """Derive coverage disposition without R2 or provenance inputs."""
+    approved = [
+        item for item in record_decisions
+        if item["human_decision"] == "APPROVE"
+    ]
+    if same_count == 1:
+        disposition = "RESOLVED_SAME"
+        review_required = False
+    elif any(
+        item["proposal_type"] == "SOURCE_EXCEPTION_CANDIDATE"
+        for item in approved
+    ):
+        disposition = "SOURCE_EXCEPTION"
+        review_required = False
+    elif undecided_count or any(
+        item["human_decision"] in {"APPROVE", "UNDECIDED"}
+        and item["proposed_relation"] == "KEEP_UNDECIDED"
+        for item in record_decisions
+    ):
+        disposition = "UNRESOLVED_CANDIDATES"
+        review_required = not record_decisions
+    elif any(
+        item["proposal_type"] == "NO_SAFE_CANDIDATE"
+        for item in approved
+    ) or (
+        same_count == 0 and undecided_count == 0 and record_decisions
+    ):
+        disposition = "NO_SAFE_CANDIDATE"
+        review_required = not record_decisions
+    else:
+        disposition = "NO_SAFE_CANDIDATE"
+        review_required = True
+    if record_decisions and all(
+        item["human_decision"] == "REJECT"
+        for item in record_decisions
+    ):
+        review_required = True
+    return disposition, review_required
+
+
 def build_coverage_ledger(
     master_rows,
     registry,
@@ -1067,38 +1112,11 @@ def build_coverage_ledger(
             for item in approved
             if item["proposal_type"] == "SOURCE_EXCEPTION_CANDIDATE"
         ), None)
-        if same_count == 1:
-            disposition = "RESOLVED_SAME"
-            review_required = False
-        elif any(
-            item["proposal_type"] == "SOURCE_EXCEPTION_CANDIDATE"
-            for item in approved
-        ):
-            disposition = "SOURCE_EXCEPTION"
-            review_required = False
-        elif undecided_count or any(
-            item["human_decision"] in {"APPROVE", "UNDECIDED"}
-            and item["proposed_relation"] == "KEEP_UNDECIDED"
-            for item in record_decisions
-        ):
-            disposition = "UNRESOLVED_CANDIDATES"
-            review_required = not record_decisions
-        elif any(
-            item["proposal_type"] == "NO_SAFE_CANDIDATE"
-            for item in approved
-        ) or (
-            same_count == 0 and undecided_count == 0 and record_decisions
-        ):
-            disposition = "NO_SAFE_CANDIDATE"
-            review_required = not record_decisions
-        else:
-            disposition = "NO_SAFE_CANDIDATE"
-            review_required = True
-        if record_decisions and all(
-            item["human_decision"] == "REJECT"
-            for item in record_decisions
-        ):
-            review_required = True
+        disposition, review_required = _coverage_disposition(
+            same_count,
+            undecided_count,
+            record_decisions,
+        )
         candidate_uids = {
             item["candidate_player_uid"]
             for item in proposals_for_record
