@@ -1126,6 +1126,15 @@ def build_coverage_ledger(
             for item in record_decisions
             for ref in item["evidence_refs"]
         })
+        if r2 and disposition == "UNRESOLVED_CANDIDATES":
+            evidence_refs = sorted(
+                set(evidence_refs)
+                | {
+                    ref
+                    for item in proposals_for_record
+                    for ref in item["evidence_refs"]
+                }
+            )
         if record_key in overlay_by_record:
             if disposition != "UNRESOLVED_CANDIDATES":
                 raise IdentityCoverageError(

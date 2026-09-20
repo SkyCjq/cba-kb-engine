@@ -1194,6 +1194,23 @@ def test_r2_overlay_adds_provenance_without_identity_mutation():
         rows, candidate, packet, reviewed, r2=True,
         provenance_overlay=overlay,
     ) == ledger
+    proposal_with_ref = {
+        key: value for key, value in proposal.items()
+        if key not in {
+            "review_id", "human_decision", "human_note",
+            "approved_player_uid", "approved_canonical_name",
+            "source_exception_reason", "reviewed_at",
+        }
+    }
+    proposal_with_ref["evidence_refs"] = ["existing-candidate-evidence"]
+    packet_with_ref = prepare_review_packet([proposal_with_ref])
+    reviewed_with_ref = reviewed_for(packet_with_ref)
+    preserved = build_coverage_ledger(
+        rows, candidate, packet_with_ref, reviewed_with_ref, r2=True,
+    )
+    assert preserved["entries"][0]["evidence_refs"] == [
+        "existing-candidate-evidence",
+    ]
 
     bad_target = {
         **overlay,
