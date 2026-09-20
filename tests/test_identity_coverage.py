@@ -1234,3 +1234,20 @@ def test_r2_overlay_adds_provenance_without_identity_mutation():
             no_safe_packet, no_safe_reviewed, r2=True,
             provenance_overlay=no_safe_overlay,
         )
+    partial_overlay = {
+        **overlay,
+        "entries": [{
+            **overlay["entries"][0],
+            "provenance_status": "PARTIAL",
+        }],
+    }
+    partial_ledger = build_coverage_ledger(
+        rows, candidate, packet, reviewed, r2=True,
+        provenance_overlay=partial_overlay,
+    )
+    assert partial_ledger["entries"][0]["provenance_status"] == "PARTIAL"
+    with pytest.raises(IdentityCoverageError, match="R2_OVERLAY_REQUIRES_R2"):
+        build_coverage_ledger(
+            rows, candidate, packet, reviewed,
+            provenance_overlay=overlay,
+        )

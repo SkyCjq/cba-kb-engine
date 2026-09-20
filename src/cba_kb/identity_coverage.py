@@ -1032,6 +1032,8 @@ def build_coverage_ledger(
     rows = _validated_rows(master_rows)
     registry = validate_registry(registry)
     reviewed = validate_reviewed_decisions(reviewed_decisions)
+    if provenance_overlay is not None and not r2:
+        raise IdentityCoverageError("R2_OVERLAY_REQUIRES_R2")
     proposals = _proposal_index(review_packet)
     decisions_by_record = defaultdict(list)
     proposals_by_record = defaultdict(list)
@@ -1045,7 +1047,6 @@ def build_coverage_ledger(
     overlay_by_record = _validate_r2_provenance_overlay(
         provenance_overlay,
         proposals_by_record,
-        links_by_record,
     ) if provenance_overlay is not None else {}
 
     entries = []
@@ -1069,15 +1070,6 @@ def build_coverage_ledger(
         if same_count == 1:
             disposition = "RESOLVED_SAME"
             review_required = False
-        elif r2 and any(
-            item["proposal_type"] in {
-                "EXISTING_IDENTITY_CANDIDATE",
-                "NEW_IDENTITY_CANDIDATE",
-            }
-            for item in proposals_for_record
-        ):
-            disposition = "UNRESOLVED_CANDIDATES"
-            review_required = True
         elif any(
             item["proposal_type"] == "SOURCE_EXCEPTION_CANDIDATE"
             for item in approved
@@ -1099,6 +1091,15 @@ def build_coverage_ledger(
         ):
             disposition = "NO_SAFE_CANDIDATE"
             review_required = not record_decisions
+        elif r2 and any(
+            item["proposal_type"] in {
+                "EXISTING_IDENTITY_CANDIDATE",
+                "NEW_IDENTITY_CANDIDATE",
+            }
+            for item in proposals_for_record
+        ):
+            disposition = "UNRESOLVED_CANDIDATES"
+            review_required = True
         else:
             disposition = "NO_SAFE_CANDIDATE"
             review_required = True
@@ -1126,6 +1127,10 @@ def build_coverage_ledger(
             for ref in item["evidence_refs"]
         })
         if record_key in overlay_by_record:
+            if disposition != "UNRESOLVED_CANDIDATES":
+                raise IdentityCoverageError(
+                    "R2_OVERLAY_FINAL_DISPOSITION_FORBIDDEN",
+                )
             evidence_refs = sorted(
                 set(evidence_refs)
                 | set(overlay_by_record[record_key]["existing_evidence_refs"])
@@ -1156,7 +1161,10 @@ def build_coverage_ledger(
                     )
                 entry.update({
                     "evidence_tier": "VERIFIED_SOURCE_EVIDENCE",
-                    "provenance_status": "COMPLETE",
+                    "provenance_status": (
+                        overlay_by_record[record_key]["provenance_status"]
+                        if record_key in overlay_by_record else "COMPLETE"
+                    ),
                     "recheck_allowed": True,
                     "identity_authority_effect": (
                         "NONE_UNTIL_HUMAN_DECISION"
@@ -1187,7 +1195,6 @@ def build_coverage_ledger(
 def _validate_r2_provenance_overlay(
     overlay,
     proposals_by_record,
-    links_by_record,
 ):
     if not isinstance(overlay, dict):
         raise IdentityCoverageError("R2_OVERLAY_OBJECT_REQUIRED")
@@ -1231,11 +1238,6 @@ def _validate_r2_provenance_overlay(
             raise IdentityCoverageError("R2_OVERLAY_NOT_UNRESOLVED_CANDIDATE")
         if item["candidate_player_uid"] not in candidate_uids:
             raise IdentityCoverageError("R2_OVERLAY_CANDIDATE_TARGET_MISMATCH")
-        if any(
-            link["link_status"] == "same"
-            for link in links_by_record.get(record_key, [])
-        ):
-            raise IdentityCoverageError("R2_OVERLAY_RESOLVED_RECORD_FORBIDDEN")
         _evidence_refs(
             item["existing_evidence_refs"], "R2_OVERLAY_EVIDENCE_REFS",
         )
