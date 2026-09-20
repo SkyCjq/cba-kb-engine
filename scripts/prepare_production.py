@@ -40,6 +40,9 @@ RELEASE_SPECS = {
     "v1.6.1-1": {
         "product_baseline_sha": "4fab3d0e8eedc594fae982f12a507fef88958f15",
     },
+    "v1.8.0-1": {
+        "product_baseline_sha": "81bd581fafbccb602f9ecaf9aaefca4533be69a4",
+    },
 }
 FOLDER = "application/vnd.google-apps.folder"
 NATIVE_DOCUMENT = "application/vnd.google-apps.document"

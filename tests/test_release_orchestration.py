@@ -183,6 +183,23 @@ def test_v161_release_spec_and_reprojection_contract():
     assert projected["state"] == "PROJECTED"
 
 
+def test_v180_release_spec_uses_v161_production_baseline():
+    spec = orchestration._release_spec("v1.8.0-1")
+    assert spec["product_baseline_sha"] == (
+        "81bd581fafbccb602f9ecaf9aaefca4533be69a4"
+    )
+
+
+def test_v180_projection_is_accepted_and_deterministic():
+    inputs = projection_inputs()
+    inputs["release_id"] = "v1.8.0-1"
+    first = orchestration.project_targets(**inputs)
+    second = orchestration.project_targets(**inputs)
+    assert first == second
+    assert first["release_id"] == "v1.8.0-1"
+    assert first["state"] == "PROJECTED"
+
+
 def test_manifest_coverage_helper_rejects_any_set_drift():
     orchestration.validate_manifest_coverage(
         ["a", "b"], ["b", "a"], ["a", "b"], ["b", "a"],
