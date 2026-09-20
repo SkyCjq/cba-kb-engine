@@ -1,0 +1,34 @@
+requirement_id: REQ-180-PROD-RELEASE-01
+revision: first-freeze-v1.8.0-cumulative
+status: FROZEN_SPEC
+ready_to_code: true
+human_first_freeze_approval: APPROVED
+human_approval_text: 批准 FIRST_FREEZE
+freeze_count: 1
+re_freeze: NO
+target_release_id: v1.8.0-1
+release_semantics: ONE_CUMULATIVE_V1_8_0_RELEASE_MERGING_V1_7_AND_V1_8
+previous_release_id: v1.6.1-1
+previous_production_code_sha: 81bd581fafbccb602f9ecaf9aaefca4533be69a4
+product_candidate_sha: 7b73997dca8fb104ee51d1353183f8eda8532583
+release_execution_sha: TO_FREEZE_AFTER_IMPLEMENTATION_MERGE
+final_target_inventory: TO_BE_PROVEN_BY_POST_IMPLEMENTATION_PROJECT
+production_authorized: false
+allowed_paths:
+  - requirements/REQ-180-PROD-RELEASE-01/requirement-final-*.md
+  - requirements/REQ-180-PROD-RELEASE-01/task-brief.md
+  - requirements/REQ-180-PROD-RELEASE-01/task.yaml
+  - scripts/prepare_production.py
+  - tests/test_release_orchestration.py
+forbidden_paths:
+  - src/cba_kb/release.py
+  - src/cba_kb/drive.py
+  - src/cba_kb/transport.py
+  - src/cba_kb/native.py
+  - canonical or production facts/data
+  - production manifest or release_status before publish
+  - .github/workflows/offline-tests.yml
+  - dependency changes
+  - taxonomy changes
+  - release schema/state-machine expansion
+end_gate: WEB_REVIEW_MERGE_AND_READ_ONLY_PROJECT
