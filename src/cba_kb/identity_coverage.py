@@ -1091,15 +1091,6 @@ def build_coverage_ledger(
         ):
             disposition = "NO_SAFE_CANDIDATE"
             review_required = not record_decisions
-        elif r2 and any(
-            item["proposal_type"] in {
-                "EXISTING_IDENTITY_CANDIDATE",
-                "NEW_IDENTITY_CANDIDATE",
-            }
-            for item in proposals_for_record
-        ):
-            disposition = "UNRESOLVED_CANDIDATES"
-            review_required = True
         else:
             disposition = "NO_SAFE_CANDIDATE"
             review_required = True

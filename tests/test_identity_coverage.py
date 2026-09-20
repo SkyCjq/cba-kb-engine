@@ -1154,6 +1154,31 @@ def test_r2_unresolved_without_verified_evidence_fails_closed():
         build_coverage_ledger(rows, candidate, packet, reviewed, r2=True)
 
 
+def test_r2_proposal_only_without_decision_remains_no_safe():
+    """R2 metadata cannot turn a proposal-only record into unresolved."""
+    rows = [row("r2", "Synthetic Alpha")]
+    base = base_registry()
+    packet = prepare_review_packet(
+        generate_candidate_proposals(rows, base)
+    )
+    reviewed_core = {
+        "schema_version": 1,
+        "reviewed_decisions_version": "v1",
+        "review_packet_sha256": packet["review_packet_sha256"],
+        "decisions": [],
+    }
+    reviewed = {
+        **reviewed_core,
+        "reviewed_decisions_sha256": hashlib.sha256(
+            canonical_bytes(reviewed_core)
+        ).hexdigest(),
+    }
+    r1 = build_coverage_ledger(rows, base, packet, reviewed)
+    r2 = build_coverage_ledger(rows, base, packet, reviewed, r2=True)
+    assert r1["entries"][0]["coverage_disposition"] == "NO_SAFE_CANDIDATE"
+    assert r2["entries"][0]["coverage_disposition"] == "NO_SAFE_CANDIDATE"
+
+
 def test_r2_overlay_adds_provenance_without_identity_mutation():
     rows = [row("r2", "Synthetic Alpha")]
     base = base_registry()
@@ -1194,6 +1219,14 @@ def test_r2_overlay_adds_provenance_without_identity_mutation():
         rows, candidate, packet, reviewed, r2=True,
         provenance_overlay=overlay,
     ) == ledger
+
+    def assert_rejected(changed, error):
+        with pytest.raises(IdentityCoverageError, match=error):
+            build_coverage_ledger(
+                rows, candidate, packet, reviewed, r2=True,
+                provenance_overlay=changed,
+            )
+
     proposal_with_ref = {
         key: value for key, value in proposal.items()
         if key not in {
@@ -1207,10 +1240,16 @@ def test_r2_overlay_adds_provenance_without_identity_mutation():
     reviewed_with_ref = reviewed_for(packet_with_ref)
     preserved = build_coverage_ledger(
         rows, candidate, packet_with_ref, reviewed_with_ref, r2=True,
+        provenance_overlay=overlay,
     )
     assert preserved["entries"][0]["evidence_refs"] == [
         "existing-candidate-evidence",
+        "registry-canonical:synthetic",
     ]
+    assert build_coverage_ledger(
+        rows, candidate, packet_with_ref, reviewed_with_ref, r2=True,
+        provenance_overlay=overlay,
+    ) == preserved
 
     bad_target = {
         **overlay,
@@ -1219,13 +1258,26 @@ def test_r2_overlay_adds_provenance_without_identity_mutation():
             "candidate_player_uid": UID_B,
         }],
     }
-    with pytest.raises(
-        IdentityCoverageError, match="CANDIDATE_TARGET_MISMATCH",
+    assert_rejected(bad_target, "CANDIDATE_TARGET_MISMATCH")
+    assert_rejected({**overlay, "schema_version": "bad"}, "VERSION_INVALID")
+    assert_rejected({
+        **overlay,
+        "entries": [overlay["entries"][0], overlay["entries"][0]],
+    }, "DUPLICATE_RECORD")
+    for field, value, error in (
+        ("evidence_tier", "AUDITED_AUTHORITY", "EVIDENCE_TIER_INVALID"),
+        ("provenance_status", "UNKNOWN", "PROVENANCE_STATUS_INVALID"),
+        ("source_artifact_path", "", "SOURCE_ARTIFACT_PATH"),
+        ("source_artifact_sha256", "not-a-sha", "SHA256"),
+        ("source_locator", "", "SOURCE_LOCATOR"),
+        ("source_type", "", "SOURCE_TYPE"),
+        ("existing_evidence_refs", [], "EVIDENCE_REFS"),
+        ("existing_evidence_refs", [""], "EVIDENCE_REFS"),
     ):
-        build_coverage_ledger(
-            rows, candidate, packet, reviewed, r2=True,
-            provenance_overlay=bad_target,
-        )
+        assert_rejected({
+            **overlay,
+            "entries": [{**overlay["entries"][0], field: value}],
+        }, error)
     no_safe_packet = prepare_review_packet(
         generate_candidate_proposals(
             [row("r4", "Synthetic Gamma")], base,
