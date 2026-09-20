@@ -69,6 +69,20 @@ def write_registry(path):
     path.write_bytes(serialize_registry(registry))
 
 
+def write_matching_registry(path):
+    registry = new_registry([
+        {
+            "schema_version": 1,
+            "player_uid": UID_A,
+            "canonical_name": "Synthetic Player",
+            "status": "ACTIVE",
+            "redirect_to": None,
+        },
+    ])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(serialize_registry(registry))
+
+
 def rewrite_csv(path):
     rows = list(csv.DictReader(io.StringIO(path.read_text(encoding="utf-8"))))
     for row in rows:
@@ -359,3 +373,74 @@ def test_cli_full_synthetic_private_workflow(tmp_path):
     )
     assert r2_certificate["coverage_certificate_version"] == "v2"
     assert r2_certificate["search_enrichment_complete"] is False
+
+
+def test_cli_r2_overlay_round_trip(tmp_path):
+    instance = tmp_path / "instance"
+    instance.mkdir()
+    (instance / "config").mkdir()
+    write_master(instance / "inputs/master.xlsx")
+    write_matching_registry(instance / "data/player_identity/registry.json")
+    common = ("--instance-root", str(instance))
+    for command_args in (
+        (
+            "identity-coverage-candidates",
+            "--master", "inputs/master.xlsx",
+            "--identity-registry", "data/player_identity/registry.json",
+            "--output", "outputs/candidates.json",
+        ),
+        (
+            "identity-review-prepare",
+            "--candidates", "outputs/candidates.json",
+            "--output-json", "outputs/packet.json",
+            "--output-csv", "outputs/packet.csv",
+        ),
+    ):
+        result = command(*common, *command_args)
+        assert result.returncode == 0, result.stderr
+    rewrite_csv(instance / "outputs/packet.csv")
+    result = command(
+        *common, "identity-review-validate",
+        "--packet", "outputs/packet.json",
+        "--reviewed-csv", "outputs/packet.csv",
+        "--output", "outputs/reviewed.json",
+    )
+    assert result.returncode == 0, result.stderr
+    packet = json.loads((instance / "outputs/packet.json").read_text())
+    proposal = packet["reviews"][0]
+    overlay = {
+        "schema_version": (
+            "cba-kb.r2-unresolved-candidate-evidence-overlay.v1"
+        ),
+        "task_id": "cli-overlay",
+        "entries": [{
+            "record_key": proposal["record_key"],
+            "candidate_player_uid": proposal["candidate_player_uid"],
+            "existing_evidence_refs": ["registry-canonical:synthetic"],
+            "evidence_tier": "VERIFIED_SOURCE_EVIDENCE",
+            "provenance_status": "COMPLETE",
+            "source_artifact_path": "/private/synthetic/registry.json",
+            "source_artifact_sha256": "a" * 64,
+            "source_locator": "players[0].canonical_name",
+            "source_type": "canonical_approved_registry_name",
+            "why_non_negative_candidate_evidence": "exact canonical match",
+        }],
+    }
+    (instance / "outputs/overlay.json").write_text(json.dumps(overlay))
+    result = command(
+        *common, "identity-review-apply",
+        "--master", "inputs/master.xlsx",
+        "--base-registry", "data/player_identity/registry.json",
+        "--packet", "outputs/packet.json",
+        "--reviewed-decisions", "outputs/reviewed.json",
+        "--output-registry", "outputs/candidate.json",
+        "--output-manifest", "outputs/manifest.json",
+        "--output-ledger", "outputs/ledger.json",
+        "--created-at", "2026-09-20T00:00:00Z",
+        "--r2", "--provenance-overlay", "outputs/overlay.json",
+    )
+    assert result.returncode == 0, result.stderr
+    ledger = json.loads((instance / "outputs/ledger.json").read_text())
+    assert ledger["entries"][0]["evidence_refs"] == [
+        "registry-canonical:synthetic",
+    ]
