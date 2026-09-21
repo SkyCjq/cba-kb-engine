@@ -527,27 +527,91 @@ def test_closure_response_loss_retry_is_idempotent(tmp_path):
     assert json.loads(d.get('status'))['state'] == 'COMPLETE'
 
 
-def test_code_mirror_requires_merged_and_clean_executing_commit(tmp_path):
+def test_code_mirror_uses_immutable_baseline_and_trusted_main(tmp_path):
     import subprocess
     import yaml
     from cba_kb.release import verify_code_provenance
+
+    def run(repo, *args):
+        subprocess.run(['git', *args], cwd=repo, check=True)
+
+    def output(repo, *args):
+        return subprocess.check_output(['git', *args], cwd=repo, text=True).strip()
+
     repo = tmp_path / 'repo'
-    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    run(tmp_path, 'init', '-q', str(repo))
+    branch = output(repo, 'branch', '--show-current')
+    (repo / 'module.py').write_text('value = 1\n')
+    run(repo, 'add', '.')
+    run(repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '-qm', 'baseline')
+    baseline = output(repo, 'rev-parse', 'HEAD')
     directory = repo / 'requirements/REQ-154-CANONSEC-01'
     directory.mkdir(parents=True)
-    (directory / 'task.yaml').write_text(yaml.safe_dump({'base_branch': 'approved-base'}))
-    (repo / 'module.py').write_text('value = 1\n')
-    subprocess.run(['git', 'add', '.'], cwd=repo, check=True)
-    subprocess.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-                    'commit', '-qm', 'fixture'], cwd=repo, check=True)
-    sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
+    (directory / 'task.yaml').write_text(yaml.safe_dump({
+        'baseline_code_commit': baseline,
+        'base_branch': 'deleted-historical-branch',
+    }))
+    run(repo, 'add', '.')
+    run(repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '-qm', 'release')
+    sha = output(repo, 'rev-parse', 'HEAD')
+
+    # The deleted historical branch is deliberately never created.
+    run(repo, 'update-ref', 'refs/remotes/origin/main', sha)
+    assert verify_code_provenance(repo, sha)['status'] == 'PASS'
+
+    # A release commit not merged into trusted main fails closed.
+    run(repo, 'update-ref', 'refs/remotes/origin/main', baseline)
     with pytest.raises(ValueError, match='NOT_MERGED'):
         verify_code_provenance(repo, sha)
-    subprocess.run(['git', 'update-ref', 'refs/remotes/origin/approved-base', sha], cwd=repo, check=True)
-    assert verify_code_provenance(repo, sha)['status'] == 'PASS'
+
+    # HEAD must be exactly the frozen release commit.
+    run(repo, 'update-ref', 'refs/remotes/origin/main', sha)
+    with pytest.raises(ValueError, match='NOT_MERGED'):
+        verify_code_provenance(repo, baseline)
+
+    # A dirty tracked checkout also fails closed.
     (repo / 'module.py').write_text('value = 2\n')
     with pytest.raises(ValueError, match='NOT_MERGED'):
         verify_code_provenance(repo, sha)
+
+    # Trusted main must exist rather than being inferred from another branch.
+    run(repo, 'checkout', '--', 'module.py')
+    run(repo, 'update-ref', '-d', 'refs/remotes/origin/main')
+    with pytest.raises(ValueError, match='NOT_MERGED'):
+        verify_code_provenance(repo, sha)
+
+
+def test_code_mirror_rejects_release_outside_historical_baseline_lineage(tmp_path):
+    import subprocess
+    import yaml
+    from cba_kb.release import verify_code_provenance
+
+    repo = tmp_path / 'repo'
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    (repo / 'module.py').write_text('value = 1\n')
+    subprocess.run(['git', 'add', '.'], cwd=repo, check=True)
+    subprocess.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                    'commit', '-qm', 'root'], cwd=repo, check=True)
+    main_branch = subprocess.check_output(['git', 'branch', '--show-current'], cwd=repo, text=True).strip()
+    subprocess.run(['git', 'switch', '-qc', 'historical'], cwd=repo, check=True)
+    (repo / 'historical.py').write_text('baseline = True\n')
+    subprocess.run(['git', 'add', '.'], cwd=repo, check=True)
+    subprocess.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                    'commit', '-qm', 'historical baseline'], cwd=repo, check=True)
+    baseline = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
+    subprocess.run(['git', 'switch', '-q', main_branch], cwd=repo, check=True)
+    directory = repo / 'requirements/REQ-154-CANONSEC-01'
+    directory.mkdir(parents=True)
+    (directory / 'task.yaml').write_text(yaml.safe_dump({'baseline_code_commit': baseline}))
+    subprocess.run(['git', 'add', '.'], cwd=repo, check=True)
+    subprocess.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                    'commit', '-qm', 'unrelated release lineage'], cwd=repo, check=True)
+    release = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
+    subprocess.run(['git', 'update-ref', 'refs/remotes/origin/main', release], cwd=repo, check=True)
+    with pytest.raises(ValueError, match='NOT_MERGED'):
+        verify_code_provenance(repo, release)
 
 
 def test_incomplete_evidence_inventory_cannot_pass_closure(tmp_path):

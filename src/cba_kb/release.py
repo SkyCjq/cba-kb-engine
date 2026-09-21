@@ -779,18 +779,24 @@ def security_preflight(root, plan):
 
 
 def verify_code_provenance(repo, code_commit):
-    """Require the executing checkout to be the merged commit on the frozen base."""
+    """Require a clean checkout of a baseline-descended commit merged to main."""
     import subprocess
     import yaml
     task_path = Path(repo) / 'requirements/REQ-154-CANONSEC-01/task.yaml'
     task = yaml.safe_load(task_path.read_text())
-    base = 'refs/remotes/origin/' + task['base_branch']
+    baseline = task['baseline_code_commit']
+    trusted_main = 'refs/remotes/origin/main'
     def git(*args):
         return subprocess.check_output(['git', *args], cwd=repo, stderr=subprocess.DEVNULL, text=True).strip()
     try:
         if git('rev-parse', 'HEAD') != code_commit or git('status', '--porcelain', '--untracked-files=no'):
             raise ValueError('CODE_MIRROR_NOT_MERGED_COMMIT')
-        if subprocess.run(['git', 'merge-base', '--is-ancestor', code_commit, base],
+        git('rev-parse', '--verify', baseline + '^{commit}')
+        git('rev-parse', '--verify', trusted_main + '^{commit}')
+        if subprocess.run(['git', 'merge-base', '--is-ancestor', baseline, code_commit],
+                          cwd=repo, capture_output=True).returncode:
+            raise ValueError('CODE_MIRROR_NOT_MERGED_COMMIT')
+        if subprocess.run(['git', 'merge-base', '--is-ancestor', code_commit, trusted_main],
                           cwd=repo, capture_output=True).returncode:
             raise ValueError('CODE_MIRROR_NOT_MERGED_COMMIT')
     except subprocess.CalledProcessError:
