@@ -6,7 +6,15 @@ import re
 from pathlib import Path, PurePosixPath
 
 from .common import atomic, digest
-from .consumer_projection import event_coverage, project_documents
+from .consumer_projection import (
+    IDENTITY_SEMANTIC_STATES,
+    derive_machine_counts,
+    event_coverage,
+    project_document,
+    project_documents,
+    project_identity_state,
+    validate_machine_counts,
+)
 from .evidence_ledger import canonical_bytes
 from .player_profile import validate_profile, validate_profile_v2
 

@@ -34,6 +34,21 @@ BODY_STATUSES = frozenset({
     "REVIEW_REQUIRED",
     "BODY_UNAVAILABLE",
 })
+IDENTITY_SEMANTIC_STATES = frozenset({
+    "SAME",
+    "NOT_SAME",
+    "UNDECIDED",
+    "UNAVAILABLE",
+    "NOT_MATERIALIZED",
+})
+CONSUMER_IDENTITY_STATE_MAP = {
+    "same": "SAME",
+    "not_same": "NOT_SAME",
+    "undecided": "UNDECIDED",
+    "unlinked": "NOT_MATERIALIZED",
+    "unavailable": "UNAVAILABLE",
+    "not_materialized": "NOT_MATERIALIZED",
+}
 
 
 class ConsumerProjectionError(RuntimeError):
@@ -298,3 +313,90 @@ def load_golden_questions(path):
 
 def golden_questions_sha256(path):
     return digest(Path(path).read_bytes())
+
+
+def project_identity_state(internal_status: str | None) -> str:
+    """Project internal link status to a consumer-safe semantic state without manufacturing relations.
+
+    Machine-distinguishes:
+    - SAME
+    - NOT_SAME
+    - UNDECIDED
+    - UNAVAILABLE / NOT_MATERIALIZED
+
+    Existing internal unlinked/absence semantics are projected to the frozen consumer-safe
+    unavailable/not-materialized state and never upgraded to SAME, NOT_SAME, or UNDECIDED.
+    """
+    if internal_status is None:
+        return "UNAVAILABLE"
+    normalized = str(internal_status).strip().lower()
+    if normalized == "same":
+        return "SAME"
+    if normalized == "not_same":
+        return "NOT_SAME"
+    if normalized == "undecided":
+        return "UNDECIDED"
+    if normalized in {"unlinked", "unavailable", "not_materialized", "absence"}:
+        return "NOT_MATERIALIZED"
+    raise ConsumerProjectionError(f"UNKNOWN_IDENTITY_STATUS:{internal_status}")
+
+
+def derive_machine_counts(manifest, identity_registry, master_rows=None):
+    """Deterministically calculate machine counts from actual frozen inputs.
+
+    Never hard-code expected counts.
+    Every declared count must be machine-derived and satisfy declared == actual.
+    """
+    if isinstance(manifest, list):
+        artifacts_count = len(manifest)
+    elif isinstance(manifest, dict):
+        artifacts_count = len(manifest.get("artifacts", manifest.get("rows", [])))
+    else:
+        raise ConsumerProjectionError("MANIFEST_COLLECTION_REQUIRED")
+
+    if not isinstance(identity_registry, dict):
+        raise ConsumerProjectionError("IDENTITY_REGISTRY_REQUIRED")
+
+    players = identity_registry.get("players", [])
+    record_links = identity_registry.get("record_links", [])
+
+    player_count = len(players)
+    record_link_count = len(record_links)
+    same_count = sum(1 for link in record_links if str(link.get("link_status")).lower() == "same")
+    not_same_count = sum(1 for link in record_links if str(link.get("link_status")).lower() == "not_same")
+    undecided_count = sum(1 for link in record_links if str(link.get("link_status")).lower() == "undecided")
+
+    linked_keys = {link.get("record_key") for link in record_links if link.get("record_key")}
+    if master_rows is not None:
+        if not isinstance(master_rows, list):
+            raise ConsumerProjectionError("MASTER_ROWS_COLLECTION_REQUIRED")
+        all_record_keys = {row.get("record_key") for row in master_rows if row.get("record_key")}
+        unavailable_count = len(all_record_keys - linked_keys)
+    else:
+        unavailable_count = 0
+
+    return {
+        "production_artifact_count": artifacts_count,
+        "player_count": player_count,
+        "record_link_count": record_link_count,
+        "same_count": same_count,
+        "not_same_count": not_same_count,
+        "undecided_count": undecided_count,
+        "unavailable_count": unavailable_count,
+        "not_materialized_count": unavailable_count,
+    }
+
+
+def validate_machine_counts(declared_counts, actual_counts):
+    """Verify that every declared count equals the actual machine-derived count."""
+    if not isinstance(declared_counts, dict) or not isinstance(actual_counts, dict):
+        raise ConsumerProjectionError("MACHINE_COUNTS_OBJECT_REQUIRED")
+    for key, expected_val in declared_counts.items():
+        if key not in actual_counts:
+            raise ConsumerProjectionError(f"UNDECLARED_COUNT_KEY:{key}")
+        if actual_counts[key] != expected_val:
+            raise ConsumerProjectionError(
+                f"COUNT_MISMATCH:{key}:declared={expected_val},actual={actual_counts[key]}"
+            )
+    return True
+

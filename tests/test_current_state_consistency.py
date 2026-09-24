@@ -236,3 +236,25 @@ def test_v161_stale_current_version_doc_is_pre_mutation_failure():
     )
     with pytest.raises(ValueError, match='DRIFT'):
         validate_current_state(status, reg, manifest(), docs)
+
+
+@pytest.mark.parametrize('release_id', ['v1.8.0-1', 'v1.8.1-1', 'v1.9.0-1'])
+def test_v181_and_future_releases_use_modern_current_surfaces(release_id):
+    status, reg, docs = state_documents()
+    status['current_release_id'] = release_id
+    reg['registry_release_id'] = release_id
+    docs = {
+        key: value.replace('v1.5.4-test', release_id)
+        for key, value in docs.items()
+        if key != 'version'
+    }
+    result = validate_current_state(status, reg, manifest(), docs)
+    assert result['status'] == 'PASS'
+    assert set(result['surfaces']) == {
+        'release_status', 'readme', 'index', 'context_card',
+        'current_version_doc',
+    }
+    del docs['current_version_doc']
+    with pytest.raises(ValueError, match='CURRENT_DOCUMENT_MISSING'):
+        validate_current_state(status, reg, manifest(), docs)
+

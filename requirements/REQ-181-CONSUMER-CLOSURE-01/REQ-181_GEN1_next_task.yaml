@@ -1,0 +1,97 @@
+schema_version: cba-kb.p2a-task.v1
+req_id: REQ-181-CONSUMER-CLOSURE-01
+canonical_generation: 1
+task_id: db765eba-8ee3-49d8-b2b5-43ae62d3e559
+task_type: LOCAL_RUNTIME_ANTIGRAVITY_IMPLEMENT_TEST_PR
+stage: V181_ANTIGRAVITY_FIRST_PRODUCT_CANARY
+issued_at_utc: '2026-09-24T15:17:00Z'
+issued_by: ChatGPT-Web-Auditor
+automation_version: 0.1.0
+policy_bundle_sha256: c628cc45e855090464eaaf1f4f8dae15636ddbc9451096654095759a3c2050b5
+repository: SkyCjq/cba-kb-engine
+expected_base_branch: main
+expected_base_sha: 17445e27ee98d7b58beb8c0e79ba97e7e3c89e08
+feature_branch: antigravity/REQ-181-CONSUMER-CLOSURE-01
+allowed_paths:
+- requirements/REQ-181-CONSUMER-CLOSURE-01/**
+- src/cba_kb/current_state.py
+- src/cba_kb/consumer_projection.py
+- src/cba_kb/consumer_package.py
+- src/cba_kb/consumer_acceptance.py
+- scripts/generate_context_card.py
+- scripts/prepare_production.py
+- tests/test_current_state_consistency.py
+- tests/test_consumer_projection.py
+- tests/test_consumer_package.py
+- tests/test_consumer_acceptance.py
+- tests/test_v1_8_1_consumer_closure.py
+must_not_change:
+- automation/**
+- tests/automation/**
+- Makefile
+- src/cba_kb/player_identity.py
+- src/cba_kb/identity_coverage.py
+- src/cba_kb/identity_web_evidence.py
+- src/cba_kb/identity_consumer.py
+- config/canonical_products.yaml
+- config/production.json
+- pyproject.toml
+- requirements.lock
+- .github/workflows/**
+- MASTER and six-table canonical business facts
+- Production Identity Registry
+- Production Drive artifacts
+- Production release_status
+allowed_actions:
+- run P2A task-verify before implementation
+- fresh-read main and require the frozen base or stop on semantic baseline drift
+- require a clean worktree
+- create or use only the frozen feature branch
+- implement only allowlisted paths
+- run focused tests, identity zero-diff tests, secret guard, and full regression
+- perform changed-file scope audit
+- commit and push the frozen feature branch
+- create exactly one pull request
+- produce one P2A-compatible result bound to this task
+- stop at CODEX_SUPERVISORY_REVIEW
+forbidden_actions:
+- modify P2A automation, executor enum, tests/automation, or Makefile workflow targets
+- add a parallel identity subsystem, identity_consumer.py, second consumer-manifest truth, second identity-acceptance truth, or second current-state scanner
+- create new identity decisions, same decisions, not-same decisions, machine-final UID decisions, fuzzy merges, same-name auto merges, or UID regeneration
+- mutate MASTER, canonical facts, Private Identity Registry, Production Identity Registry, Production Drive artifacts, or Production release_status
+- perform new Web Identity research
+- expand scope to v1.9, P2B, or P3A
+- merge the pull request
+- publish or restore Production
+- declare MERGE_READY, Production GO, or CLOSED
+- hand-edit P2A authority
+- silently substitute Codex for Gemini Antigravity as the implementation provider
+focused_tests:
+- .venv/bin/python -m pytest -q tests/test_current_state_consistency.py tests/test_consumer_projection.py tests/test_consumer_package.py tests/test_consumer_acceptance.py tests/test_v1_8_1_consumer_closure.py
+- .venv/bin/python scripts/check_secrets.py --tracked
+full_regression: CBA_KB_SOURCE_POLICY_JSON='{"excluded_drive_ids":[]}' .venv/bin/python -m pytest -q -rs --deselect tests/test_prepare_v1_5_2.py::test_v1_5_2_registry_proposal_is_complete
+max_internal_steps: 24
+max_internal_retries: 1
+max_runtime_minutes: 120
+next_executor: LOCAL_RUNTIME
+return_gate: CODEX_SUPERVISORY_REVIEW
+canonical_binding:
+  canonical_req_root_folder_id: 1DPN6zv9hcNsb-GLsKogZ4gQxnHpqaNC4
+  canonical_current_folder_id: 17JTaOCgdpzsIngq2UVKgPdUzOgKwkTid
+  canonical_history_folder_id: 1HCHxoj-nVeDrv5faUF1ZDhrJ1n8KofAb
+  canonical_next_task_file_id: 12zXWAdS8xqAZTMa0UfYt4bTpRIKvAIRR
+  canonical_codex_result_file_id: 1fPMWEpSAagEdnKa6YNrYbBp1zoUuBdg9
+  canonical_update_mode: IN_PLACE_SAME_FILE_ID
+authority_binding:
+  requirement_revision: r2-20260924-antigravity-first-p2a-canary
+  requirement_sha256: b0eeb4dce691e2e7cce1d749ab7aef417756841f24c629c93dc4e22e3621a66c
+  predecessor_req_id: REQ-WORKFLOW-P2A-01
+  predecessor_terminal_generation: 8
+  predecessor_terminal_task_id: 5bc022ae-8584-4c18-b4f9-2ea7de33b5bc
+  predecessor_terminal_task_sha256: c6e2fef671082148a7248c553082ef042991245c3703804ebbc9ddcd9a831ca7
+transition_binding:
+  source_result_required: true
+  supersedes_task_id: 5bc022ae-8584-4c18-b4f9-2ea7de33b5bc
+  supersedes_task_sha256: c6e2fef671082148a7248c553082ef042991245c3703804ebbc9ddcd9a831ca7
+  transition_from_gate: TERMINAL_CLOSED_REQ_WORKFLOW_P2A_01
+  transition_commit_required: true
