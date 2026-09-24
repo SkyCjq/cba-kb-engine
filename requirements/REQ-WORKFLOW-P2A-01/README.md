@@ -29,12 +29,13 @@ revisions through the `DriveStore` protocol.
 
 ## Canary
 
-`run_canary.py` exercises the real filesystem-backed transition path in a
-dedicated namespace. It verifies normal commit, both interrupted-transition
-recoveries, idempotent replay, old-pointer rejection, executor rejection, and
-before/after Production snapshot equality. The resulting evidence is then
-copied to the dedicated Drive canary namespace and exact-read back by the
-authorized executor.
+`run_canary.py` exercises the filesystem-backed transition path for offline
+negative/recovery coverage. `run_provider_canary.py` uses the existing trusted
+runtime OAuth transport to execute normal commit and both interrupted-transition
+recoveries directly against a dedicated Google Drive namespace. It verifies
+same-ID stable updates, provider revision advancement, raw exact readback and
+idempotent replay. Production state is independently snapshotted before and
+after the provider-backed run.
 
 ## Telemetry baseline
 

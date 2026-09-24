@@ -6,7 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .drive_io import DirectoryDriveStore
+from .drive_io import DirectoryDriveStore, GoogleDriveStore
+from .git_io import GitHubInspector
 from .handoff import TransitionIntent, transition_commit
 from .ledger import AppendOnlyLedger
 from .models import P2AError, canonical_json_bytes, load_json_bytes, load_yaml_bytes, read_bytes, sha256_bytes
@@ -45,7 +46,11 @@ def _task_verify(args: argparse.Namespace) -> int:
 def _result_verify(args: argparse.Namespace) -> int:
     result_bytes = read_bytes(args.result)
     task_bytes = read_bytes(args.task)
-    result = verify_result_bytes(result_bytes, task_bytes, git_root=args.git_root)
+    result_doc = load_json_bytes(result_bytes)
+    result = verify_result_bytes(
+        result_bytes, task_bytes, git_root=args.git_root,
+        github_inspector=GitHubInspector(result_doc["repository"]) if result_doc.get("status") == "PASS" else None,
+    )
     if result.ok and args.ledger:
         task = load_yaml_bytes(task_bytes)
         AppendOnlyLedger(args.ledger).append(
@@ -60,7 +65,11 @@ def _result_verify(args: argparse.Namespace) -> int:
 def _review_package(args: argparse.Namespace) -> int:
     task_bytes = read_bytes(args.task)
     result_bytes = read_bytes(args.result)
-    verification = verify_result_bytes(result_bytes, task_bytes, git_root=args.git_root)
+    result_doc = load_json_bytes(result_bytes)
+    verification = verify_result_bytes(
+        result_bytes, task_bytes, git_root=args.git_root,
+        github_inspector=GitHubInspector(result_doc["repository"]) if result_doc.get("status") == "PASS" else None,
+    )
     if not verification.ok:
         _emit(verification.as_dict())
         return 2
@@ -81,17 +90,37 @@ def _review_package(args: argparse.Namespace) -> int:
 
 def _transition_commit(args: argparse.Namespace) -> int:
     intent_data = load_json_bytes(read_bytes(args.intent), code="TRANSITION_BINDING_MISMATCH")
-    required = {"store_root", "ledger_path", "predecessor_sha256", "predecessor_revision", "successor_path", "history_folder_id", "history_name", "stable_file_id"}
+    common = {
+        "provider", "ledger_path", "predecessor_task_file_id", "predecessor_sha256", "predecessor_revision",
+        "source_result_file_id", "source_result_sha256", "expected_requirement_sha256", "expected_policy_sha256",
+        "expected_supersedes_task_id", "expected_return_gate", "expected_next_executor", "successor_path",
+        "history_folder_id", "history_name", "stable_file_id",
+    }
+    provider_fields = {"store_root"} if intent_data.get("provider") == "directory" else {"engine_root", "instance_root"}
+    required = common | provider_fields
     if set(intent_data) != required:
         raise P2AError("TRANSITION_BINDING_MISMATCH", "Transition intent fields changed", missing=sorted(required - set(intent_data)), unknown=sorted(set(intent_data) - required))
-    store = DirectoryDriveStore(intent_data["store_root"])
+    if intent_data["provider"] == "directory":
+        store = DirectoryDriveStore(intent_data["store_root"])
+    elif intent_data["provider"] == "google_drive":
+        store = GoogleDriveStore.from_trusted_runtime(intent_data["engine_root"], intent_data["instance_root"])
+    else:
+        raise P2AError("PROVIDER_UNSUPPORTED", "Transition provider is not supported", provider=intent_data["provider"])
     ledger = AppendOnlyLedger(intent_data["ledger_path"])
     outcome = transition_commit(
         store,
         ledger,
         TransitionIntent(
+            predecessor_task_file_id=intent_data["predecessor_task_file_id"],
             predecessor_sha256=intent_data["predecessor_sha256"],
             predecessor_revision=intent_data["predecessor_revision"],
+            source_result_file_id=intent_data["source_result_file_id"],
+            source_result_sha256=intent_data["source_result_sha256"],
+            expected_requirement_sha256=intent_data["expected_requirement_sha256"],
+            expected_policy_sha256=intent_data["expected_policy_sha256"],
+            expected_supersedes_task_id=intent_data["expected_supersedes_task_id"],
+            expected_return_gate=intent_data["expected_return_gate"],
+            expected_next_executor=intent_data["expected_next_executor"],
             successor_bytes=read_bytes(intent_data["successor_path"]),
             history_folder_id=intent_data["history_folder_id"],
             history_name=intent_data["history_name"],

@@ -5,9 +5,9 @@ import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
-from .models import P2AError, canonical_json_bytes
+from .models import P2AError, canonical_json_bytes, sha256_bytes
 
 
 @dataclass(frozen=True)
@@ -143,3 +143,84 @@ class DirectoryDriveStore:
         index["files"][file_id] = {"name": name, "folder_id": folder_id, "revision": 1}
         self._write_index(index)
         return self.read(file_id)
+
+
+class GoogleDriveStore:
+    """Authenticated provider-backed Drive store using the existing Engine transport."""
+
+    MIME = "application/octet-stream"
+
+    @classmethod
+    def _mime_for_name(cls, name: str) -> str:
+        if name.endswith(".json"):
+            return "application/json"
+        if name.endswith(".jsonl"):
+            return "application/x-ndjson"
+        if name.endswith((".yaml", ".yml")):
+            return "text/yaml"
+        if name.endswith(".md"):
+            return "text/markdown"
+        return cls.MIME
+
+    def __init__(self, drive: Any) -> None:
+        self.drive = drive
+
+    @classmethod
+    def from_trusted_runtime(cls, engine_root: str | Path, instance_root: str | Path) -> "GoogleDriveStore":
+        try:
+            from cba_kb.drive import Drive
+            from cba_kb.instance import load_instance
+
+            instance = load_instance(engine_root, instance_root)
+            return cls(Drive(engine_root, instance=instance))
+        except Exception as exc:
+            raise P2AError("PROVIDER_AUTH_UNAVAILABLE", "Authenticated Google Drive provider is unavailable", error=type(exc).__name__) from exc
+
+    def read(self, file_id: str) -> DriveRead:
+        try:
+            meta = self.drive.meta(file_id)
+            content = self.drive.get(file_id)
+        except Exception as exc:
+            raise P2AError("PROVIDER_READ_FAILED", "Google Drive raw read failed", file_id=file_id, error=type(exc).__name__) from exc
+        parents = meta.get("parents") or []
+        return DriveRead(file_id, meta["name"], parents[0] if parents else "", int(meta["version"]), content)
+
+    def find(self, folder_id: str, name: str) -> DriveRead | None:
+        try:
+            matches = [item for item in self.drive.list(folder_id) if item.get("name") == name]
+        except Exception as exc:
+            raise P2AError("PROVIDER_READ_FAILED", "Google Drive folder read failed", folder_id=folder_id, error=type(exc).__name__) from exc
+        if len(matches) > 1:
+            raise P2AError("DUPLICATE_HISTORY_NAME", "Provider history name is not unique", folder_id=folder_id, name=name)
+        return self.read(matches[0]["id"]) if matches else None
+
+    def create(self, folder_id: str, name: str, content: bytes) -> DriveRead:
+        key = "p2a:" + sha256_bytes((folder_id + "\0" + name).encode("utf-8"))
+        mime = self._mime_for_name(name)
+        try:
+            file_id = self.drive.ensure(folder_id, key, name, mime, content)
+        except Exception as exc:
+            raise P2AError("TRANSITION_HISTORY_WRITE_FAILED", "Provider history write failed", folder_id=folder_id, name=name, error=type(exc).__name__) from exc
+        result = self.read(file_id)
+        if result.content != content:
+            raise P2AError("TRANSITION_READBACK_MISMATCH", "Provider-created history bytes differ", file_id=file_id)
+        return result
+
+    def update(self, file_id: str, content: bytes) -> DriveRead:
+        before = self.read(file_id)
+        try:
+            mime = self.drive.meta(file_id)["mimeType"]
+        except Exception as exc:
+            raise P2AError("PROVIDER_READ_FAILED", "Provider stable MIME read failed", file_id=file_id, error=type(exc).__name__) from exc
+        try:
+            acknowledgement = self.drive.put(file_id, content, mime)
+        except Exception as exc:
+            raise P2AError("TRANSITION_POINTER_UPDATE_FAILED", "Provider stable pointer update failed", file_id=file_id, error=type(exc).__name__) from exc
+        if acknowledgement.get("id") != file_id:
+            raise P2AError("TRANSITION_POINTER_UPDATE_FAILED", "Provider acknowledgement changed stable file ID", expected=file_id, observed=acknowledgement.get("id"))
+        after = self.read(file_id)
+        if after.revision <= before.revision:
+            raise P2AError("STABLE_REVISION_NOT_ADVANCED", "Provider stable revision did not advance", before=before.revision, after=after.revision)
+        if after.content != content:
+            raise P2AError("TRANSITION_READBACK_MISMATCH", "Provider stable readback bytes differ", file_id=file_id)
+        return after

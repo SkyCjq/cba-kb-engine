@@ -113,3 +113,25 @@ def result_bytes(result_dict):
 @pytest.fixture
 def clone():
     return copy.deepcopy
+
+
+@pytest.fixture
+def github_inspector(result_dict):
+    observed_pr = {
+        "number": result_dict["pr"]["number"], "url": result_dict["pr"]["url"], "state": "OPEN",
+        "baseRefOid": result_dict["base_sha"], "headRefOid": result_dict["head_sha"],
+    }
+    observed_head = result_dict["head_sha"]
+
+    class FakeGitHub:
+        def collect(self, pr_number, workflow_name, head_sha):
+            return {
+                "pr": observed_pr,
+                "runs": [{
+                    "id": 33, "name": "Offline tests", "head_sha": observed_head,
+                    "status": "completed", "conclusion": "success", "event": "pull_request", "html_url": "https://example.test/run/33",
+                }],
+            }
+
+    result_dict["ci"]["runs"] = [{"id": 33}]
+    return FakeGitHub()

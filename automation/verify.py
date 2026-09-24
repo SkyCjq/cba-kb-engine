@@ -4,7 +4,7 @@ import fnmatch
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .git_io import GitInspector
+from .git_io import GitInspector, GitHubInspector
 from .models import (
     AUTOMATION_VERSION,
     RESULT_SCHEMA,
@@ -142,7 +142,13 @@ def validate_result_document(result: Mapping[str, Any]) -> None:
         raise P2AError("RESULT_SCHEMA_INVALID", "changed_files must be a string list")
 
 
-def verify_result_bytes(result_data: bytes, task_data: bytes, *, git_root: str | Path | None = None) -> VerificationResult:
+def verify_result_bytes(
+    result_data: bytes,
+    task_data: bytes,
+    *,
+    git_root: str | Path | None = None,
+    github_inspector: GitHubInspector | Any | None = None,
+) -> VerificationResult:
     facts: dict[str, Any] = {"result_sha256": sha256_bytes(result_data), "result_bytes": len(result_data)}
     try:
         result = load_json_bytes(result_data)
@@ -174,6 +180,24 @@ def verify_result_bytes(result_data: bytes, task_data: bytes, *, git_root: str |
                 raise P2AError("PR_CI_HEAD_MISMATCH", "PR, CI and result heads must be identical")
             if result["ci"].get("workflow_name") != "Offline tests" or result["ci"].get("conclusion") != "success":
                 raise P2AError("CI_NOT_GREEN", "Required Offline tests is not green")
+            if github_inspector is None:
+                raise P2AError("GITHUB_FACTS_UNAVAILABLE", "PASS result requires independent GitHub Code Truth")
+            github = github_inspector.collect(result["pr"]["number"], result["ci"]["workflow_name"], result["head_sha"])
+            observed_pr = github["pr"]
+            expected_pr = {
+                "number": result["pr"]["number"], "url": result["pr"]["url"], "state": "OPEN",
+                "baseRefOid": result["base_sha"], "headRefOid": result["head_sha"],
+            }
+            for name, expected in expected_pr.items():
+                if observed_pr.get(name) != expected:
+                    raise P2AError("PR_FACTS_MISMATCH", "Result PR fact differs from GitHub Code Truth", field=name, expected=expected, observed=observed_pr.get(name))
+            successful_run_ids = {
+                item["id"] for item in github["runs"]
+                if item["head_sha"] == result["head_sha"] and item["status"] == "completed" and item["conclusion"] == "success"
+            }
+            claimed_run_ids = {item["id"] for item in result["ci"].get("runs", [])}
+            if claimed_run_ids and not claimed_run_ids.issubset(successful_run_ids):
+                raise P2AError("CI_FACTS_MISMATCH", "Result claims a CI run not verified by GitHub", claimed=sorted(claimed_run_ids), verified=sorted(successful_run_ids))
         if git_root is not None:
             git = GitInspector(git_root)
             if git.head_sha() != result["head_sha"]:

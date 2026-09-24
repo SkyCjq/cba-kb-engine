@@ -5,14 +5,22 @@ from typing import Any, Mapping
 
 from .drive_io import DriveStore
 from .ledger import AppendOnlyLedger
-from .models import P2AError, load_yaml_bytes, sha256_bytes
-from .verify import validate_task_document
+from .models import P2AError, load_json_bytes, load_yaml_bytes, sha256_bytes
+from .verify import validate_result_document, validate_task_document
 
 
 @dataclass(frozen=True)
 class TransitionIntent:
+    predecessor_task_file_id: str
     predecessor_sha256: str
     predecessor_revision: int
+    source_result_file_id: str
+    source_result_sha256: str
+    expected_requirement_sha256: str
+    expected_policy_sha256: str
+    expected_supersedes_task_id: str
+    expected_return_gate: str
+    expected_next_executor: str
     successor_bytes: bytes
     history_folder_id: str
     history_name: str
@@ -34,15 +42,46 @@ def transition_commit(
     generation = successor["canonical_generation"]
     policy_sha = successor["policy_bundle_sha256"]
     stable_before = store.read(intent.stable_file_id)
-
-    ledger.append(req_id=req_id, task_id=task_id, canonical_generation=generation, event="SUCCESSOR_MATERIALIZING", result="PASS", policy_bundle_sha256=policy_sha, input_binding_sha256=intent.predecessor_sha256, output_binding_sha256=successor_sha)
-
     stable_is_predecessor = sha256_bytes(stable_before.content) == intent.predecessor_sha256
     stable_is_successor = stable_before.content == intent.successor_bytes
     if not stable_is_predecessor and not stable_is_successor:
         raise P2AError("OLD_STABLE_POINTER", "Stable pointer is neither predecessor nor authorized successor")
     if stable_is_predecessor and stable_before.revision != intent.predecessor_revision:
         raise P2AError("STABLE_REVISION_MISMATCH", "Stable predecessor revision drifted", expected=intent.predecessor_revision, observed=stable_before.revision)
+
+    predecessor_read = store.read(intent.predecessor_task_file_id)
+    if sha256_bytes(predecessor_read.content) != intent.predecessor_sha256:
+        raise P2AError("TRANSITION_BINDING_MISMATCH", "Fresh predecessor bytes differ from intent")
+    if stable_is_predecessor and predecessor_read.content != stable_before.content:
+        raise P2AError("TRANSITION_BINDING_MISMATCH", "Stable predecessor differs from immutable predecessor read")
+    predecessor = load_yaml_bytes(predecessor_read.content)
+    validate_task_document(predecessor)
+    source_result_read = store.read(intent.source_result_file_id)
+    if sha256_bytes(source_result_read.content) != intent.source_result_sha256:
+        raise P2AError("SOURCE_RESULT_HASH_MISMATCH", "Source result hash does not match transition authority")
+    source_result = load_json_bytes(source_result_read.content)
+    validate_result_document(source_result)
+    if source_result["task_id"] != predecessor["task_id"] or source_result["canonical_generation"] != predecessor["canonical_generation"]:
+        raise P2AError("SOURCE_RESULT_IDENTITY_MISMATCH", "Source result does not bind the predecessor task")
+    if source_result["source_task_sha256"] != intent.predecessor_sha256:
+        raise P2AError("SOURCE_RESULT_HASH_MISMATCH", "Source result does not bind predecessor bytes")
+    checks = {
+        "requirement_sha256": (successor["authority_binding"]["requirement_sha256"], intent.expected_requirement_sha256),
+        "policy_bundle_sha256": (successor["policy_bundle_sha256"], intent.expected_policy_sha256),
+        "supersedes_task_id": (successor["transition_binding"]["supersedes_task_id"], intent.expected_supersedes_task_id),
+        "supersedes_task_sha256": (successor["transition_binding"]["supersedes_task_sha256"], intent.predecessor_sha256),
+        "return_gate": (successor["return_gate"], intent.expected_return_gate),
+        "next_executor": (successor["next_executor"], intent.expected_next_executor),
+    }
+    for name, (observed, expected) in checks.items():
+        if observed != expected:
+            raise P2AError("TRANSITION_BINDING_MISMATCH", f"{name} does not match authorized transition", expected=expected, observed=observed)
+    if predecessor["task_id"] != intent.expected_supersedes_task_id:
+        raise P2AError("TRANSITION_BINDING_MISMATCH", "Fresh predecessor identity differs from intent")
+    if successor["transition_binding"]["source_result_required"] is not True:
+        raise P2AError("TRANSITION_BINDING_MISMATCH", "Successor does not require its source result")
+
+    ledger.append(req_id=req_id, task_id=task_id, canonical_generation=generation, event="SUCCESSOR_MATERIALIZING", result="PASS", policy_bundle_sha256=policy_sha, input_binding_sha256=intent.predecessor_sha256, output_binding_sha256=successor_sha)
 
     history = store.find(intent.history_folder_id, intent.history_name)
     if history is None:
