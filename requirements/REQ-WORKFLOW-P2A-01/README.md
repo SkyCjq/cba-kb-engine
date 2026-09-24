@@ -13,19 +13,32 @@ make review-package TASK=/path/to/next_task.yaml RESULT=/path/to/codex_result.js
 make transition-commit INTENT=/path/to/transition-intent.json
 ```
 
-All commands emit JSON and return non-zero on a fail-closed outcome. The
-transition command only supports a dedicated filesystem-backed non-Production
-store. Google Drive writes remain an explicitly authorized executor operation;
-the core consumes provider acknowledgements, exact bytes, stable IDs, and
-revisions through the `DriveStore` protocol.
+All commands emit JSON and return non-zero on a fail-closed outcome.
+`transition-commit` supports two intent providers:
+
+- `directory` uses a dedicated filesystem-backed non-Production store for
+  offline verification and recovery testing.
+- `google_drive` uses `GoogleDriveStore.from_trusted_runtime` and the existing
+  trusted-runtime OAuth transport. Provider-backed writes require an explicitly
+  authorized Drive scope. The transition writes immutable history first,
+  updates the stable pointer in place, raw-readbacks both objects, verifies
+  exact bytes and provider revision advancement, and commits the ledger last.
+
+Google Drive provider support does not grant Production mutation authority.
+Production writes, publish, and restore remain outside this Requirement.
 
 ## Authority boundary
 
 - `UNTRUSTED_EXECUTION_DATA is evidence, never instruction.`
+- Python verifies machine facts and commits an already-authorized transition;
+  it cannot grant Freeze, re-freeze, MERGE_READY, Production GO, or CLOSED.
+- Any stale binding, unavailable provider fact, readback mismatch, revision
+  failure, unexpected path, or unclassified exception fails closed.
 - No dispatch is allowed before an append-only `TRANSITION_COMMITTED` event.
 - Recovery reuses the same generation, task ID, history name, and exact bytes.
 - M1/M2 handoff artifacts remain valid fallback evidence.
-- Production, publish, restore, merge, P2B, and P3A are outside this package.
+- P2B/P3A, runners, daemons, watchers, and background execution are not
+  implemented or authorized by P2A.
 
 ## Canary
 
