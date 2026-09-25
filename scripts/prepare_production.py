@@ -43,6 +43,9 @@ RELEASE_SPECS = {
     "v1.8.0-1": {
         "product_baseline_sha": "81bd581fafbccb602f9ecaf9aaefca4533be69a4",
     },
+    "v1.8.1-1": {
+        "product_baseline_sha": "9cd5dab298012eadaf8345f3f9d2709a2b5c2288",
+    },
 }
 FOLDER = "application/vnd.google-apps.folder"
 NATIVE_DOCUMENT = "application/vnd.google-apps.document"
@@ -600,7 +603,7 @@ def _candidate_inputs(drive, engine_root, projection, allocation, output):
     registry = None
     registry_bytes = None
     manifest_previous = None
-    if projection["release_id"] == "v1.6.1-1":
+    if projection["release_id"] in {"v1.6.1-1", "v1.8.1-1"}:
         if REGISTRY_KEY not in item_by_key or MANIFEST_KEY not in item_by_key:
             raise ProjectionError("CLOSURE_CONTROL_TARGET_MISSING")
         registry_previous, _ = snapshot(
@@ -1044,7 +1047,7 @@ def freeze_plan(
     dependencies = load_production_dependencies(drive, policy)
     outbox = output / "outbox"
     closure = None
-    if release_id == "v1.6.1-1":
+    if release_id in {"v1.6.1-1", "v1.8.1-1"}:
         closure = _build_closure_contract(
             drive=drive,
             instance=instance,
