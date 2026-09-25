@@ -13,8 +13,12 @@ Machine-proves:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import pytest
+from openpyxl import Workbook, load_workbook
 
 from cba_kb.consumer_package import (
     CONSUMER_TARGETS,
@@ -45,6 +49,7 @@ from cba_kb.current_state import (
 )
 from cba_kb.document_mentions import build_mention_artifact
 from cba_kb.master import HEADERS
+from cba_kb.master import inspect as inspect_master
 from cba_kb.player_identity import new_registry
 from cba_kb.player_profile import build_profile_v2
 
@@ -421,3 +426,154 @@ def test_emitted_packages_close_identity_and_counts_without_mutating_truth(same_
             build_target_packages(tampered, **authority)
     assert (rows, registry_value) == frozen
     assert profile == frozen_profile
+
+
+def _cli_frozen_inputs(tmp_path):
+    row = {key: None for key in HEADERS}
+    row.update(record_key="2026-2027|test-club|TEST PLAYER", season="2026-2027",
+               club_id="test-club", player="TEST PLAYER", source_url="https://example.test",
+               source_file_id="src-1", verification_level="machine_validated")
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "MASTER"
+    sheet.append(HEADERS)
+    sheet.append([row[key] for key in HEADERS])
+    master = tmp_path / "MASTER.xlsx"
+    workbook.save(master)
+    rows, summary = inspect_master(master)
+    uid = "pid_0000000000000001"
+    registry = new_registry([
+        dict(schema_version=1, player_uid=uid, canonical_name="TEST PLAYER",
+             status="ACTIVE", redirect_to=None),
+        dict(schema_version=1, player_uid="pid_0000000000000002",
+             canonical_name="OTHER PLAYER", status="ACTIVE", redirect_to=None),
+    ], record_links=[dict(schema_version=1, record_key=row["record_key"],
+                         player_uid=uid, link_status="same", method="MANUAL_REVIEW",
+                         confidence="HIGH", evidence_refs=["ev-1"])])
+    profile = build_profile_v2(
+        rows, player_uid=uid, identity_registry=registry,
+        mention_artifact=build_mention_artifact([], []), release_id="v1.8.1-1",
+        as_of="2026-09-25T00:00:00Z", source_master_sha256=summary["sha256"],
+        generator_sha="b" * 64,
+    )
+    paths = {
+        "master": master,
+        "production_manifest": tmp_path / "production-manifest.csv",
+        "identity_registry": tmp_path / "identity-registry.json",
+        "profile": tmp_path / "profile.json",
+        "documents": tmp_path / "documents.json",
+        "sources": tmp_path / "sources.json",
+    }
+    paths["production_manifest"].write_text(
+        "uid,drive_file_id,content_hash\nprod-a,file-a," + "a" * 64 + "\n"
+        "prod-b,file-b," + "b" * 64 + "\n"
+    )
+    paths["identity_registry"].write_text(json.dumps(registry))
+    paths["profile"].write_text(json.dumps(profile))
+    paths["documents"].write_text("[]")
+    paths["sources"].write_text("[]")
+    return paths, registry, rows
+
+
+def _run_consumer_package_cli(paths, output, *, omit=()):
+    root = Path(__file__).resolve().parents[1]
+    arguments = [sys.executable, "-m", "cba_kb.cli", "--root", str(root),
+                 "consumer-package"]
+    for name in ("profile", "documents", "sources", "production_manifest",
+                 "identity_registry", "master"):
+        if name not in omit:
+            arguments.extend(("--" + name.replace("_", "-"), str(paths[name])))
+    arguments.extend(("--output", str(output), "--release-id", "v1.8.1-1",
+                      "--as-of", "2026-09-25T00:00:00Z", "--provenance", "frozen"))
+    return subprocess.run(
+        arguments, cwd=root, capture_output=True, text=True,
+        env={**os.environ, "PYTHONPATH": str(root / "src"),
+             "PYTHONDONTWRITEBYTECODE": "1", "CBA_KB_INSTANCE_ROOT": "",
+             "HTTP_PROXY": "http://127.0.0.1:9",
+             "HTTPS_PROXY": "http://127.0.0.1:9", "ALL_PROXY": "http://127.0.0.1:9"},
+    )
+
+
+def test_v2_cli_emits_one_frozen_global_count_contract_to_all_targets(tmp_path):
+    from cba_kb.canonical_registry import manifest_rows
+    from cba_kb.common import digest
+    from cba_kb.evidence_ledger import canonical_bytes
+
+    paths, registry, rows = _cli_frozen_inputs(tmp_path)
+    output = tmp_path / "consumer-output"
+    result = _run_consumer_package_cli(paths, output)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads((output / "canonical_consumer_payload.json").read_text())
+    contract = payload["global_machine_count_contract"]
+    actual = derive_machine_counts(paths["production_manifest"].read_bytes(), registry, rows)
+    assert contract["counts"] == actual
+    assert contract["input_sha256"] == {
+        "production_manifest": digest(canonical_bytes(
+            manifest_rows(paths["production_manifest"].read_bytes())
+        )),
+        "identity_registry": digest(canonical_bytes(registry)),
+        "master_rows": digest(canonical_bytes(rows)),
+    }
+    assert actual["production_artifact_count"] == 2
+    assert actual["player_count"] == 2
+    assert len(payload["identity_projection"]["players"]) == 1
+    for target in ("chatgpt", "gemini-notebook", "workbuddy"):
+        manifest_value = json.loads(
+            (output / "targets" / target / "package_manifest.json").read_text()
+        )
+        emitted_payload = json.loads(
+            (output / "targets" / target / "canonical_consumer_payload.json").read_text()
+        )
+        assert manifest_value["coverage"]["global_machine_count_contract"] == contract
+        assert manifest_value["coverage"]["machine_counts"] == actual
+        assert emitted_payload["global_machine_count_contract"] == contract
+
+
+@pytest.mark.parametrize("missing", ["production_manifest", "identity_registry", "master"])
+def test_v2_cli_missing_frozen_authority_fails_before_emission(tmp_path, missing):
+    paths, _, _ = _cli_frozen_inputs(tmp_path)
+    output = tmp_path / "consumer-output"
+    result = _run_consumer_package_cli(paths, output, omit={missing})
+    assert result.returncode != 0
+    assert "FROZEN_GLOBAL_COUNT_INPUTS_REQUIRED" in result.stderr
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("malformed", ["production_manifest", "identity_registry", "master"])
+def test_v2_cli_malformed_frozen_authority_fails_before_emission(tmp_path, malformed):
+    paths, _, _ = _cli_frozen_inputs(tmp_path)
+    paths[malformed].write_bytes(b"invalid frozen input")
+    output = tmp_path / "consumer-output"
+    result = _run_consumer_package_cli(paths, output)
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+def test_v2_cli_mismatched_identity_authority_fails_before_emission(tmp_path):
+    paths, _, _ = _cli_frozen_inputs(tmp_path)
+    changed = new_registry([
+        dict(schema_version=1, player_uid="pid_0000000000000001",
+             canonical_name="TEST PLAYER", status="ACTIVE", redirect_to=None),
+    ], record_links=[])
+    paths["identity_registry"].write_text(json.dumps(changed))
+    output = tmp_path / "consumer-output"
+    result = _run_consumer_package_cli(paths, output)
+    assert result.returncode != 0
+    assert "PROFILE_IDENTITY_AUTHORITY_MISMATCH" in result.stderr
+    assert not output.exists()
+
+
+def test_v2_cli_mismatched_master_authority_fails_before_emission(tmp_path):
+    paths, _, _ = _cli_frozen_inputs(tmp_path)
+    workbook = load_workbook(paths["master"])
+    extra = {key: None for key in HEADERS}
+    extra.update(record_key="2026-2027|test-club|OTHER PLAYER", season="2026-2027",
+                 club_id="test-club", player="OTHER PLAYER", source_url="https://example.test",
+                 source_file_id="src-2", verification_level="machine_validated")
+    workbook["MASTER"].append([extra[key] for key in HEADERS])
+    workbook.save(paths["master"])
+    output = tmp_path / "consumer-output"
+    result = _run_consumer_package_cli(paths, output)
+    assert result.returncode != 0
+    assert "PROFILE_MASTER_AUTHORITY_MISMATCH" in result.stderr
+    assert not output.exists()
