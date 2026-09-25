@@ -1,4 +1,5 @@
 import copy
+from pathlib import Path
 import yaml
 
 from automation.models import canonical_json_bytes, sha256_bytes
@@ -270,7 +271,7 @@ def descendant_case(monkeypatch, task_dict, result_dict):
                             changed_files=[], source_task_sha256=sha256_bytes(human_bytes),
                             focused_tests={"status": "NOT_RERUN_DURING_HUMAN_MERGE"},
                             full_regression={"status": "NOT_RERUN_DURING_HUMAN_MERGE"},
-                            pr={"number": number, "url": f"https://example.test/pr/{number}", "head_sha": head,
+                            pr={"number": number, "url": f"https://example.test/pr/{number}", "state": "MERGED", "head_sha": head,
                                 "base_sha": previous, "merge_commit_sha": merge},
                             ci={"workflow_name": "Offline tests", "head_sha": merge,
                                 "conclusion": "success", "runs": [{"id": 91 + index}]},
@@ -373,3 +374,113 @@ def test_descendant_mode_accepts_exact_p2a_process_chain(monkeypatch, task_dict,
     verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
                                    github_inspector=github, predecessor_store=store)
     assert verified.classification == "EXECUTION_RESULT_VERIFIED"
+
+
+def retrospective_case(monkeypatch, task_dict, result_dict):
+    task, _, result, store, github, *rest = descendant_case(monkeypatch, task_dict, result_dict)
+    entry = result["machine_facts"]["descendants"][0]
+    historical_bytes = store.read(entry["human_result_file_id"]).content
+    historical = __import__("json").loads(historical_bytes)
+    historical.update(status="BLOCKED", classification="HUMAN_MERGE_RESULT_CONTRACT_UNSUPPORTED",
+                      generated_at_utc="2026-09-25T01:05:00Z",
+                      errors=[{"classification": "PROCESS", "code": code, "re_freeze": "NO"} for code in (
+                          "HUMAN_MERGE_TEST_EVIDENCE_CONTRACT", "HUMAN_MERGE_PR_STATE_CONTRACT")])
+    historical["machine_facts"] = {
+        "product_failure": False, "identity_semantic_delta": "ZERO", "req_product_code_delta": 0,
+        **{key: 0 for key in (
+            "production_mutation", "publish", "restore", "identity_authority_change",
+            "identity_registry_mutation", "master_mutation", "player_uid_mutation",
+            "new_identity_decisions", "new_same_decisions", "new_not_same_decisions",
+            "machine_final_uid_decisions",
+        )},
+    }
+    for field in ("focused_tests", "full_regression"):
+        historical[field] = {"status": "NOT_RERUN_DURING_HUMAN_MERGE",
+                             "evidence_mode": "VERIFIED_PROCESS_PREDECESSOR_REUSE",
+                             "process_result_sha256": entry["process_result_sha256"]}
+    historical["pr"].update(merged_at="2026-09-25T01:00:00Z")
+    historical["ci"].update(event="push", head_branch="main", status="completed")
+    historical_bytes = canonical_json_bytes(historical)
+    store.records[entry["human_result_file_id"]].content = historical_bytes
+    entry["human_result_sha256"] = sha256_bytes(historical_bytes)
+    historical_task_bytes = store.read(entry["human_task_file_id"]).content
+    historical_task = yaml.safe_load(historical_task_bytes)
+    package = build_review_package(historical_task, historical, task_bytes=historical_task_bytes,
+                                   result_bytes=historical_bytes)
+    package_bytes = canonical_json_bytes(package)
+    store.records[entry["human_review_package_file_id"]].content = package_bytes
+    authority = {"schema_version": "cba-kb.p2a-stabilization-task.v1", "repository": task["repository"],
+                 "task_id": "00000000-0000-4000-a000-000000000001", "workstream_id": "INDEPENDENT-PROOF"}
+    authority_bytes = yaml.safe_dump(authority).encode()
+    store.seed("proof-authority", "stabilization", "frozen-task.yaml", authority_bytes)
+    proof = {
+        "schema_version": "cba-kb.p2a-retrospective-proof.v1", "status": "PASS",
+        "capability": "VERIFIED_PREDECESSOR_REUSE_MERGED_PR", "verifier_version": "0.1.0",
+        "verified_at_utc": "2026-09-25T03:00:00Z", "repository": task["repository"],
+        "requirement_sha256": task["authority_binding"]["requirement_sha256"],
+        "policy_bundle_sha256": task["policy_bundle_sha256"], "production_authority": False,
+        "authority": {"task_file_id": "proof-authority", "task_sha256": sha256_bytes(authority_bytes),
+                      "task_id": authority["task_id"], "workstream_id": authority["workstream_id"]},
+        "historical": {"task_file_id": entry["human_task_file_id"], "task_sha256": entry["human_task_sha256"],
+                       "result_file_id": entry["human_result_file_id"], "result_sha256": entry["human_result_sha256"],
+                       "review_package_file_id": entry["human_review_package_file_id"],
+                       "review_package_sha256": sha256_bytes(package_bytes), "status": "BLOCKED",
+                       "classification": historical["classification"],
+                       "error_codes": [error["code"] for error in historical["errors"]]},
+        "predecessor": {"task_file_id": entry["process_task_file_id"], "task_sha256": entry["process_task_sha256"],
+                        "result_file_id": entry["process_result_file_id"],
+                        "result_sha256": entry["process_result_sha256"],
+                        "review_package_file_id": entry["process_review_package_file_id"]},
+        "event": {"pr_number": entry["pr_number"], "reviewed_head_sha": entry["reviewed_head_sha"],
+                  "actual_pr_head_sha": entry["reviewed_head_sha"], "base_sha": "d" * 40,
+                  "merge_commit_sha": entry["merge_commit_sha"], "merged_at": "2026-09-25T01:00:00Z",
+                  "reviewed_ci_run_id": 100, "exact_main_ci_run_id": 91},
+    }
+    entry["retrospective_proof_file_id"] = "later-proof"
+    proof_bytes = canonical_json_bytes(proof)
+    entry["retrospective_proof_sha256"] = sha256_bytes(proof_bytes)
+    store.seed("later-proof", "stabilization", "proof.json", proof_bytes)
+    task["allowed_actions"].append(
+        f"require retrospective proof SHA256 {entry['retrospective_proof_sha256']} authority SHA256 {proof['authority']['task_sha256']}")
+    github_runs = rest[-2]
+    github_runs[entry["merge_commit_sha"]][0]["head_branch"] = "main"
+    task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+    result["source_task_sha256"] = sha256_bytes(task_bytes)
+    return task, task_bytes, result, store, github, proof, entry, historical_bytes
+
+
+def test_retrospective_proof_preserves_blocked_bytes_and_reconciles_event(monkeypatch, task_dict, result_dict):
+    _, task_bytes, result, store, github, _, entry, historical_bytes = retrospective_case(
+        monkeypatch, task_dict, result_dict,
+    )
+    historical_sha = sha256_bytes(historical_bytes)
+    verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
+                                   github_inspector=github, predecessor_store=store)
+    assert verified.classification == "EXECUTION_RESULT_VERIFIED"
+    assert store.read(entry["human_result_file_id"]).content == historical_bytes
+    assert sha256_bytes(store.read(entry["human_result_file_id"]).content) == historical_sha
+
+
+def test_historical_capability_gap_fixture_remains_blocked_and_immutable():
+    root = Path(__file__).parent / "fixtures" / "p2a_stabilization"
+    historical = (root / "historical_result.json").read_bytes()
+    task = (root / "historical_task.yaml").read_bytes()
+    package = (root / "historical_review_package.json").read_bytes()
+    assert sha256_bytes(historical) == "95134cbad6b5428dfd076193ec693c8c1c6896c14f042e3bc6bad334ff10141a"
+    assert sha256_bytes(task) == "463bff0c6254005e16ac545f9d8a728757890010b7e978dd73ab7d8a4ba2e87b"
+    assert sha256_bytes(package) == "bd4e55a69078669aae7fe66ef19bea0cf7d89eb24c271986fab61a4ab8dee18a"
+    document = __import__("json").loads(historical)
+    assert document["status"] == "BLOCKED"
+    assert {item["code"] for item in document["errors"]} == {
+        "HUMAN_MERGE_TEST_EVIDENCE_CONTRACT", "HUMAN_MERGE_PR_STATE_CONTRACT",
+    }
+    assert all(item["classification"] == "PROCESS" and item["re_freeze"] == "NO"
+               for item in document["errors"])
+
+
+def test_retrospective_core_contains_no_request_or_generation_special_case():
+    import inspect
+    from automation.verify import _verify_retrospective_proof
+
+    source = inspect.getsource(_verify_retrospective_proof)
+    assert all(marker not in source for marker in ("Gen13", "PR37", "REQ-181", "generation == 13"))

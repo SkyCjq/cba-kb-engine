@@ -7,8 +7,9 @@ from automation.drive_io import GoogleDriveStore, MemoryDriveStore
 from automation.handoff import TransitionIntent, dispatch_allowed, transition_commit
 from automation.ledger import AppendOnlyLedger
 from automation.models import P2AError, canonical_json_bytes, sha256_bytes
+from automation.review_package import build_review_package
 from automation.verify import guarded_verify, verify_result_bytes, verify_task_bytes
-from test_verify import descendant_case, human_merge_case, post_merge_case
+from test_verify import descendant_case, human_merge_case, post_merge_case, retrospective_case
 
 
 def _strict_case(tmp_path, task_dict, store=None):
@@ -272,6 +273,123 @@ def test_descendant_mode_rejects_unbound_or_drifted_evidence(
         runs["1" * 40][0]["event"] = "push"
     elif mutation == "descendant_push_ci":
         runs["e" * 40][0]["conclusion"] = "failure"
+    verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
+                                   github_inspector=github, predecessor_store=store)
+    assert verified.classification == classification
+
+
+@pytest.mark.parametrize(("mutation", "classification"), [
+    ("product_failure", "RETROSPECTIVE_INELIGIBLE"),
+    ("test_failure", "RETROSPECTIVE_INELIGIBLE"),
+    ("wrong_task_sha", "RETROSPECTIVE_PROOF_BINDING_MISMATCH"),
+    ("wrong_result_sha", "RETROSPECTIVE_PROOF_BINDING_MISMATCH"),
+    ("wrong_package", "RETROSPECTIVE_PROOF_BINDING_MISMATCH"),
+    ("wrong_pr", "RETROSPECTIVE_EVENT_MISMATCH"),
+    ("wrong_reviewed_head", "RETROSPECTIVE_EVENT_MISMATCH"),
+    ("wrong_merge", "RETROSPECTIVE_EVENT_MISMATCH"),
+    ("wrong_main_ci", "RETROSPECTIVE_EVENT_MISMATCH"),
+    ("wrong_requirement", "RETROSPECTIVE_PROOF_BINDING_MISMATCH"),
+    ("wrong_policy", "RETROSPECTIVE_PROOF_BINDING_MISMATCH"),
+    ("missing_history", "DRIVE_FILE_NOT_FOUND"),
+    ("unbound_proof", "RETROSPECTIVE_PROOF_UNBOUND"),
+    ("replaced_result", "RETROSPECTIVE_PROOF_BINDING_MISMATCH"),
+    ("changed_classification", "RETROSPECTIVE_PROOF_BINDING_MISMATCH"),
+    ("production_claim", "RETROSPECTIVE_PROOF_INVALID"),
+    ("arbitrary_blocked", "DESCENDANT_EVIDENCE_MISMATCH"),
+    ("wrong_ancestry", "GIT_ANCESTRY_MISMATCH"),
+    ("wrong_capability", "RETROSPECTIVE_PROOF_INVALID"),
+    ("wrong_verifier_version", "RETROSPECTIVE_PROOF_INVALID"),
+    ("premature_proof", "RETROSPECTIVE_PROOF_INVALID"),
+    ("identity_mutation", "RETROSPECTIVE_INELIGIBLE"),
+    ("failed_reviewed_ci", "RETROSPECTIVE_CI_MISMATCH"),
+    ("failed_main_ci", "RETROSPECTIVE_CI_MISMATCH"),
+    ("proof_hash_drift", "RETROSPECTIVE_PROOF_HASH_MISMATCH"),
+    ("authority_task_drift", "RETROSPECTIVE_PROOF_UNBOUND"),
+])
+def test_retrospective_proof_rejects_invalid_history_or_authority(
+    monkeypatch, task_dict, result_dict, mutation, classification,
+):
+    import json
+    import automation.verify as verify_module
+
+    task, _, result, store, github, proof, entry, _ = retrospective_case(monkeypatch, task_dict, result_dict)
+    if mutation in {"product_failure", "test_failure", "identity_mutation"}:
+        file = store.records[entry["human_result_file_id"]]
+        historical = json.loads(file.content)
+        if mutation == "identity_mutation":
+            historical["machine_facts"]["identity_registry_mutation"] = 1
+        else:
+            historical["errors"][0]["code"] = "PRODUCT_FAILURE" if mutation == "product_failure" else "TEST_FAILURE"
+        file.content = canonical_json_bytes(historical)
+        entry["human_result_sha256"] = sha256_bytes(file.content)
+        historical_task_bytes = store.read(entry["human_task_file_id"]).content
+        package = build_review_package(yaml.safe_load(historical_task_bytes), historical,
+                                       task_bytes=historical_task_bytes, result_bytes=file.content)
+        package_bytes = canonical_json_bytes(package)
+        store.records[entry["human_review_package_file_id"]].content = package_bytes
+        proof["historical"].update(result_sha256=entry["human_result_sha256"],
+                                   review_package_sha256=sha256_bytes(package_bytes),
+                                   error_codes=[error["code"] for error in historical["errors"]])
+    elif mutation == "wrong_task_sha":
+        proof["historical"]["task_sha256"] = "0" * 64
+    elif mutation == "wrong_result_sha":
+        proof["historical"]["result_sha256"] = "0" * 64
+    elif mutation == "wrong_package":
+        proof["historical"]["review_package_sha256"] = "0" * 64
+    elif mutation == "wrong_pr":
+        proof["event"]["pr_number"] = 999
+    elif mutation == "wrong_reviewed_head":
+        proof["event"]["reviewed_head_sha"] = "0" * 40
+    elif mutation == "wrong_merge":
+        proof["event"]["merge_commit_sha"] = "0" * 40
+    elif mutation == "wrong_main_ci":
+        proof["event"]["exact_main_ci_run_id"] = 999
+    elif mutation == "wrong_requirement":
+        proof["requirement_sha256"] = "0" * 64
+    elif mutation == "wrong_policy":
+        proof["policy_bundle_sha256"] = "0" * 64
+    elif mutation == "missing_history":
+        del store.records[entry["human_review_package_file_id"]]
+    elif mutation == "unbound_proof":
+        task["allowed_actions"].pop()
+    elif mutation == "replaced_result":
+        proof["historical"]["status"] = "PASS"
+    elif mutation == "changed_classification":
+        proof["historical"]["classification"] = "SUCCESS"
+    elif mutation == "production_claim":
+        proof["production_authority"] = True
+    elif mutation == "arbitrary_blocked":
+        entry.pop("retrospective_proof_file_id")
+        entry.pop("retrospective_proof_sha256")
+    elif mutation == "wrong_ancestry":
+        base_git = verify_module.GitInspector
+        class WrongAncestryGit(base_git):
+            def is_ancestor(self, ancestor, descendant):
+                return False
+        monkeypatch.setattr("automation.verify.GitInspector", WrongAncestryGit)
+    elif mutation == "wrong_capability":
+        proof["capability"] = "ARBITRARY_BLOCKED_OVERRIDE"
+    elif mutation == "wrong_verifier_version":
+        proof["verifier_version"] = "0.0.0"
+    elif mutation == "premature_proof":
+        proof["verified_at_utc"] = "2026-09-25T00:00:00Z"
+    elif mutation == "failed_reviewed_ci":
+        github._json("api", f"repos/{task['repository']}/actions/runs?head_sha={'1'*40}&per_page=100")["workflow_runs"][0]["conclusion"] = "failure"
+    elif mutation == "failed_main_ci":
+        github._json("api", f"repos/{task['repository']}/actions/runs?head_sha={'e'*40}&per_page=100")["workflow_runs"][0]["conclusion"] = "failure"
+    elif mutation == "authority_task_drift":
+        store.records["proof-authority"].content += b"\n# drift\n"
+    if mutation not in {"unbound_proof", "arbitrary_blocked", "wrong_ancestry", "proof_hash_drift", "authority_task_drift", "failed_reviewed_ci", "failed_main_ci"}:
+        proof_bytes = canonical_json_bytes(proof)
+        store.records["later-proof"].content = proof_bytes
+        entry["retrospective_proof_sha256"] = sha256_bytes(proof_bytes)
+        task["allowed_actions"][-1] = (
+            f"require retrospective proof SHA256 {entry['retrospective_proof_sha256']} "
+            f"authority SHA256 {proof['authority']['task_sha256']}")
+    if mutation == "proof_hash_drift":
+        store.records["later-proof"].content += b"\n"
+    task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+    result["source_task_sha256"] = sha256_bytes(task_bytes)
     verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
                                    github_inspector=github, predecessor_store=store)
     assert verified.classification == classification

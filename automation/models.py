@@ -16,6 +16,7 @@ AUTOMATION_VERSION = "0.1.0"
 TASK_SCHEMA = "cba-kb.p2a-task.v1"
 RESULT_SCHEMA = "cba-kb.p2a-result.v1"
 REVIEW_PACKAGE_SCHEMA = "cba-kb.p2a-review-package.v1"
+RETROSPECTIVE_PROOF_SCHEMA = "cba-kb.p2a-retrospective-proof.v1"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 
