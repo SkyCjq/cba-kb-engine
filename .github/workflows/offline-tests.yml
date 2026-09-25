@@ -2,7 +2,7 @@ name: Offline tests
 
 on:
   push:
-    branches: ['codex/**']
+    branches: ['codex/**', 'main']
   pull_request:
 
 permissions:

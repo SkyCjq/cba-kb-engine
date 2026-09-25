@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -142,6 +143,80 @@ def validate_result_document(result: Mapping[str, Any]) -> None:
         raise P2AError("RESULT_SCHEMA_INVALID", "changed_files must be a string list")
 
 
+POST_MERGE_TASK_TYPE = "CODEX_READ_ONLY_POST_MERGE_RECONCILIATION"
+
+
+def _verify_post_merge_result(
+    result: Mapping[str, Any], task: Mapping[str, Any], github_inspector: Any,
+    git_root: str | Path | None, github: Mapping[str, Any],
+) -> None:
+    """Verify a merged PR against its reviewed head and the live exact-main run."""
+    pr, ci = result["pr"], result["ci"]
+    if task["feature_branch"] != "main" or task["expected_base_branch"] != "main":
+        raise P2AError("POST_MERGE_TASK_MISMATCH", "Post-merge task must bind main")
+    if result["head_sha"] != result["base_sha"] or result["head_sha"] != task["expected_base_sha"]:
+        raise P2AError("FINAL_MAIN_MISMATCH", "Final main does not match the frozen task baseline")
+    if not isinstance(result["machine_facts"], dict) or result["machine_facts"].get("requirement_sha256") != task["authority_binding"]["requirement_sha256"]:
+        raise P2AError("REQUIREMENT_BINDING_MISMATCH", "Post-merge result must bind the frozen Requirement")
+    for name in ("head_sha", "base_sha", "merge_commit_sha", "reviewed_head_sha"):
+        require_git_sha(pr.get(name), field_name=f"pr.{name}", code="POST_MERGE_PROVENANCE_MISSING")
+    reviewed_run_id = pr.get("reviewed_ci_run_id")
+    if not isinstance(reviewed_run_id, int) or isinstance(reviewed_run_id, bool) or reviewed_run_id <= 0:
+        raise P2AError("POST_MERGE_PROVENANCE_MISSING", "Reviewed pre-merge head requires a CI run ID")
+    frozen_reviewed_heads = {
+        match.group(1) for action in task["allowed_actions"]
+        if (match := re.search(r"\breviewed (?:product )?head ([0-9a-f]{40})\b", action))
+    }
+    if frozen_reviewed_heads != {pr["reviewed_head_sha"]}:
+        raise P2AError("POST_MERGE_PROVENANCE_MISSING", "Reviewed head is not anchored in the frozen task")
+    if pr.get("state") != "MERGED" or pr["merge_commit_sha"] != result["head_sha"]:
+        raise P2AError("MERGE_COMMIT_MISMATCH", "Declared merged PR does not bind final main")
+    if ci["head_sha"] != result["head_sha"]:
+        raise P2AError("PR_CI_HEAD_MISMATCH", "Exact-main CI must run on final main")
+    observed_pr = github["pr"]
+    expected_pr = {
+        "number": pr["number"], "url": pr["url"], "state": "MERGED",
+        "headRefOid": pr["head_sha"], "baseRefOid": pr["base_sha"],
+    }
+    for name, expected in expected_pr.items():
+        if observed_pr.get(name) != expected:
+            raise P2AError("PR_FACTS_MISMATCH", "Merged PR differs from GitHub Code Truth", field=name, expected=expected, observed=observed_pr.get(name))
+    merge_facts = github_inspector._json(
+        "pr", "view", str(pr["number"]), "--repo", task["repository"], "--json", "mergedAt,mergeCommit",
+    )
+    if not merge_facts.get("mergedAt") or (merge_facts.get("mergeCommit") or {}).get("oid") != result["head_sha"]:
+        raise P2AError("MERGE_COMMIT_MISMATCH", "GitHub merged PR commit does not equal final main")
+    main_ref = github_inspector._json("api", f"repos/{task['repository']}/git/ref/heads/main")
+    if (main_ref.get("object") or {}).get("sha") != result["head_sha"]:
+        raise P2AError("FINAL_MAIN_MISMATCH", "Live main advanced or differs from the declared reconciliation SHA")
+    successful_main_ids = {
+        run["id"] for run in github["runs"]
+        if run["head_sha"] == result["head_sha"] and run["status"] == "completed"
+        and run["conclusion"] == "success" and run["event"] == "push"
+    }
+    claimed_main_ids = {run["id"] for run in ci.get("runs", [])}
+    if not claimed_main_ids or not claimed_main_ids.issubset(successful_main_ids):
+        raise P2AError("CI_FACTS_MISMATCH", "A claimed successful hosted exact-main push run is required")
+    reviewed_runs = github_inspector._json(
+        "api", f"repos/{task['repository']}/actions/runs?head_sha={pr['reviewed_head_sha']}&per_page=100",
+    ).get("workflow_runs", [])
+    if not any(
+        run.get("id") == reviewed_run_id and run.get("name") == "Offline tests"
+        and run.get("head_sha") == pr["reviewed_head_sha"]
+        and run.get("status") == "completed" and run.get("conclusion") == "success"
+        and run.get("event") == "pull_request" for run in reviewed_runs
+    ):
+        raise P2AError("POST_MERGE_PROVENANCE_MISSING", "Reviewed pre-merge head has no verified successful PR run")
+    if git_root is None:
+        raise P2AError("GIT_FACTS_UNAVAILABLE", "Post-merge verification requires exact-main Git history")
+    git = GitInspector(git_root)
+    if not git.is_ancestor(pr["reviewed_head_sha"], pr["head_sha"]):
+        raise P2AError("GIT_ANCESTRY_MISMATCH", "Reviewed head is not an ancestor of the merged PR head")
+    parents = git._run("rev-list", "--parents", "-n", "1", result["head_sha"]).split()
+    if parents != [result["head_sha"], pr["base_sha"], pr["head_sha"]]:
+        raise P2AError("GIT_ANCESTRY_MISMATCH", "Merge parents do not bind the reviewed PR provenance")
+
+
 def verify_result_bytes(
     result_data: bytes,
     task_data: bytes,
@@ -176,33 +251,35 @@ def verify_result_bytes(
                     raise P2AError("TEST_EVIDENCE_INCOMPLETE", f"{field} must be PASS")
             if not isinstance(result["pr"], dict) or not isinstance(result["ci"], dict):
                 raise P2AError("CI_EVIDENCE_INCOMPLETE", "PASS result requires PR and CI evidence")
-            if result["pr"].get("head_sha") != result["head_sha"] or result["ci"].get("head_sha") != result["head_sha"]:
+            post_merge = task["task_type"] == POST_MERGE_TASK_TYPE
+            if (not post_merge and result["pr"].get("head_sha") != result["head_sha"]) or result["ci"].get("head_sha") != result["head_sha"]:
                 raise P2AError("PR_CI_HEAD_MISMATCH", "PR, CI and result heads must be identical")
             if result["ci"].get("workflow_name") != "Offline tests" or result["ci"].get("conclusion") != "success":
                 raise P2AError("CI_NOT_GREEN", "Required Offline tests is not green")
             if github_inspector is None:
                 raise P2AError("GITHUB_FACTS_UNAVAILABLE", "PASS result requires independent GitHub Code Truth")
             github = github_inspector.collect(result["pr"]["number"], result["ci"]["workflow_name"], result["head_sha"])
-            observed_pr = github["pr"]
-            expected_pr = {
-                "number": result["pr"]["number"], "url": result["pr"]["url"], "state": "OPEN",
-                "headRefOid": result["head_sha"],
-            }
-            # A bounded repair starts at the previous feature head while its
-            # existing pull request still targets the original base branch.
-            # For every other task, the task baseline remains the PR base.
-            if task["task_type"] != "CODEX_BOUNDED_REPAIR":
-                expected_pr["baseRefOid"] = result["base_sha"]
-            for name, expected in expected_pr.items():
-                if observed_pr.get(name) != expected:
-                    raise P2AError("PR_FACTS_MISMATCH", "Result PR fact differs from GitHub Code Truth", field=name, expected=expected, observed=observed_pr.get(name))
-            successful_run_ids = {
-                item["id"] for item in github["runs"]
-                if item["head_sha"] == result["head_sha"] and item["status"] == "completed" and item["conclusion"] == "success"
-            }
-            claimed_run_ids = {item["id"] for item in result["ci"].get("runs", [])}
-            if claimed_run_ids and not claimed_run_ids.issubset(successful_run_ids):
-                raise P2AError("CI_FACTS_MISMATCH", "Result claims a CI run not verified by GitHub", claimed=sorted(claimed_run_ids), verified=sorted(successful_run_ids))
+            if post_merge:
+                _verify_post_merge_result(result, task, github_inspector, git_root, github)
+            else:
+                observed_pr = github["pr"]
+                expected_pr = {
+                    "number": result["pr"]["number"], "url": result["pr"]["url"], "state": "OPEN",
+                    "headRefOid": result["head_sha"],
+                }
+                # Only bounded repair may start at the previous feature head.
+                if task["task_type"] != "CODEX_BOUNDED_REPAIR":
+                    expected_pr["baseRefOid"] = result["base_sha"]
+                for name, expected in expected_pr.items():
+                    if observed_pr.get(name) != expected:
+                        raise P2AError("PR_FACTS_MISMATCH", "Result PR fact differs from GitHub Code Truth", field=name, expected=expected, observed=observed_pr.get(name))
+                successful_run_ids = {
+                    item["id"] for item in github["runs"]
+                    if item["head_sha"] == result["head_sha"] and item["status"] == "completed" and item["conclusion"] == "success"
+                }
+                claimed_run_ids = {item["id"] for item in result["ci"].get("runs", [])}
+                if claimed_run_ids and not claimed_run_ids.issubset(successful_run_ids):
+                    raise P2AError("CI_FACTS_MISMATCH", "Result claims a CI run not verified by GitHub", claimed=sorted(claimed_run_ids), verified=sorted(successful_run_ids))
         if git_root is not None:
             git = GitInspector(git_root)
             if git.head_sha() != result["head_sha"]:
