@@ -327,7 +327,7 @@ def descendant_case(monkeypatch, task_dict, result_dict):
 
     class GitHub:
         def collect(self, number, workflow, head):
-            return {"pr": observed, "runs": runs[final]}
+            return {"pr": observed, "runs": runs[result["head_sha"]]}
 
         def _json(self, *args):
             if args[:2] == ("pr", "view"):
@@ -342,7 +342,7 @@ def descendant_case(monkeypatch, task_dict, result_dict):
             pass
 
         def head_sha(self):
-            return final
+            return result["head_sha"]
 
         def is_ancestor(self, ancestor, descendant):
             return True
@@ -354,15 +354,16 @@ def descendant_case(monkeypatch, task_dict, result_dict):
             if args[:3] == ("rev-list", "--parents", "-n"):
                 return {historical: f"{historical} {base} {actual}",
                         merge_one: f"{merge_one} {historical} {heads[0]}",
-                        final: f"{final} {merge_one} {heads[1]}"}[args[-1]]
+                        final: f"{final} {merge_one} {heads[1]}",
+                        "4" * 40: f"{'4' * 40} {final} {'3' * 40}"}[args[-1]]
             if args[:3] == ("rev-list", "--first-parent", "--reverse"):
-                return f"{merge_one}\n{final}"
+                return f"{merge_one}\n{final}" + (f"\n{'4' * 40}" if result["head_sha"] == "4" * 40 else "")
             if args[:2] == ("rev-list", "--reverse"):
                 return args[-1].split("..")[-1]
             if args[0] == "diff-tree":
-                return paths[heads.index(args[-1])]
+                return "automation/verify.py" if args[-1] == "3" * 40 else paths[heads.index(args[-1])]
             if args[:2] == ("diff", "--name-only"):
-                return {historical: paths[0], merge_one: paths[1]}[args[2]]
+                return {historical: paths[0], merge_one: paths[1], final: "automation/verify.py"}[args[2]]
             raise AssertionError(args)
 
     monkeypatch.setattr("automation.verify.GitInspector", Git)
@@ -484,3 +485,119 @@ def test_retrospective_core_contains_no_request_or_generation_special_case():
 
     source = inspect.getsource(_verify_retrospective_proof)
     assert all(marker not in source for marker in ("Gen13", "PR37", "REQ-181", "generation == 13"))
+
+
+def external_control_plane_case(monkeypatch, task_dict, result_dict):
+    task, _, result, store, github, _, _, descendant_prs, main_ref, runs, _ = descendant_case(
+        monkeypatch, task_dict, result_dict,
+    )
+    previous, reviewed, merged = "f" * 40, "3" * 40, "4" * 40
+    paths = ["automation/verify.py"]
+    zero = {field: 0 for field in (
+        "PRODUCT_CODE_DELTA", "PRODUCTION_MUTATION", "PUBLISH", "RESTORE",
+        "REQ181_POINTER_MUTATION", "REQ181_HISTORY_MUTATION",
+    )}
+    facts = {**zero, "IDENTITY_SEMANTIC_DELTA": "ZERO", "production_authority": False}
+    external_task = {
+        "schema_version": "cba-kb.p2a-stabilization-task.v1", "workstream_id": "INDEPENDENT-CONTROL",
+        "stabilization_generation": 1,
+        "task_id": "00000000-0000-4000-a000-000000000077", "repository": task["repository"],
+        "expected_base_branch": "main", "expected_base_sha": previous,
+        "feature_branch": "codex/independent-control", "allowed_paths": paths,
+        "must_not_change": ["Production artifacts"], "forbidden_actions": ["do not publish"],
+    }
+    task_bytes_external = yaml.safe_dump(external_task, sort_keys=False).encode()
+    source = {
+        "status": "PASS", "classification": "P2A_STABILIZATION_SYNTHETIC_PASS",
+        "workstream_id": external_task["workstream_id"],
+        "stabilization_generation": 1,
+        "task_id": external_task["task_id"], "source_task_sha256": sha256_bytes(task_bytes_external),
+        "repository": task["repository"], "base_sha": previous, "head_sha": reviewed,
+        "feature_branch": external_task["feature_branch"],
+        "focused_tests": {"status": "PASS"}, "full_regression": {"status": "PASS"},
+        "secret_guard": "PASS", "changed_files": paths,
+        "pr": {"number": 77, "state": "OPEN", "base_sha": previous, "head_sha": reviewed},
+        "ci": {"workflow_name": "Offline tests", "event": "pull_request", "head_sha": reviewed,
+               "status": "completed", "conclusion": "success", "runs": [{"id": 200}]},
+        "machine_facts": facts,
+    }
+    source_bytes = canonical_json_bytes(source)
+    source_package = {
+        "review_package_version": "cba-kb.p2a-stabilization-review-package.v1",
+        "CONTROL": {"workstream_id": external_task["workstream_id"],
+                    "stabilization_generation": 1,
+                    "task_id": external_task["task_id"],
+                    "task_sha256": sha256_bytes(task_bytes_external),
+                    "result_sha256": sha256_bytes(source_bytes)},
+        "VERIFIED_MACHINE_FACTS": {"pr": source["pr"], "ci": source["ci"], "changed_files": paths},
+    }
+    package_bytes = canonical_json_bytes(source_package)
+    post = {
+        "status": "PASS", "classification": "P2A_STABILIZATION_HUMAN_MERGE_VERIFIED",
+        "workstream_id": external_task["workstream_id"],
+        "stabilization_generation": 1,
+        "task_id": external_task["task_id"], "repository": task["repository"],
+        "source_task_file_id": "external-task", "source_task_sha256": sha256_bytes(task_bytes_external),
+        "source_result_file_id": "external-result", "source_result_sha256": sha256_bytes(source_bytes),
+        "source_review_package_file_id": "external-review_package",
+        "source_review_package_sha256": sha256_bytes(package_bytes),
+        "base_sha": previous, "reviewed_head_sha": reviewed, "head_sha": merged,
+        "changed_files": paths,
+        "pr": {"number": 77, "state": "MERGED", "base_sha": previous,
+               "reviewed_head_sha": reviewed, "merge_commit_sha": merged,
+               "merged_at": "2026-09-25T03:00:00Z"},
+        "ci": {"workflow_name": "Offline tests", "event": "push", "head_branch": "main",
+               "head_sha": merged, "status": "completed", "conclusion": "success", "run_id": 201},
+        "machine_facts": facts,
+    }
+    post_bytes = canonical_json_bytes(post)
+    post_package = {
+        "review_package_version": "cba-kb.p2a-stabilization-post-merge-review-package.v1",
+        "CONTROL": {"workstream_id": external_task["workstream_id"],
+                    "task_id": external_task["task_id"],
+                    "task_sha256": sha256_bytes(task_bytes_external),
+                    "source_result_sha256": sha256_bytes(source_bytes),
+                    "post_merge_result_sha256": sha256_bytes(post_bytes)},
+        "VERIFIED_MACHINE_FACTS": {"pr": post["pr"], "ci": post["ci"],
+                                   "changed_files": paths, "machine_facts": facts},
+    }
+    entry = {"type": "external_control_plane_descendant", "merge_commit_sha": merged,
+             "reviewed_head_sha": reviewed, "actual_pr_head_sha": reviewed,
+             "pr_number": 77, "production_authority": False}
+    for kind, data in (
+        ("task", task_bytes_external), ("result", source_bytes),
+        ("review_package", package_bytes), ("post_merge_result", post_bytes),
+        ("post_merge_review_package", canonical_json_bytes(post_package)),
+    ):
+        entry[f"{kind}_file_id"] = f"external-{kind}"
+        entry[f"{kind}_sha256"] = sha256_bytes(data)
+        store.seed(entry[f"{kind}_file_id"], "external-history", kind, data)
+    frozen = ("external control-plane descendant task SHA256 {task_sha256} result SHA256 {result_sha256} "
+              "review SHA256 {review_package_sha256} post-merge result SHA256 {post_merge_result_sha256} "
+              "post-merge review SHA256 {post_merge_review_package_sha256}").format(**entry)
+    task["allowed_actions"].append(frozen)
+    task["expected_base_sha"] = merged
+    result.update(base_sha=merged, head_sha=merged)
+    result["ci"] = {"workflow_name": "Offline tests", "head_sha": merged,
+                    "conclusion": "success", "runs": [{"id": 201}]}
+    result["machine_facts"]["descendants"].append(entry)
+    main_ref["object"]["sha"] = merged
+    descendant_prs[77] = {"number": 77, "state": "MERGED", "baseRefOid": previous,
+                          "headRefOid": reviewed, "mergedAt": "2026-09-25T03:00:00Z",
+                          "mergeCommit": {"oid": merged}}
+    runs[reviewed] = [{"id": 200, "name": "Offline tests", "event": "pull_request",
+                       "head_sha": reviewed, "status": "completed", "conclusion": "success"}]
+    runs[merged] = [{"id": 201, "name": "Offline tests", "event": "push", "head_branch": "main",
+                     "head_sha": merged, "status": "completed", "conclusion": "success"}]
+    task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+    result["source_task_sha256"] = sha256_bytes(task_bytes)
+    return task, task_bytes, result, store, github, entry, descendant_prs, main_ref, runs
+
+
+def test_external_control_plane_merge_follows_req_scoped_descendants(monkeypatch, task_dict, result_dict):
+    _, task_bytes, result, store, github, *_ = external_control_plane_case(
+        monkeypatch, task_dict, result_dict,
+    )
+    verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
+                                   github_inspector=github, predecessor_store=store)
+    assert verified.classification == "EXECUTION_RESULT_VERIFIED"
