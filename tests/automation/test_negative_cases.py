@@ -9,7 +9,7 @@ from automation.ledger import AppendOnlyLedger
 from automation.models import P2AError, canonical_json_bytes, sha256_bytes
 from automation.review_package import build_review_package
 from automation.verify import guarded_verify, verify_historical_source_result, verify_result_bytes, verify_task_bytes
-from test_verify import descendant_case, external_control_plane_case, historical_source_case, human_merge_case, post_merge_case, retrospective_case
+from test_verify import descendant_case, external_control_plane_case, historical_source_case, human_merge_case, immutable_external_case, post_merge_case, retrospective_case
 
 
 def _strict_case(tmp_path, task_dict, store=None):
@@ -504,6 +504,129 @@ def test_external_control_plane_descendant_fails_closed(
     verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
                                    github_inspector=github, predecessor_store=store)
     assert verified.classification == classification
+
+
+@pytest.mark.parametrize("mutation", [
+    "wrong_authority_sha", "rewritten_authority", "missing_authority",
+    "wrong_result_sha", "wrong_review_package_sha", "wrong_post_merge_result_sha",
+    "wrong_post_merge_review_package_sha", "source_authority_mismatch",
+    "wrong_pr_number", "wrong_base", "wrong_reviewed_head", "wrong_merge",
+    "wrong_ci", "failed_ci", "stale_ci", "product_delta", "identity_delta",
+    "master_mutation", "production_mutation", "publish", "restore",
+    "production_authority", "forbidden_file", "wrong_repository",
+    "wrong_ancestry", "arbitrary_post_classification",
+])
+def test_immutable_external_authority_fails_closed(monkeypatch, task_dict, result_dict, mutation):
+    import json
+    import automation.verify as verifier
+
+    task, _, result, store, github, entry, observed_prs, _, runs = immutable_external_case(
+        monkeypatch, task_dict, result_dict,
+    )
+    if mutation == "wrong_authority_sha":
+        entry["task_sha256"] = "0" * 64
+    elif mutation == "rewritten_authority":
+        store.records[entry["task_file_id"]].content += b"changed"
+    elif mutation == "missing_authority":
+        del store.records[entry["task_file_id"]]
+    elif mutation.startswith("wrong_") and mutation.removeprefix("wrong_").removesuffix("_sha") in {
+        "result", "review_package", "post_merge_result", "post_merge_review_package",
+    } and mutation.endswith("_sha"):
+        entry[mutation.removeprefix("wrong_").removesuffix("_sha") + "_sha256"] = "0" * 64
+    elif mutation == "source_authority_mismatch":
+        record = store.records[entry["result_file_id"]]
+        source = json.loads(record.content)
+        source["authority_sha256"] = "0" * 64
+        record.content = canonical_json_bytes(source)
+        entry["result_sha256"] = sha256_bytes(record.content)
+        review_record = store.records[entry["review_package_file_id"]]
+        review = json.loads(review_record.content)
+        review["CONTROL"]["result_sha256"] = entry["result_sha256"]
+        review_record.content = canonical_json_bytes(review)
+        entry["review_package_sha256"] = sha256_bytes(review_record.content)
+        post_record = store.records[entry["post_merge_result_file_id"]]
+        post = json.loads(post_record.content)
+        post["source_result_sha256"] = entry["result_sha256"]
+        post["source_review_package_sha256"] = entry["review_package_sha256"]
+        post_record.content = canonical_json_bytes(post)
+        entry["post_merge_result_sha256"] = sha256_bytes(post_record.content)
+        post_review_record = store.records[entry["post_merge_review_package_file_id"]]
+        post_review = json.loads(post_review_record.content)
+        post_review["CONTROL"]["source_result_sha256"] = entry["result_sha256"]
+        post_review["CONTROL"]["post_merge_result_sha256"] = entry["post_merge_result_sha256"]
+        post_review_record.content = canonical_json_bytes(post_review)
+        entry["post_merge_review_package_sha256"] = sha256_bytes(post_review_record.content)
+    elif mutation == "wrong_pr_number":
+        entry["pr_number"] = 999
+    elif mutation == "wrong_base":
+        source_record = store.records[entry["result_file_id"]]
+        source = json.loads(source_record.content)
+        source["base_sha"] = "0" * 40
+        source_record.content = canonical_json_bytes(source)
+        entry["result_sha256"] = sha256_bytes(source_record.content)
+    elif mutation == "wrong_reviewed_head":
+        entry["reviewed_head_sha"] = "0" * 40
+    elif mutation == "wrong_merge":
+        entry["merge_commit_sha"] = "0" * 40
+    elif mutation == "wrong_ci":
+        record = store.records[entry["result_file_id"]]
+        source = json.loads(record.content)
+        source["ci"]["head_sha"] = "0" * 40
+        record.content = canonical_json_bytes(source)
+        entry["result_sha256"] = sha256_bytes(record.content)
+    elif mutation == "failed_ci":
+        runs["3" * 40][0]["conclusion"] = "failure"
+    elif mutation == "stale_ci":
+        runs["4" * 40].clear()
+    elif mutation in {"product_delta", "identity_delta", "master_mutation", "production_mutation", "publish", "restore", "wrong_repository", "arbitrary_post_classification"}:
+        record = store.records[entry["post_merge_result_file_id"]]
+        post = json.loads(record.content)
+        if mutation == "wrong_repository":
+            post["repository"] = "elsewhere/repository"
+        elif mutation == "arbitrary_post_classification":
+            post["classification"] = "P2A_STABILIZATION_ARBITRARY_PASS"
+        else:
+            field, value = {
+                "product_delta": ("PRODUCT_CODE_DELTA", 1),
+                "identity_delta": ("IDENTITY_SEMANTIC_DELTA", "NONZERO"),
+                "master_mutation": ("MASTER_MUTATION", 1),
+                "production_mutation": ("PRODUCTION_MUTATION", 1),
+                "publish": ("PUBLISH", 1), "restore": ("RESTORE", 1),
+            }[mutation]
+            post["machine_facts"][field] = value
+        record.content = canonical_json_bytes(post)
+        entry["post_merge_result_sha256"] = sha256_bytes(record.content)
+        review_record = store.records[entry["post_merge_review_package_file_id"]]
+        review = json.loads(review_record.content)
+        review["CONTROL"]["post_merge_result_sha256"] = entry["post_merge_result_sha256"]
+        review["VERIFIED_MACHINE_FACTS"]["machine_facts"] = post["machine_facts"]
+        review_record.content = canonical_json_bytes(review)
+        entry["post_merge_review_package_sha256"] = sha256_bytes(review_record.content)
+    elif mutation == "production_authority":
+        entry["production_authority"] = True
+    elif mutation == "forbidden_file":
+        base_git = verifier.GitInspector
+        class ProductGit(base_git):
+            def _run(self, *args):
+                if args[:2] == ("diff", "--name-only") and args[2] == "f" * 40:
+                    return "src/cba_kb/cli.py"
+                return super()._run(*args)
+        monkeypatch.setattr("automation.verify.GitInspector", ProductGit)
+    elif mutation == "wrong_ancestry":
+        base_git = verifier.GitInspector
+        class WrongGit(base_git):
+            def is_ancestor(self, ancestor, descendant):
+                return False
+        monkeypatch.setattr("automation.verify.GitInspector", WrongGit)
+    task["allowed_actions"][-1] = (
+        "external control-plane descendant task SHA256 {task_sha256} result SHA256 {result_sha256} "
+        "review SHA256 {review_package_sha256} post-merge result SHA256 {post_merge_result_sha256} "
+        "post-merge review SHA256 {post_merge_review_package_sha256}").format(**entry)
+    task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+    result["source_task_sha256"] = sha256_bytes(task_bytes)
+    verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
+                                   github_inspector=github, predecessor_store=store)
+    assert verified.classification != "EXECUTION_RESULT_VERIFIED"
 
 
 def test_source_result_hash_mismatch_fails_closed(tmp_path, task_dict):

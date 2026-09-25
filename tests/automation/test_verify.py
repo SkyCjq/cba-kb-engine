@@ -603,6 +603,75 @@ def test_external_control_plane_merge_follows_req_scoped_descendants(monkeypatch
     assert verified.classification == "EXECUTION_RESULT_VERIFIED"
 
 
+def immutable_external_case(monkeypatch, task_dict, result_dict):
+    import json
+
+    task, _, result, store, github, entry, prs, main_ref, runs = external_control_plane_case(
+        monkeypatch, task_dict, result_dict,
+    )
+    entry["authority_mode"] = "immutable_external_authority"
+    authority = b"Independent historical process authority.\nExact bytes remain opaque.\n"
+    store.records[entry["task_file_id"]].content = authority
+    entry["task_sha256"] = sha256_bytes(authority)
+    source = json.loads(store.read(entry["result_file_id"]).content)
+    source.pop("task_id")
+    source.pop("source_task_sha256")
+    source.pop("stabilization_generation")
+    source.update(schema_version="cba-kb.p2a-stabilization-result.v1",
+                  stage="INDEPENDENT_HISTORICAL_SOURCE", authority_sha256=entry["task_sha256"],
+                  classification="P2A_STABILIZATION_HISTORICAL_SOURCE_VERIFY_PASS")
+    source_bytes = canonical_json_bytes(source)
+    store.records[entry["result_file_id"]].content = source_bytes
+    entry["result_sha256"] = sha256_bytes(source_bytes)
+    review = json.loads(store.read(entry["review_package_file_id"]).content)
+    review["CONTROL"] = {"workstream_id": source["workstream_id"], "stage": source["stage"],
+                         "authority_sha256": entry["task_sha256"], "result_sha256": entry["result_sha256"]}
+    review["VERIFIED_MACHINE_FACTS"] = {name: source[name] for name in (
+        "base_sha", "head_sha", "changed_files", "focused_tests", "full_regression",
+        "secret_guard", "pr", "ci", "machine_facts",
+    )}
+    review_bytes = canonical_json_bytes(review)
+    store.records[entry["review_package_file_id"]].content = review_bytes
+    entry["review_package_sha256"] = sha256_bytes(review_bytes)
+    post = json.loads(store.read(entry["post_merge_result_file_id"]).content)
+    for name in ("task_id", "stabilization_generation", "source_task_file_id", "source_task_sha256"):
+        post.pop(name)
+    post.update(schema_version="cba-kb.p2a-stabilization-post-merge-result.v1",
+                stage=source["stage"],
+                classification="P2A_STABILIZATION_HISTORICAL_SOURCE_VERIFY_MERGE_VERIFIED",
+                source_result_sha256=entry["result_sha256"],
+                source_review_package_sha256=entry["review_package_sha256"])
+    post_bytes = canonical_json_bytes(post)
+    store.records[entry["post_merge_result_file_id"]].content = post_bytes
+    entry["post_merge_result_sha256"] = sha256_bytes(post_bytes)
+    post_review = json.loads(store.read(entry["post_merge_review_package_file_id"]).content)
+    post_review["CONTROL"] = {"workstream_id": source["workstream_id"], "stage": source["stage"],
+                              "source_result_sha256": entry["result_sha256"],
+                              "post_merge_result_sha256": entry["post_merge_result_sha256"]}
+    post_review["VERIFIED_MACHINE_FACTS"] = {name: post[name] for name in (
+        "pr", "ci", "changed_files", "machine_facts",
+    )}
+    post_review_bytes = canonical_json_bytes(post_review)
+    store.records[entry["post_merge_review_package_file_id"]].content = post_review_bytes
+    entry["post_merge_review_package_sha256"] = sha256_bytes(post_review_bytes)
+    task["allowed_actions"][-1] = (
+        "external control-plane descendant task SHA256 {task_sha256} result SHA256 {result_sha256} "
+        "review SHA256 {review_package_sha256} post-merge result SHA256 {post_merge_result_sha256} "
+        "post-merge review SHA256 {post_merge_review_package_sha256}").format(**entry)
+    task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+    result["source_task_sha256"] = sha256_bytes(task_bytes)
+    return task, task_bytes, result, store, github, entry, prs, main_ref, runs
+
+
+def test_opaque_external_authority_follows_structured_and_req_descendants(monkeypatch, task_dict, result_dict):
+    _, task_bytes, result, store, github, *_ = immutable_external_case(
+        monkeypatch, task_dict, result_dict,
+    )
+    verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
+                                   github_inspector=github, predecessor_store=store)
+    assert verified.classification == "EXECUTION_RESULT_VERIFIED"
+
+
 def historical_source_case(monkeypatch, task_dict, result_dict):
     task, task_bytes, result, store, _, observed, merge, main_ref, reviewed_runs, main_runs, git_type = human_merge_case(
         monkeypatch, task_dict, result_dict,
