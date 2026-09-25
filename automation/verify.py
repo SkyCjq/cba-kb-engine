@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -144,6 +145,149 @@ def validate_result_document(result: Mapping[str, Any]) -> None:
 
 
 POST_MERGE_TASK_TYPE = "CODEX_READ_ONLY_POST_MERGE_RECONCILIATION"
+HUMAN_MERGE_TASK_TYPE = "HUMAN_MERGE_EXECUTION"
+
+
+def _human_frozen_review(task: Mapping[str, Any]) -> tuple[int, str, int]:
+    """Read the exact PR head and green run named in the frozen Human task."""
+    actions = task["allowed_actions"]
+    head = [m.groups() for action in actions if (m := re.search(
+        r"\brequire PR (\d+) head SHA exactly ([0-9a-f]{40})\b", action))]
+    base = [m.groups() for action in actions if (m := re.search(
+        r"\brequire PR (\d+) base SHA ([0-9a-f]{40})\b", action))]
+    run = [m.groups() for action in actions if (m := re.search(
+        r"\brequire Offline tests run (\d+) event pull_request status completed conclusion success and head SHA ([0-9a-f]{40})\b", action))]
+    if len(head) != 1 or len(base) != 1 or len(run) != 1:
+        raise P2AError("HUMAN_MERGE_FROZEN_PROVENANCE_MISSING", "Frozen Human task lacks exact reviewed PR and CI facts")
+    if head[0][0] != base[0][0] or base[0][1] != task["expected_base_sha"] or run[0][1] != head[0][1]:
+        raise P2AError("HUMAN_MERGE_FROZEN_PROVENANCE_MISMATCH", "Frozen reviewed base/head/CI disagree")
+    return int(head[0][0]), head[0][1], int(run[0][0])
+
+
+def _human_evidence_store(git_root: str | Path | None) -> Any:
+    instance_root = os.environ.get("CBA_KB_INSTANCE_ROOT")
+    if git_root is None or not instance_root:
+        raise P2AError("PREDECESSOR_EVIDENCE_UNAVAILABLE", "Trusted Git root and CBA_KB_INSTANCE_ROOT are required")
+    from .drive_io import GoogleDriveStore
+    return GoogleDriveStore.from_trusted_runtime(git_root, instance_root)
+
+
+def _verify_human_predecessor(
+    result: Mapping[str, Any], task: Mapping[str, Any], store: Any,
+    reviewed_head: str, reviewed_run_id: int,
+) -> None:
+    facts = result["machine_facts"]
+    folder = task["canonical_binding"]["canonical_history_folder_id"]
+    for name in ("predecessor_task_file_id", "predecessor_result_file_id", "predecessor_review_package_file_id"):
+        if not isinstance(facts.get(name), str) or not facts[name]:
+            raise P2AError("PREDECESSOR_EVIDENCE_MISSING", f"{name} is required")
+    require_sha256(facts.get("predecessor_result_sha256"), field_name="predecessor_result_sha256", code="PREDECESSOR_RESULT_HASH_MISMATCH")
+    source_task = store.read(facts["predecessor_task_file_id"])
+    source_result = store.read(facts["predecessor_result_file_id"])
+    source_package = store.read(facts["predecessor_review_package_file_id"])
+    if any(item.folder_id != folder for item in (source_task, source_result, source_package)):
+        raise P2AError("PREDECESSOR_EVIDENCE_MISMATCH", "Predecessor evidence must be in frozen history folder")
+    if sha256_bytes(source_task.content) != task["authority_binding"]["predecessor_terminal_task_sha256"]:
+        raise P2AError("PREDECESSOR_TASK_HASH_MISMATCH", "Predecessor task differs from frozen task provenance")
+    if sha256_bytes(source_result.content) != facts["predecessor_result_sha256"]:
+        raise P2AError("PREDECESSOR_RESULT_HASH_MISMATCH", "Predecessor result bytes differ from bound SHA")
+    previous_task = load_yaml_bytes(source_task.content)
+    previous_result = load_json_bytes(source_result.content)
+    previous_package = load_json_bytes(source_package.content)
+    validate_task_document(previous_task)
+    validate_result_document(previous_result)
+    if (previous_task["task_id"] != task["authority_binding"]["predecessor_terminal_task_id"]
+            or previous_task["canonical_generation"] != task["canonical_generation"] - 1
+            or previous_task["task_type"] in {HUMAN_MERGE_TASK_TYPE, POST_MERGE_TASK_TYPE}
+            or previous_task["policy_bundle_sha256"] != task["policy_bundle_sha256"]
+            or previous_task["authority_binding"]["requirement_sha256"] != task["authority_binding"]["requirement_sha256"]
+            or previous_result["task_id"] != previous_task["task_id"]
+            or previous_result["source_task_sha256"] != sha256_bytes(source_task.content)
+            or previous_result["policy_bundle_sha256"] != task["policy_bundle_sha256"]
+            or previous_result["repository"] != task["repository"]
+            or previous_result["status"] != "PASS"):
+        raise P2AError("PREDECESSOR_NOT_VERIFIED_PASS", "Predecessor task/result binding or PASS status is invalid")
+    control = previous_package.get("CONTROL") or {}
+    verified = previous_package.get("VERIFIED_MACHINE_FACTS") or {}
+    if (control.get("task_id") != previous_task["task_id"]
+            or control.get("policy_bundle_sha256") != task["policy_bundle_sha256"]
+            or control.get("requirement_sha256") != task["authority_binding"]["requirement_sha256"]
+            or verified.get("task_sha256") != sha256_bytes(source_task.content)
+            or verified.get("result_sha256") != sha256_bytes(source_result.content)
+            or verified.get("head_sha") != reviewed_head
+            or verified.get("pr") != previous_result["pr"]
+            or verified.get("ci") != previous_result["ci"]):
+        raise P2AError("PREDECESSOR_EVIDENCE_MISMATCH", "Verified predecessor review package does not bind exact task/result")
+    previous_pr, previous_ci = previous_result["pr"], previous_result["ci"]
+    if (previous_pr.get("head_sha") != reviewed_head
+            or previous_pr.get("base_sha") != task["expected_base_sha"]
+            or previous_pr.get("number") != result["pr"]["number"]):
+        raise P2AError("PREDECESSOR_REVIEWED_HEAD_MISMATCH", "Predecessor PR differs from frozen reviewed PR")
+    if (previous_ci.get("workflow_name") != "Offline tests"
+            or previous_ci.get("head_sha") != reviewed_head
+            or previous_ci.get("conclusion") != "success"
+            or reviewed_run_id not in {run.get("id") for run in previous_ci.get("runs", [])}):
+        raise P2AError("PREDECESSOR_CI_MISMATCH", "Predecessor exact-head PR CI is not green and bound")
+    if previous_package.get("generated_at_utc", "") >= result["pr"].get("merged_at", ""):
+        raise P2AError("PREDECESSOR_EVIDENCE_MISMATCH", "Predecessor review package was not recorded before merge")
+
+
+def _verify_human_merge_result(
+    result: Mapping[str, Any], task: Mapping[str, Any], github_inspector: Any,
+    git_root: str | Path | None, github: Mapping[str, Any], store: Any,
+) -> None:
+    pr, ci, facts = result["pr"], result["ci"], result["machine_facts"]
+    number, reviewed_head, reviewed_run_id = _human_frozen_review(task)
+    if task["expected_base_branch"] != "main" or pr.get("number") != number:
+        raise P2AError("HUMAN_MERGE_FROZEN_PROVENANCE_MISMATCH", "Merged PR differs from frozen Human task")
+    if not isinstance(facts, dict) or facts.get("requirement_sha256") != task["authority_binding"]["requirement_sha256"]:
+        raise P2AError("REQUIREMENT_BINDING_MISMATCH", "Human merge result must bind frozen Requirement")
+    if facts.get("evidence_mode") != "VERIFIED_PREDECESSOR_REUSE":
+        raise P2AError("TEST_EVIDENCE_INCOMPLETE", "Human merge must use explicit verified predecessor evidence")
+    for name in ("focused_tests", "full_regression"):
+        evidence = result[name]
+        if (not isinstance(evidence, dict) or evidence.get("status") != "NOT_RERUN_DURING_HUMAN_MERGE"
+                or evidence.get("evidence_mode") != "VERIFIED_PREDECESSOR_REUSE"
+                or evidence.get("predecessor_result_sha256") != facts.get("predecessor_result_sha256")):
+            raise P2AError("TEST_EVIDENCE_INCOMPLETE", f"{name} must truthfully bind the verified predecessor")
+    _verify_human_predecessor(result, task, store, reviewed_head, reviewed_run_id)
+    if (pr.get("state") != "MERGED" or pr.get("head_sha") != reviewed_head
+            or pr.get("base_sha") != task["expected_base_sha"]
+            or pr.get("merge_commit_sha") != result["head_sha"]):
+        raise P2AError("MERGE_COMMIT_MISMATCH", "Declared merged PR differs from frozen reviewed head/base or result head")
+    observed = github["pr"]
+    expected = {"number": number, "url": pr["url"], "state": "MERGED",
+                "headRefOid": reviewed_head, "baseRefOid": task["expected_base_sha"]}
+    for field, value in expected.items():
+        if observed.get(field) != value:
+            raise P2AError("PR_FACTS_MISMATCH", "Live merged PR differs from frozen review", field=field)
+    merge = github_inspector._json("pr", "view", str(number), "--repo", task["repository"], "--json", "mergedAt,mergeCommit")
+    if (not merge.get("mergedAt") or merge["mergedAt"] != pr.get("merged_at")
+            or (merge.get("mergeCommit") or {}).get("oid") != result["head_sha"]):
+        raise P2AError("MERGE_COMMIT_MISMATCH", "Live merge commit or merge time differs")
+    main_ref = github_inspector._json("api", f"repos/{task['repository']}/git/ref/heads/main")
+    if (main_ref.get("object") or {}).get("sha") != result["head_sha"]:
+        raise P2AError("FINAL_MAIN_MISMATCH", "Live main advanced or differs from merge commit")
+    reviewed_runs = github_inspector._json("api", f"repos/{task['repository']}/actions/runs?head_sha={reviewed_head}&per_page=100").get("workflow_runs", [])
+    if not any(run.get("id") == reviewed_run_id and run.get("name") == "Offline tests"
+               and run.get("head_sha") == reviewed_head and run.get("event") == "pull_request"
+               and run.get("status") == "completed" and run.get("conclusion") == "success" for run in reviewed_runs):
+        raise P2AError("PREDECESSOR_CI_MISMATCH", "Frozen reviewed PR run is not independently green")
+    if ci.get("head_sha") != result["head_sha"]:
+        raise P2AError("PR_CI_HEAD_MISMATCH", "Final-main CI head differs from merge commit")
+    successful_main = {run["id"] for run in github["runs"]
+                       if run["head_sha"] == result["head_sha"] and run["event"] == "push"
+                       and run["status"] == "completed" and run["conclusion"] == "success"}
+    claimed = {run["id"] for run in ci.get("runs", [])}
+    if not claimed or not claimed.issubset(successful_main):
+        raise P2AError("CI_FACTS_MISMATCH", "A successful hosted exact-main push run is required")
+    if git_root is None:
+        raise P2AError("GIT_FACTS_UNAVAILABLE", "Human merge requires final-main Git history")
+    git = GitInspector(git_root)
+    parents = git._run("rev-list", "--parents", "-n", "1", result["head_sha"]).split()
+    if parents != [result["head_sha"], task["expected_base_sha"], reviewed_head]:
+        raise P2AError("GIT_ANCESTRY_MISMATCH", "Merge parents do not bind frozen base and reviewed head")
+
 
 
 def _verify_post_merge_result(
@@ -223,6 +367,7 @@ def verify_result_bytes(
     *,
     git_root: str | Path | None = None,
     github_inspector: GitHubInspector | Any | None = None,
+    predecessor_store: Any | None = None,
 ) -> VerificationResult:
     facts: dict[str, Any] = {"result_sha256": sha256_bytes(result_data), "result_bytes": len(result_data)}
     try:
@@ -246,13 +391,15 @@ def verify_result_bytes(
         if result["status"] == "PASS":
             if result["forbidden_actions_observed"] != []:
                 raise P2AError("FORBIDDEN_ACTION_OBSERVED", "PASS result recorded a forbidden action")
-            for field in ("focused_tests", "full_regression"):
-                if not isinstance(result[field], dict) or result[field].get("status") != "PASS":
-                    raise P2AError("TEST_EVIDENCE_INCOMPLETE", f"{field} must be PASS")
+            human_merge = task["task_type"] == HUMAN_MERGE_TASK_TYPE
+            if not human_merge:
+                for field in ("focused_tests", "full_regression"):
+                    if not isinstance(result[field], dict) or result[field].get("status") != "PASS":
+                        raise P2AError("TEST_EVIDENCE_INCOMPLETE", f"{field} must be PASS")
             if not isinstance(result["pr"], dict) or not isinstance(result["ci"], dict):
                 raise P2AError("CI_EVIDENCE_INCOMPLETE", "PASS result requires PR and CI evidence")
             post_merge = task["task_type"] == POST_MERGE_TASK_TYPE
-            if (not post_merge and result["pr"].get("head_sha") != result["head_sha"]) or result["ci"].get("head_sha") != result["head_sha"]:
+            if (not post_merge and not human_merge and result["pr"].get("head_sha") != result["head_sha"]) or result["ci"].get("head_sha") != result["head_sha"]:
                 raise P2AError("PR_CI_HEAD_MISMATCH", "PR, CI and result heads must be identical")
             if result["ci"].get("workflow_name") != "Offline tests" or result["ci"].get("conclusion") != "success":
                 raise P2AError("CI_NOT_GREEN", "Required Offline tests is not green")
@@ -261,6 +408,9 @@ def verify_result_bytes(
             github = github_inspector.collect(result["pr"]["number"], result["ci"]["workflow_name"], result["head_sha"])
             if post_merge:
                 _verify_post_merge_result(result, task, github_inspector, git_root, github)
+            elif human_merge:
+                store = predecessor_store if predecessor_store is not None else _human_evidence_store(git_root)
+                _verify_human_merge_result(result, task, github_inspector, git_root, github, store)
             else:
                 observed_pr = github["pr"]
                 expected_pr = {
@@ -287,7 +437,11 @@ def verify_result_bytes(
             if not git.is_ancestor(result["base_sha"], result["head_sha"]):
                 raise P2AError("GIT_ANCESTRY_MISMATCH", "Frozen base is not an ancestor of result head")
             actual_changed = list(git.changed_files(result["base_sha"]))
-            if actual_changed != sorted(result["changed_files"]):
+            if result["status"] == "PASS" and task["task_type"] == HUMAN_MERGE_TASK_TYPE:
+                expected_changed = sorted(result["machine_facts"].get("pr_changed_files", []))
+                if result["changed_files"] != [] or actual_changed != expected_changed:
+                    raise P2AError("CHANGED_FILES_MISMATCH", "Merge delta does not match reviewed PR scope", expected=actual_changed, observed=expected_changed)
+            elif actual_changed != sorted(result["changed_files"]):
                 raise P2AError("CHANGED_FILES_MISMATCH", "Result changed files do not match Git", expected=actual_changed, observed=result["changed_files"])
         facts.update({"req_id": result["req_id"], "task_id": result["task_id"], "status": result["status"], "changed_files": sorted(result["changed_files"])})
         return VerificationResult("PASS", "EXECUTION_RESULT_VERIFIED", facts)

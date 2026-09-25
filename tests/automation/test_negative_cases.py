@@ -8,7 +8,7 @@ from automation.handoff import TransitionIntent, dispatch_allowed, transition_co
 from automation.ledger import AppendOnlyLedger
 from automation.models import P2AError, canonical_json_bytes, sha256_bytes
 from automation.verify import guarded_verify, verify_result_bytes, verify_task_bytes
-from test_verify import post_merge_case
+from test_verify import human_merge_case, post_merge_case
 
 
 def _strict_case(tmp_path, task_dict, store=None):
@@ -322,5 +322,96 @@ def test_post_merge_contract_fails_closed(monkeypatch, task_dict, result_dict, m
     result["source_task_sha256"] = sha256_bytes(task_bytes)
     verified = verify_result_bytes(canonical_json_bytes(result), task_bytes,
                                    git_root="exact-main", github_inspector=github)
+    assert not verified.ok
+    assert verified.classification == classification
+
+
+@pytest.mark.parametrize(
+    ("mutation", "classification"),
+    [
+        ("wrong_reviewed_head", "MERGE_COMMIT_MISMATCH"),
+        ("wrong_predecessor_sha", "PREDECESSOR_RESULT_HASH_MISMATCH"),
+        ("missing_predecessor", "DRIVE_FILE_NOT_FOUND"),
+        ("predecessor_not_pass", "PREDECESSOR_NOT_VERIFIED_PASS"),
+        ("predecessor_ci_not_green", "PREDECESSOR_CI_MISMATCH"),
+        ("predecessor_ci_wrong_head", "PREDECESSOR_CI_MISMATCH"),
+        ("wrong_pr_base", "MERGE_COMMIT_MISMATCH"),
+        ("closed_not_merged", "PR_FACTS_MISMATCH"),
+        ("wrong_merge_commit", "MERGE_COMMIT_MISMATCH"),
+        ("main_advanced", "FINAL_MAIN_MISMATCH"),
+        ("stale_exact_main_ci", "PR_CI_HEAD_MISMATCH"),
+        ("wrong_ci_event", "CI_FACTS_MISMATCH"),
+        ("missing_exact_main_ci", "CI_FACTS_MISMATCH"),
+        ("ordinary_task", "TEST_EVIDENCE_INCOMPLETE"),
+        ("bounded_repair_task", "TEST_EVIDENCE_INCOMPLETE"),
+        ("post_merge_task", "TEST_EVIDENCE_INCOMPLETE"),
+        ("scope_mismatch", "SCOPE_VIOLATION"),
+        ("policy_mismatch", "RESULT_BINDING_MISMATCH"),
+        ("requirement_mismatch", "REQUIREMENT_BINDING_MISMATCH"),
+        ("task_binding_mismatch", "RESULT_BINDING_MISMATCH"),
+        ("git_ancestry_mismatch", "GIT_ANCESTRY_MISMATCH"),
+    ],
+)
+def test_human_merge_contract_fails_closed(monkeypatch, task_dict, result_dict, mutation, classification):
+    task, task_bytes, result, store, github, observed, merge, main_ref, reviewed_runs, main_runs, git_type = human_merge_case(
+        monkeypatch, task_dict, result_dict,
+    )
+    if mutation == "wrong_reviewed_head":
+        result["pr"]["head_sha"] = "d" * 40
+    elif mutation == "wrong_predecessor_sha":
+        result["machine_facts"]["predecessor_result_sha256"] = "d" * 64
+        for name in ("focused_tests", "full_regression"):
+            result[name]["predecessor_result_sha256"] = "d" * 64
+    elif mutation == "missing_predecessor":
+        store.records.pop("previous-result")
+    elif mutation in {"predecessor_not_pass", "predecessor_ci_not_green", "predecessor_ci_wrong_head"}:
+        previous = __import__("json").loads(store.read("previous-result").content)
+        if mutation == "predecessor_not_pass":
+            previous["status"] = "FAIL"
+        elif mutation == "predecessor_ci_not_green":
+            previous["ci"]["conclusion"] = "failure"
+        else:
+            previous["ci"]["head_sha"] = "d" * 40
+        changed = canonical_json_bytes(previous)
+        store.records["previous-result"].content = changed
+        result["machine_facts"]["predecessor_result_sha256"] = sha256_bytes(changed)
+        for name in ("focused_tests", "full_regression"):
+            result[name]["predecessor_result_sha256"] = sha256_bytes(changed)
+        package = __import__("json").loads(store.read("previous-package").content)
+        package["VERIFIED_MACHINE_FACTS"]["result_sha256"] = sha256_bytes(changed)
+        package["VERIFIED_MACHINE_FACTS"]["ci"] = previous["ci"]
+        store.records["previous-package"].content = canonical_json_bytes(package)
+    elif mutation == "wrong_pr_base":
+        result["pr"]["base_sha"] = "d" * 40
+    elif mutation == "closed_not_merged":
+        observed["state"] = "CLOSED"
+    elif mutation == "wrong_merge_commit":
+        result["pr"]["merge_commit_sha"] = "d" * 40
+    elif mutation == "main_advanced":
+        main_ref["object"]["sha"] = "d" * 40
+    elif mutation == "stale_exact_main_ci":
+        result["ci"]["head_sha"] = result["pr"]["head_sha"]
+    elif mutation == "wrong_ci_event":
+        main_runs[0]["event"] = "pull_request"
+    elif mutation == "missing_exact_main_ci":
+        main_runs.clear()
+    elif mutation in {"ordinary_task", "bounded_repair_task", "post_merge_task"}:
+        task["task_type"] = {"ordinary_task": "CODEX_READ_ONLY_SUPERVISORY_REVIEW",
+                             "bounded_repair_task": "CODEX_BOUNDED_REPAIR",
+                             "post_merge_task": "CODEX_READ_ONLY_POST_MERGE_RECONCILIATION"}[mutation]
+    elif mutation == "scope_mismatch":
+        result["changed_files"] = ["src/cba_kb/cli.py"]
+    elif mutation == "policy_mismatch":
+        result["policy_bundle_sha256"] = "d" * 64
+    elif mutation == "requirement_mismatch":
+        result["machine_facts"]["requirement_sha256"] = "d" * 64
+    elif mutation == "task_binding_mismatch":
+        result["task_id"] = "00000000-0000-4000-8000-000000000000"
+    elif mutation == "git_ancestry_mismatch":
+        monkeypatch.setattr(git_type, "_run", lambda self, *args: "wrong parents")
+    task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+    result["source_task_sha256"] = sha256_bytes(task_bytes)
+    verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="final-main",
+                                   github_inspector=github, predecessor_store=store)
     assert not verified.ok
     assert verified.classification == classification
