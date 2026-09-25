@@ -566,6 +566,44 @@ def test_reserve_only_creates_new_keys_under_staging_and_is_retry_safe(tmp_path)
     assert second["allocation"]["reserved_staging_targets"] == ["reserved-2"]
 
 
+def test_reserve_long_v181_logical_key_uses_bounded_stable_property(tmp_path):
+    long_path = (
+        'requirements/REQ-181-CONSUMER-CLOSURE-01/'
+        'requirement-r2-20260924-antigravity-first-p2a-canary.md'
+    )
+    inputs = projection_inputs(
+        tracked=['Makefile', 'src/new.py', long_path],
+        hashes={'Makefile': 'old-code-sha', 'src/new.py': 'new-file-sha',
+                long_path: 'long-file-sha'},
+    )
+    inputs['release_id'] = 'v1.8.1-1'
+    value = orchestration.project_targets(**inputs)
+
+    class LengthLimitedDrive(ReservationDrive):
+        def ensure(self, parent, key, name, mime, content=None):
+            assert len(('cba_key' + key).encode()) <= 124
+            return super().ensure(parent, key, name, mime, content)
+
+    drive = LengthLimitedDrive()
+    instance = ReservationInstance(tmp_path / 'production.json')
+    output = tmp_path / 'allocation'
+    first = orchestration.reserve_staging(
+        drive, instance, release_id='v1.8.1-1', projection=value,
+        output=output, single_writer=True,
+    )
+    second = orchestration.reserve_staging(
+        drive, instance, release_id='v1.8.1-1', projection=value,
+        output=output, single_writer=True,
+    )
+    assert first['allocation']['reservations'] == second['allocation']['reservations']
+    assert len(drive.files) == 5
+    keys = [call[2] for call in drive.calls if call[0] == 'ensure']
+    assert 'reserve:v1.8.1-1:code/src/new.py' in keys
+    long_key = orchestration._reservation_key('v1.8.1-1', 'code/' + long_path)
+    assert long_key.startswith('reserve:v1.8.1-1:sha256:')
+    assert keys.count(long_key) == 2
+
+
 def test_reserve_requires_single_writer(tmp_path):
     drive = ReservationDrive()
     with pytest.raises(orchestration.ProjectionError, match="SINGLE_WRITER"):
