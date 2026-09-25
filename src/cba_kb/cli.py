@@ -108,6 +108,9 @@ def main():
     q.add_argument('--authorized-evidence',type=Path)
     q.add_argument('--transport-routes',type=Path)
     q.add_argument('--limits',type=Path)
+    q.add_argument('--production-manifest',type=Path)
+    q.add_argument('--identity-registry',type=Path)
+    q.add_argument('--master',type=Path)
     q.add_argument('--output',type=Path,required=True)
     q.add_argument('--release-id',required=True)
     q.add_argument('--as-of',required=True)
@@ -422,16 +425,30 @@ def main():
             if a.output:
                 save(a.output,result)
         elif a.command=='consumer-package':
+            from .player_identity import load_registry
             from .consumer_package import (
                 build_consumer_payload,
                 build_target_packages,
                 payload_bytes,
+                validate_package,
                 write_packages,
             )
             output=a.output
             if output.exists() and any(output.iterdir()):
                 raise ValueError('Choose an empty package output directory')
             profile=read(a.profile)
+            authority={}
+            if profile.get('profile_version')=='v2.0':
+                if not all((a.production_manifest,a.identity_registry,a.master)):
+                    raise ValueError('FROZEN_GLOBAL_COUNT_INPUTS_REQUIRED')
+                master_rows,master_summary=inspect(a.master)
+                if profile.get('source_master_sha256')!=master_summary['sha256']:
+                    raise ValueError('PROFILE_MASTER_AUTHORITY_MISMATCH')
+                authority={
+                    'production_manifest':a.production_manifest.read_bytes(),
+                    'identity_registry':load_registry(a.identity_registry),
+                    'master_rows':master_rows,
+                }
             documents=json.loads(a.documents.read_text())
             sources=json.loads(a.sources.read_text())
             events=json.loads(a.events.read_text()) if a.events else None
@@ -458,6 +475,7 @@ def main():
                 documents=documents,
                 sources=sources,
                 event_spec=events,
+                **authority,
             )
             packages=build_target_packages(
                 payload,
@@ -465,9 +483,12 @@ def main():
                 authorized_evidence=authorized_evidence,
                 transport_routes=transport_routes,
                 limits=limits,
+                **authority,
             )
+            for package in packages.values():
+                validate_package(package,**authority)
             atomic(output/'canonical_consumer_payload.json',payload_bytes(payload))
-            result=write_packages(packages,output/'targets')
+            result=write_packages(packages,output/'targets',**authority)
             result['output']=str(output)
         elif a.command=='consumer-acceptance-validate':
             from .consumer_acceptance import load_golden_v2,validate_golden_v2

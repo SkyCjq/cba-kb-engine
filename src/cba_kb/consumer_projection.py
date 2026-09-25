@@ -34,6 +34,21 @@ BODY_STATUSES = frozenset({
     "REVIEW_REQUIRED",
     "BODY_UNAVAILABLE",
 })
+IDENTITY_SEMANTIC_STATES = frozenset({
+    "SAME",
+    "NOT_SAME",
+    "UNDECIDED",
+    "UNAVAILABLE",
+    "NOT_MATERIALIZED",
+})
+CONSUMER_IDENTITY_STATE_MAP = {
+    "same": "SAME",
+    "not_same": "NOT_SAME",
+    "undecided": "UNDECIDED",
+    "unlinked": "NOT_MATERIALIZED",
+    "unavailable": "UNAVAILABLE",
+    "not_materialized": "NOT_MATERIALIZED",
+}
 
 
 class ConsumerProjectionError(RuntimeError):
@@ -298,3 +313,155 @@ def load_golden_questions(path):
 
 def golden_questions_sha256(path):
     return digest(Path(path).read_bytes())
+
+
+def project_identity_state(internal_status: str | None) -> str:
+    """Project internal link status to a consumer-safe semantic state without manufacturing relations.
+
+    Machine-distinguishes:
+    - SAME
+    - NOT_SAME
+    - UNDECIDED
+    - UNAVAILABLE / NOT_MATERIALIZED
+
+    Existing internal unlinked/absence semantics are projected to the frozen consumer-safe
+    unavailable/not-materialized state and never upgraded to SAME, NOT_SAME, or UNDECIDED.
+    """
+    if internal_status is None:
+        return "UNAVAILABLE"
+    normalized = str(internal_status).strip().lower()
+    if normalized == "same":
+        return "SAME"
+    if normalized == "not_same":
+        return "NOT_SAME"
+    if normalized == "undecided":
+        return "UNDECIDED"
+    if normalized in {"unlinked", "unavailable", "not_materialized", "absence"}:
+        return "NOT_MATERIALIZED"
+    raise ConsumerProjectionError(f"UNKNOWN_IDENTITY_STATUS:{internal_status}")
+
+
+def derive_machine_counts(manifest, identity_registry, master_rows=None):
+    """Deterministically calculate machine counts from actual frozen inputs.
+
+    Never hard-code expected counts.
+    Every declared count must be machine-derived and satisfy declared == actual.
+    """
+    from .canonical_registry import manifest_index
+
+    if manifest is None:
+        raise ConsumerProjectionError("MANIFEST_COLLECTION_REQUIRED")
+    try:
+        artifacts_count = len(manifest_index(manifest))
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise ConsumerProjectionError("MANIFEST_INVALID") from exc
+    if artifacts_count == 0:
+        raise ConsumerProjectionError("MANIFEST_EMPTY")
+
+    if not isinstance(identity_registry, dict):
+        raise ConsumerProjectionError("IDENTITY_REGISTRY_REQUIRED")
+
+    players = identity_registry.get("players")
+    record_links = identity_registry.get("record_links")
+    if not isinstance(players, list) or not isinstance(record_links, list):
+        raise ConsumerProjectionError("IDENTITY_REGISTRY_LISTS_REQUIRED")
+    if any(not isinstance(item, dict) for item in players + record_links):
+        raise ConsumerProjectionError("IDENTITY_REGISTRY_ROWS_INVALID")
+    if any(link.get("link_status") not in {"same", "not_same", "undecided"}
+           for link in record_links):
+        raise ConsumerProjectionError("IDENTITY_LINK_STATUS_INVALID")
+
+    player_count = len(players)
+    record_link_count = len(record_links)
+    same_count = sum(1 for link in record_links if str(link.get("link_status")).lower() == "same")
+    not_same_count = sum(1 for link in record_links if str(link.get("link_status")).lower() == "not_same")
+    undecided_count = sum(1 for link in record_links if str(link.get("link_status")).lower() == "undecided")
+
+    linked_keys = {link.get("record_key") for link in record_links if link.get("record_key")}
+    if not isinstance(master_rows, list):
+        raise ConsumerProjectionError("MASTER_ROWS_COLLECTION_REQUIRED")
+    if any(not isinstance(row, dict) or not isinstance(row.get("record_key"), str)
+           or not row["record_key"] for row in master_rows):
+        raise ConsumerProjectionError("MASTER_ROWS_INVALID")
+    all_record_keys = {row["record_key"] for row in master_rows}
+    if len(all_record_keys) != len(master_rows) or not linked_keys <= all_record_keys:
+        raise ConsumerProjectionError("MASTER_LINK_COVERAGE_INVALID")
+    unavailable_count = len(all_record_keys - linked_keys)
+
+    return {
+        "production_artifact_count": artifacts_count,
+        "player_count": player_count,
+        "record_link_count": record_link_count,
+        "same_count": same_count,
+        "not_same_count": not_same_count,
+        "undecided_count": undecided_count,
+        "unavailable_count": unavailable_count,
+        "not_materialized_count": unavailable_count,
+    }
+
+
+def validate_machine_counts(declared_counts, actual_counts):
+    """Verify that every declared count equals the actual machine-derived count."""
+    if not isinstance(declared_counts, dict) or not isinstance(actual_counts, dict):
+        raise ConsumerProjectionError("MACHINE_COUNTS_OBJECT_REQUIRED")
+    if set(declared_counts) != set(actual_counts):
+        raise ConsumerProjectionError("MACHINE_COUNT_KEYS_MISMATCH")
+    for key, expected_val in declared_counts.items():
+        if type(expected_val) is not int or expected_val < 0:
+            raise ConsumerProjectionError(f"MACHINE_COUNT_INVALID:{key}")
+        if actual_counts[key] != expected_val:
+            raise ConsumerProjectionError(
+                f"COUNT_MISMATCH:{key}:declared={expected_val},actual={actual_counts[key]}"
+            )
+    return True
+
+
+
+def project_profile_identity(profile):
+    """Project only relations already represented by a validated profile v2.
+
+    Counts are scoped to the selected player and the supplied profile's
+    unlinked records, never presented as counts of the private registry.
+    """
+    if profile.get("profile_version") != "v2.0":
+        raise ConsumerProjectionError("PROFILE_V2_REQUIRED")
+    coverage = profile["identity_coverage"]
+    relations = []
+    for status, keys in (
+        ("same", profile["record_keys"]),
+        ("not_same", coverage["selected_not_same_record_keys"]),
+        ("undecided", coverage["undecided_record_keys"]),
+        ("unlinked", coverage["unlinked_record_keys"]),
+    ):
+        for key in keys:
+            relations.append({
+                "record_key": key,
+                "player_uid": None if status == "unlinked" else profile["player_uid"],
+                "state": project_identity_state(status),
+            })
+    return {
+        "scope": "SELECTED_PROFILE_RELATIONS_AND_SUPPLIED_UNLINKED_RECORDS",
+        "source_profile_sha256": profile["profile_sha256"],
+        "identity_selector": "player_uid",
+        "record_key_is_person_identity": False,
+        "automatic_merge": False,
+        "same_person_assertion_without_independent_evidence": False,
+        "players": [{"player_uid": profile["player_uid"]}],
+        "relations": sorted(relations, key=lambda item: (item["record_key"], item["state"])),
+    }
+
+
+def derive_consumer_counts(artifacts, projection):
+    """Count emitted projection data; this is not an identity registry."""
+    if not isinstance(artifacts, list):
+        raise ConsumerProjectionError("ARTIFACT_COLLECTION_REQUIRED")
+    links = [
+        {"record_key": item["record_key"], "link_status": item["state"].lower()}
+        for item in projection["relations"]
+        if item["state"] in {"SAME", "NOT_SAME", "UNDECIDED"}
+    ]
+    rows = [{"record_key": item["record_key"]} for item in projection["relations"]]
+    return derive_machine_counts(
+        [{"uid": str(index)} for index, _ in enumerate(artifacts)],
+        {"players": projection["players"], "record_links": links}, rows,
+    )

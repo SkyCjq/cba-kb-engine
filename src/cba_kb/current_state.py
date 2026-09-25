@@ -122,7 +122,7 @@ def generate_context_card(metadata, registry, manifest, counts=None, blockers=No
         '# CBA-KB CONTEXT CARD',
         render_current_state(metadata).rstrip(),
         'Navigation only. Read release_status first; while PUBLISHING/FAILED/ROLLING_BACK use previous_snapshot.',
-        'Code truth: private GitHub. Drive 50_scripts is a read-only mirror of merged code.',
+        'Code truth: GitHub repository. Repository visibility: public. Drive 50_scripts is a read-only mirror of merged code.',
         'Data authority: canonical_products. Artifact IDs/hashes: manifest. Source lifecycle/provenance: source_registry and 10_sources evidence.',
         'Canonical routes (artifact_key#worksheet; resolve file IDs in manifest):',
     ]
@@ -136,6 +136,7 @@ def generate_context_card(metadata, registry, manifest, counts=None, blockers=No
         'Hard rules: compatibility is read-only; never import it into canonical products.',
         '90_archive is history, never current truth. Planned capabilities are unavailable.',
         'No credentials in Git, mirrors, reports or AI context. Unknown facts/dates stay unknown.',
+        'Public GitHub code != Public Production data != Public Private Identity Registry.',
     ])
     card = '\n'.join(lines) + '\n'
     clean(card.encode('utf-8'), 'CONTEXT_CARD.md')
@@ -162,11 +163,13 @@ def control_document_identities(status, registry, documents):
     metadata = target_metadata(
         status.get('current_release_id'), commit, registry,
     )
-    required = (
-        V161_DOCUMENT_SURFACES
-        if status.get('current_release_id') == 'v1.6.1-1'
-        else LEGACY_DOCUMENT_SURFACES
+    release_id = status.get('current_release_id')
+    is_legacy = (
+        release_id in {'v1.5.0', 'v1.5.1-1', 'v1.5.1-2', 'v1.5.2-1', 'v1.5.3-1', 'v1.5.3-2', 'v1.5.4-test', 'v1.5.5-1', 'v1.6.0-1'}
+        and 'current_version_doc' not in documents
+        and 'version' in documents
     )
+    required = LEGACY_DOCUMENT_SURFACES if is_legacy else CURRENT_DOCUMENT_SURFACES
     if not required <= set(documents):
         raise ValueError('CURRENT_DOCUMENT_MISSING')
     identities = {'release_status': metadata}
@@ -185,11 +188,13 @@ def validate_current_state(status, registry, manifest, documents, counts=None, b
     if status.get('published_code_commit', commit) != commit:
         raise ValueError('CURRENT_STATE_DRIFT')
     metadata = target_metadata(status.get('current_release_id'), commit, registry)
-    required = (
-        V161_DOCUMENT_SURFACES
-        if status.get('current_release_id') == 'v1.6.1-1'
-        else LEGACY_DOCUMENT_SURFACES
+    release_id = status.get('current_release_id')
+    is_legacy = (
+        release_id in {'v1.5.0', 'v1.5.1-1', 'v1.5.1-2', 'v1.5.2-1', 'v1.5.3-1', 'v1.5.3-2', 'v1.5.4-test', 'v1.5.5-1', 'v1.6.0-1'}
+        and 'current_version_doc' not in documents
+        and 'version' in documents
     )
+    required = LEGACY_DOCUMENT_SURFACES if is_legacy else CURRENT_DOCUMENT_SURFACES
     if not required <= set(documents):
         raise ValueError('CURRENT_DOCUMENT_MISSING')
     for text in documents.values():

@@ -13,10 +13,11 @@ from cba_kb.consumer_package import (
     build_target_packages,
     payload_bytes,
     validate_package,
+    write_packages,
 )
-from cba_kb.consumer_projection import project_document
+from cba_kb.consumer_projection import ConsumerProjectionError, project_document
 from cba_kb.master import HEADERS
-from cba_kb.player_identity import new_registry
+from cba_kb.player_identity import PlayerIdentityError, new_registry
 from cba_kb.player_profile import (
     PlayerProfileError,
     build_profile,
@@ -49,7 +50,7 @@ def profile():
     )
 
 
-def profile_v2():
+def profile_v2(identity_registry=None):
     row = {key: None for key in HEADERS}
     row.update({
         "record_key": "synthetic-r1",
@@ -79,16 +80,45 @@ def profile_v2():
             "evidence_refs": ["synthetic-identity-evidence"],
         }],
     )
+    rows = [row]
+    if identity_registry is not None:
+        for record_key, player in (("unlinked-r2", "UNLINKED PLAYER"),
+                                   ("other-r3", "OTHER PLAYER")):
+            extra = dict(row, record_key=record_key, player=player)
+            rows.append(extra)
     return build_profile_v2(
-        [row],
+        rows,
         player_uid=player_uid,
-        identity_registry=registry,
+        identity_registry=identity_registry or registry,
         mention_artifact=build_mention_artifact([], []),
         release_id="v1.8.0-synthetic",
         as_of="2026-09-15T00:00:00Z",
         source_master_sha256=MASTER_SHA,
         generator_sha=GENERATOR_SHA,
     )
+
+
+def global_count_inputs():
+    registry = new_registry(
+        [{"schema_version": 1, "player_uid": "pid_0000000000000001",
+          "canonical_name": "SYNTHETIC PLAYER", "status": "ACTIVE", "redirect_to": None},
+         {"schema_version": 1, "player_uid": "pid_0000000000000002",
+          "canonical_name": "OTHER PLAYER", "status": "ACTIVE", "redirect_to": None}],
+        record_links=[{"schema_version": 1, "record_key": "synthetic-r1",
+                       "player_uid": "pid_0000000000000001", "link_status": "same",
+                       "method": "MANUAL_REVIEW", "confidence": "HIGH",
+                       "evidence_refs": ["synthetic-identity-evidence"]},
+                      {"schema_version": 1, "record_key": "other-r3",
+                       "player_uid": "pid_0000000000000002", "link_status": "not_same",
+                       "method": "MANUAL_REVIEW", "confidence": "HIGH",
+                       "evidence_refs": ["other-identity-evidence"]}],
+    )
+    return {
+        "production_manifest": [{"uid": "production-a"}, {"uid": "production-b"}],
+        "identity_registry": registry,
+        "master_rows": [{"record_key": "synthetic-r1"}, {"record_key": "unlinked-r2"},
+                        {"record_key": "other-r3"}],
+    }
 
 
 def profile_v2_with_mentions():
@@ -363,18 +393,21 @@ def test_copyrighted_authorized_evidence_is_target_only_and_unchanged_rights():
 
 
 def test_consumer_package_accepts_profile_v2_and_uses_player_uid_navigation():
+    authority = global_count_inputs()
     value = build_consumer_payload(
         release_scope={
             "release_id": "v1.8.0-synthetic",
             "as_of": "2026-09-15T00:00:00Z",
             "provenance": "synthetic-fixture",
         },
-        profile=profile_v2(),
+        profile=profile_v2(authority["identity_registry"]),
         documents=[],
         sources=[],
+        **authority,
     )
     assert value["player_profile"]["profile_version"] == "v2.0"
-    package = build_target_package(value, CONSUMER_TARGETS[0])
+    assert value["coverage"]["player_count"] == 2
+    package = build_target_package(value, CONSUMER_TARGETS[0], **authority)
     navigation = json.loads(
         package["files"]["consumer_navigation_contract.json"],
     )
@@ -389,7 +422,65 @@ def test_consumer_package_accepts_profile_v2_and_uses_player_uid_navigation():
     assert navigation["lookup_contract"]["player_uid"]["selector"] == (
         "player_uid"
     )
-    validate_package(package)
+    validate_package(package, **authority)
+
+
+def test_global_count_authority_is_shared_by_payload_and_all_packages(tmp_path):
+    authority = global_count_inputs()
+    payload_value = build_consumer_payload(
+        release_scope={"release_id": "v1.8.0-synthetic",
+                       "as_of": "2026-09-15T00:00:00Z", "provenance": "frozen"},
+        profile=profile_v2(authority["identity_registry"]), documents=[], sources=[], **authority,
+    )
+    contract = payload_value["global_machine_count_contract"]
+    assert contract["counts"]["production_artifact_count"] == 2
+    assert contract["counts"]["player_count"] == 2
+    assert contract["counts"]["record_link_count"] == 2
+    assert contract["counts"]["not_same_count"] == 1
+    assert contract["counts"]["unavailable_count"] == 1
+    assert len(payload_value["identity_projection"]["players"]) == 1
+    packages = build_target_packages(payload_value, **authority)
+    write_packages(packages, tmp_path, **authority)
+    for package in packages.values():
+        validate_package(package, **authority)
+        assert package["manifest"]["coverage"]["global_machine_count_contract"] == contract
+        assert package["manifest"]["coverage"]["machine_counts"] == contract["counts"]
+        emitted = json.loads(package["files"][package["canonical_payload_file"]])
+        assert emitted["global_machine_count_contract"] == contract
+        target_slug = {"ChatGPT": "chatgpt", "Gemini Notebook": "gemini-notebook",
+                       "WorkBuddy": "workbuddy"}[package["target"]]
+        on_disk = json.loads((tmp_path / target_slug / "package_manifest.json").read_text())
+        assert on_disk["coverage"]["global_machine_count_contract"] == contract
+
+    changed = dict(authority)
+    changed["production_manifest"] = authority["production_manifest"][:1]
+    with pytest.raises(ConsumerPackageError, match="AUTHORITY_MISMATCH"):
+        build_target_packages(payload_value, **changed)
+    with pytest.raises(ConsumerPackageError, match="AUTHORITY_MISMATCH"):
+        validate_package(packages["ChatGPT"], **changed)
+
+
+def test_global_count_authority_fails_closed_on_missing_or_malformed_inputs():
+    authority = global_count_inputs()
+    inputs = dict(release_scope={"release_id": "v1.8.0-synthetic",
+                                 "as_of": "2026-09-15T00:00:00Z",
+                                 "provenance": "frozen"},
+                  profile=profile_v2(authority["identity_registry"]), documents=[], sources=[])
+    with pytest.raises(ConsumerPackageError, match="FROZEN_GLOBAL_COUNT_INPUTS_REQUIRED"):
+        build_consumer_payload(**inputs)
+    for key, bad in (("production_manifest", {}),
+                     ("identity_registry", {"players": [], "record_links": []}),
+                     ("master_rows", [{"record_key": "synthetic-r1"}] * 2)):
+        malformed = dict(authority, **{key: bad})
+        with pytest.raises((ConsumerPackageError, ConsumerProjectionError,
+                            PlayerIdentityError, ValueError)):
+            build_consumer_payload(**inputs, **malformed)
+    value = build_consumer_payload(**inputs, **authority)
+    with pytest.raises(ConsumerPackageError, match="FROZEN_GLOBAL_COUNT_INPUTS_REQUIRED"):
+        build_target_packages(value)
+    package = build_target_package(value, "ChatGPT", **authority)
+    with pytest.raises(ConsumerPackageError, match="FROZEN_GLOBAL_COUNT_INPUTS_REQUIRED"):
+        validate_package(package)
 
 
 def test_consumer_package_inherits_profile_v2_semantic_validation():

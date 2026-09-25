@@ -6,9 +6,20 @@ import re
 from pathlib import Path, PurePosixPath
 
 from .common import atomic, digest
-from .consumer_projection import event_coverage, project_documents
+from .canonical_registry import manifest_rows
+from .consumer_projection import (
+    IDENTITY_SEMANTIC_STATES,
+    derive_machine_counts,
+    project_profile_identity,
+    event_coverage,
+    project_document,
+    project_documents,
+    project_identity_state,
+    validate_machine_counts,
+)
 from .evidence_ledger import canonical_bytes
 from .player_profile import validate_profile, validate_profile_v2
+from .player_identity import validate_registry as validate_identity_registry
 
 
 SCHEMA_VERSION = 1
@@ -43,6 +54,12 @@ TARGET_SLUGS = {
     "Gemini Notebook": "gemini-notebook",
     "WorkBuddy": "workbuddy",
 }
+GLOBAL_COUNT_SCOPE = "FROZEN_PRODUCTION_MANIFEST_IDENTITY_REGISTRY_AND_MASTER"
+COUNT_KEYS = frozenset({
+    "production_artifact_count", "player_count", "record_link_count",
+    "same_count", "not_same_count", "undecided_count",
+    "unavailable_count", "not_materialized_count",
+})
 
 
 class ConsumerPackageError(RuntimeError):
@@ -147,6 +164,51 @@ def _event_selection(event_spec):
     return {**coverage, "selected": True}
 
 
+def _global_count_contract(production_manifest, identity_registry, master_rows):
+    if production_manifest is None or identity_registry is None or master_rows is None:
+        raise ConsumerPackageError("FROZEN_GLOBAL_COUNT_INPUTS_REQUIRED")
+    registry = validate_identity_registry(identity_registry)
+    rows = manifest_rows(production_manifest)
+    counts = derive_machine_counts(rows, registry, master_rows)
+    return {
+        "scope": GLOBAL_COUNT_SCOPE,
+        "input_sha256": {
+            "production_manifest": digest(canonical_bytes(rows)),
+            "identity_registry": digest(canonical_bytes(registry)),
+            "master_rows": digest(canonical_bytes(master_rows)),
+        },
+        "counts": counts,
+    }
+
+
+def _validate_global_count_contract(payload, production_manifest=None,
+                                    identity_registry=None, master_rows=None):
+    contract = payload.get("global_machine_count_contract")
+    if not isinstance(contract, dict) or set(contract) != {"scope", "input_sha256", "counts"}:
+        raise ConsumerPackageError("GLOBAL_COUNT_CONTRACT_REQUIRED")
+    hashes = contract["input_sha256"]
+    if (contract["scope"] != GLOBAL_COUNT_SCOPE
+            or not isinstance(contract["counts"], dict)
+            or set(contract["counts"]) != COUNT_KEYS
+            or not isinstance(hashes, dict)
+            or set(hashes) != {"production_manifest", "identity_registry", "master_rows"}
+            or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                   for value in hashes.values())):
+        raise ConsumerPackageError("GLOBAL_COUNT_CONTRACT_INVALID")
+    declared = {key: payload["coverage"].get(key) for key in COUNT_KEYS}
+    validate_machine_counts(declared, contract["counts"])
+    if any(value is not None for value in
+           (production_manifest, identity_registry, master_rows)):
+        actual = _global_count_contract(production_manifest, identity_registry, master_rows)
+        if contract != actual:
+            raise ConsumerPackageError("FROZEN_GLOBAL_COUNT_AUTHORITY_MISMATCH")
+        if payload["player_profile"]["identity_registry_sha256"] != identity_registry[
+            "registry_sha256"
+        ]:
+            raise ConsumerPackageError("PROFILE_IDENTITY_AUTHORITY_MISMATCH")
+    return contract
+
+
 def build_consumer_payload(
     *,
     release_scope,
@@ -154,6 +216,9 @@ def build_consumer_payload(
     documents,
     sources,
     event_spec=None,
+    production_manifest=None,
+    identity_registry=None,
+    master_rows=None,
 ):
     scope = _scope(release_scope)
     profile = _validated_profile(profile)
@@ -224,10 +289,35 @@ def build_consumer_payload(
             "source_index_items": len(source_index),
         },
     }
-    return {
+    if profile["profile_version"] == "v2.0":
+        projection = project_profile_identity(profile)
+        contract = _global_count_contract(
+            production_manifest, identity_registry, master_rows,
+        )
+        core["identity_projection"] = projection
+        core["global_machine_count_contract"] = contract
+        core["machine_count_scope"] = GLOBAL_COUNT_SCOPE
+        core["coverage"].update(contract["counts"])
+    value = {
         **core,
         "consumer_payload_sha256": digest(canonical_bytes(core)),
     }
+    _validate_consumer_closure(value, production_manifest, identity_registry, master_rows)
+    return value
+
+
+def _validate_consumer_closure(payload, production_manifest=None,
+                               identity_registry=None, master_rows=None):
+    profile = _validated_profile(payload["player_profile"])
+    if profile["profile_version"] != "v2.0":
+        return
+    expected = project_profile_identity(profile)
+    if payload.get("identity_projection") != expected:
+        raise ConsumerPackageError("CONSUMER_IDENTITY_PROJECTION_MISMATCH")
+    if payload.get("machine_count_scope") != GLOBAL_COUNT_SCOPE:
+        raise ConsumerPackageError("CONSUMER_COUNT_SCOPE_MISMATCH")
+    _validate_global_count_contract(payload, production_manifest,
+                                    identity_registry, master_rows)
 
 
 def payload_bytes(payload):
@@ -242,6 +332,7 @@ def payload_bytes(payload):
         "consumer_payload_sha256",
     ):
         raise ConsumerPackageError("CONSUMER_PAYLOAD_HASH_MISMATCH")
+    _validate_consumer_closure(payload)
     return canonical_bytes(payload) + b"\n"
 
 
@@ -527,6 +618,14 @@ def _manifest(
         "sha256": digest(content.encode("utf-8")),
         "bytes": len(content.encode("utf-8")),
     } for path, content in sorted(files.items())]
+    if payload["player_profile"]["profile_version"] == "v2.0":
+        _validate_consumer_closure(payload)
+        coverage = dict(coverage)
+        coverage["machine_counts"] = dict(
+            payload["global_machine_count_contract"]["counts"],
+        )
+        coverage["machine_count_scope"] = GLOBAL_COUNT_SCOPE
+        coverage["global_machine_count_contract"] = payload["global_machine_count_contract"]
     package_core = {
         "schema_version": SCHEMA_VERSION,
         "target": target,
@@ -802,9 +901,16 @@ def build_target_package(
     authorized_evidence=None,
     transport_routes=None,
     limits=None,
+    production_manifest=None,
+    identity_registry=None,
+    master_rows=None,
 ):
     if target not in CONSUMER_TARGETS:
         raise ConsumerPackageError("CONSUMER_TARGET_INVALID")
+    if payload["player_profile"]["profile_version"] == "v2.0":
+        _global_count_contract(production_manifest, identity_registry, master_rows)
+        _validate_consumer_closure(payload, production_manifest,
+                                   identity_registry, master_rows)
     normalized = normalize_authorizations(authorizations)
     evidence = normalize_authorized_evidence(authorized_evidence)
     routes = normalize_transport_routes(transport_routes)
@@ -966,6 +1072,9 @@ def build_target_packages(
     authorized_evidence=None,
     transport_routes=None,
     limits=None,
+    production_manifest=None,
+    identity_registry=None,
+    master_rows=None,
 ):
     auth = normalize_authorizations(authorizations)
     evidence = normalize_authorized_evidence(authorized_evidence)
@@ -991,6 +1100,9 @@ def build_target_packages(
             authorized_evidence=target_evidence,
             transport_routes=route_map[target],
             limits=limits.get(target, {}),
+            production_manifest=production_manifest,
+            identity_registry=identity_registry,
+            master_rows=master_rows,
         )
     hashes = {
         package["consumer_payload_sha256"]
@@ -1001,7 +1113,8 @@ def build_target_packages(
     return packages
 
 
-def validate_package(package):
+def validate_package(package, *, production_manifest=None,
+                     identity_registry=None, master_rows=None):
     if not isinstance(package, dict):
         raise ConsumerPackageError("PACKAGE_OBJECT_REQUIRED")
     required = {
@@ -1049,6 +1162,24 @@ def validate_package(package):
         canonical_value = json.loads(canonical_payload)
     except ValueError as exc:
         raise ConsumerPackageError("CANONICAL_PAYLOAD_FILE_INVALID") from exc
+    payload_bytes(canonical_value)
+    if canonical_value["player_profile"]["profile_version"] == "v2.0":
+        if any(value is None for value in
+               (production_manifest, identity_registry, master_rows)):
+            raise ConsumerPackageError("FROZEN_GLOBAL_COUNT_INPUTS_REQUIRED")
+        _validate_consumer_closure(canonical_value, production_manifest,
+                                   identity_registry, master_rows)
+        actual = canonical_value["global_machine_count_contract"]["counts"]
+        declared_counts = coverage.get("machine_counts")
+        if not isinstance(declared_counts, dict) or set(declared_counts) != set(actual):
+            raise ConsumerPackageError("PACKAGE_MACHINE_COUNTS_REQUIRED")
+        validate_machine_counts(declared_counts, actual)
+        if coverage.get("machine_count_scope") != GLOBAL_COUNT_SCOPE:
+            raise ConsumerPackageError("PACKAGE_MACHINE_COUNT_SCOPE_MISMATCH")
+        if coverage.get("global_machine_count_contract") != canonical_value[
+            "global_machine_count_contract"
+        ]:
+            raise ConsumerPackageError("PACKAGE_GLOBAL_COUNT_CONTRACT_MISMATCH")
     evidence_ids = set()
     for entry in evidence_entries:
         if not isinstance(entry, dict):
@@ -1203,13 +1334,15 @@ def validate_package(package):
     return package
 
 
-def write_packages(packages, output_root):
+def write_packages(packages, output_root, *, production_manifest=None,
+                   identity_registry=None, master_rows=None):
     output_root = Path(output_root)
     if output_root.exists():
         if not output_root.is_dir() or any(output_root.iterdir()):
             raise ConsumerPackageError("PACKAGE_OUTPUT_NOT_EMPTY")
     for target, package in packages.items():
-        validate_package(package)
+        validate_package(package, production_manifest=production_manifest,
+                         identity_registry=identity_registry, master_rows=master_rows)
         root = output_root / TARGET_SLUGS[target]
         for relative, content in sorted(package["files"].items()):
             atomic(root / relative, content.encode("utf-8"))
