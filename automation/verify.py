@@ -762,11 +762,188 @@ def _verify_retrospective_proof(
         raise P2AError("RETROSPECTIVE_PROOF_INVALID", "Proof must postdate historical BLOCKED and merge")
 
 
+def _verify_immutable_external_authority_descendant(
+    store: Any, task: Mapping[str, Any], entry: Mapping[str, Any], previous: str,
+    github_inspector: Any, git: GitInspector,
+) -> None:
+    """Verify an opaque, immutable control-plane authority without inventing a task schema."""
+    require_exact_keys(entry, {
+        "type", "authority_mode", "merge_commit_sha", "reviewed_head_sha", "actual_pr_head_sha",
+        "pr_number", "production_authority", "task_file_id", "task_sha256", "result_file_id",
+        "result_sha256", "review_package_file_id", "review_package_sha256",
+        "post_merge_result_file_id", "post_merge_result_sha256",
+        "post_merge_review_package_file_id", "post_merge_review_package_sha256",
+    }, code="EXTERNAL_DESCENDANT_UNBOUND", location="immutable external descendant")
+    if (entry["type"] != "external_control_plane_descendant"
+            or entry["authority_mode"] != "immutable_external_authority"
+            or entry["production_authority"] is not False):
+        raise P2AError("EXTERNAL_DESCENDANT_AUTHORITY_VIOLATION", "Opaque authority cannot grant Production access")
+    for name in ("merge_commit_sha", "reviewed_head_sha", "actual_pr_head_sha"):
+        require_git_sha(entry[name], field_name=name, code="EXTERNAL_DESCENDANT_UNBOUND")
+    kinds = ("task", "result", "review_package", "post_merge_result", "post_merge_review_package")
+    for kind in kinds:
+        require_sha256(entry[f"{kind}_sha256"], field_name=f"external.{kind}_sha256",
+                       code="EXTERNAL_DESCENDANT_UNBOUND")
+        if not isinstance(entry[f"{kind}_file_id"], str) or not entry[f"{kind}_file_id"]:
+            raise P2AError("EXTERNAL_DESCENDANT_UNBOUND", "All five immutable file IDs are required")
+    frozen = ("external control-plane descendant task SHA256 {task_sha256} result SHA256 {result_sha256} "
+              "review SHA256 {review_package_sha256} post-merge result SHA256 {post_merge_result_sha256} "
+              "post-merge review SHA256 {post_merge_review_package_sha256}").format(**entry)
+    if frozen not in task["allowed_actions"]:
+        raise P2AError("EXTERNAL_DESCENDANT_UNBOUND", "Reconciliation task lacks all five frozen evidence hashes")
+    files = {kind: store.read(entry[f"{kind}_file_id"]) for kind in kinds}
+    folders = {file.folder_id for file in files.values()}
+    if (len(folders) != 1 or not next(iter(folders))
+            or task["canonical_binding"]["canonical_history_folder_id"] in folders
+            or any(sha256_bytes(files[kind].content) != entry[f"{kind}_sha256"] for kind in kinds)):
+        raise P2AError("EXTERNAL_DESCENDANT_EVIDENCE_MISMATCH", "Opaque authority or companion evidence differs from frozen bytes")
+    # The authority payload remains opaque. Only its exact file ID and raw SHA are consumed.
+    source = load_json_bytes(files["result"].content)
+    review = load_json_bytes(files["review_package"].content)
+    post = load_json_bytes(files["post_merge_result"].content)
+    post_review = load_json_bytes(files["post_merge_review_package"].content)
+    workstream = source.get("workstream_id")
+    stage = source.get("stage")
+    if (source.get("schema_version") != "cba-kb.p2a-stabilization-result.v1"
+            or source.get("status") != "PASS"
+            or not isinstance(source.get("classification"), str)
+            or not source["classification"].startswith("P2A_STABILIZATION_")
+            or not source["classification"].endswith("_PASS")
+            or not isinstance(workstream, str) or not workstream or workstream == task["req_id"]
+            or not isinstance(stage, str) or not stage
+            or source.get("authority_sha256") != entry["task_sha256"]
+            or source.get("repository") != task["repository"]
+            or source.get("base_sha") != previous
+            or source.get("head_sha") != entry["reviewed_head_sha"]
+            or not isinstance(source.get("feature_branch"), str) or not source["feature_branch"]
+            or source.get("focused_tests", {}).get("status") != "PASS"
+            or source.get("full_regression", {}).get("status") != "PASS"
+            or source.get("secret_guard") != "PASS"):
+        raise P2AError("EXTERNAL_DESCENDANT_EVIDENCE_MISMATCH", "Source result does not bind opaque authority and reviewed PASS")
+    control, verified = review.get("CONTROL") or {}, review.get("VERIFIED_MACHINE_FACTS") or {}
+    if (review.get("review_package_version") != "cba-kb.p2a-stabilization-review-package.v1"
+            or control.get("workstream_id") != workstream or control.get("stage") != stage
+            or control.get("authority_sha256") != entry["task_sha256"]
+            or control.get("result_sha256") != entry["result_sha256"]
+            or any(verified.get(name) != source.get(name) for name in (
+                "base_sha", "head_sha", "changed_files", "focused_tests", "full_regression",
+                "secret_guard", "pr", "ci", "machine_facts",
+            ))):
+        raise P2AError("EXTERNAL_DESCENDANT_EVIDENCE_MISMATCH", "Source review package does not bind opaque authority")
+    classification = post.get("classification")
+    if (post.get("schema_version") != "cba-kb.p2a-stabilization-post-merge-result.v1"
+            or post.get("status") != "PASS"
+            or not isinstance(classification, str)
+            or not classification.startswith("P2A_STABILIZATION_")
+            or not classification.endswith("_MERGE_VERIFIED")
+            or post.get("workstream_id") != workstream or post.get("stage") != stage
+            or post.get("repository") != task["repository"]
+            or post.get("source_result_file_id") != entry["result_file_id"]
+            or post.get("source_result_sha256") != entry["result_sha256"]
+            or post.get("source_review_package_file_id") != entry["review_package_file_id"]
+            or post.get("source_review_package_sha256") != entry["review_package_sha256"]
+            or post.get("base_sha") != previous
+            or post.get("reviewed_head_sha") != entry["reviewed_head_sha"]
+            or post.get("head_sha") != entry["merge_commit_sha"]):
+        raise P2AError("EXTERNAL_DESCENDANT_EVIDENCE_MISMATCH", "Post-merge result does not bind source authority")
+    post_control, post_verified = post_review.get("CONTROL") or {}, post_review.get("VERIFIED_MACHINE_FACTS") or {}
+    if (post_review.get("review_package_version") != "cba-kb.p2a-stabilization-post-merge-review-package.v1"
+            or post_control.get("workstream_id") != workstream or post_control.get("stage") != stage
+            or post_control.get("source_result_sha256") != entry["result_sha256"]
+            or post_control.get("post_merge_result_sha256") != entry["post_merge_result_sha256"]
+            or any(post_verified.get(name) != post.get(name) for name in (
+                "pr", "ci", "changed_files", "machine_facts",
+            ))):
+        raise P2AError("EXTERNAL_DESCENDANT_EVIDENCE_MISMATCH", "Post-merge review package does not bind event")
+    source_pr, source_ci, merged_pr, merged_ci = source["pr"], source["ci"], post["pr"], post["ci"]
+    if (not isinstance(entry["pr_number"], int) or isinstance(entry["pr_number"], bool)
+            or source_pr.get("number") != entry["pr_number"]
+            or source_pr.get("state") != "OPEN" or source_pr.get("base_sha") != previous
+            or source_pr.get("head_sha") != entry["reviewed_head_sha"]
+            or merged_pr.get("number") != entry["pr_number"]
+            or merged_pr.get("state") != "MERGED" or merged_pr.get("base_sha") != previous
+            or merged_pr.get("reviewed_head_sha") != entry["reviewed_head_sha"]
+            or merged_pr.get("merge_commit_sha") != entry["merge_commit_sha"]
+            or not merged_pr.get("merged_at")):
+        raise P2AError("EXTERNAL_DESCENDANT_PR_MISMATCH", "Opaque-authority PR event differs")
+    if (source_ci.get("workflow_name") != "Offline tests" or source_ci.get("event") != "pull_request"
+            or source_ci.get("head_sha") != entry["reviewed_head_sha"]
+            or source_ci.get("status") != "completed" or source_ci.get("conclusion") != "success"
+            or merged_ci.get("workflow_name") != "Offline tests" or merged_ci.get("event") != "push"
+            or merged_ci.get("head_branch") != "main"
+            or merged_ci.get("head_sha") != entry["merge_commit_sha"]
+            or merged_ci.get("status") != "completed" or merged_ci.get("conclusion") != "success"):
+        raise P2AError("EXTERNAL_DESCENDANT_CI_MISMATCH", "Opaque-authority CI metadata differs")
+    pre_runs = {run.get("id") for run in source_ci.get("runs", [])}
+    reviewed_runs = github_inspector._json(
+        "api", f"repos/{task['repository']}/actions/runs?head_sha={entry['reviewed_head_sha']}&per_page=100",
+    ).get("workflow_runs", [])
+    merged_runs = github_inspector._json(
+        "api", f"repos/{task['repository']}/actions/runs?head_sha={entry['merge_commit_sha']}&per_page=100",
+    ).get("workflow_runs", [])
+    valid_pre = {run.get("id") for run in reviewed_runs if run.get("name") == "Offline tests"
+                 and run.get("event") == "pull_request" and run.get("head_sha") == entry["reviewed_head_sha"]
+                 and run.get("status") == "completed" and run.get("conclusion") == "success"}
+    valid_post = {run.get("id") for run in merged_runs if run.get("name") == "Offline tests"
+                  and run.get("event") == "push" and run.get("head_branch") == "main"
+                  and run.get("head_sha") == entry["merge_commit_sha"]
+                  and run.get("status") == "completed" and run.get("conclusion") == "success"}
+    if not pre_runs or not pre_runs.issubset(valid_pre) or merged_ci.get("run_id") not in valid_post:
+        raise P2AError("EXTERNAL_DESCENDANT_CI_MISMATCH", "Opaque authority lacks exact hosted PR/main CI")
+    observed = github_inspector._json(
+        "pr", "view", str(entry["pr_number"]), "--repo", task["repository"],
+        "--json", "number,state,baseRefOid,headRefOid,mergedAt,mergeCommit",
+    )
+    if (observed.get("number") != entry["pr_number"] or observed.get("state") != "MERGED"
+            or observed.get("baseRefOid") != previous
+            or observed.get("headRefOid") != entry["actual_pr_head_sha"]
+            or observed.get("mergedAt") != merged_pr["merged_at"]
+            or (observed.get("mergeCommit") or {}).get("oid") != entry["merge_commit_sha"]):
+        raise P2AError("EXTERNAL_DESCENDANT_PR_MISMATCH", "Opaque-authority PR differs from GitHub Code Truth")
+    source_facts, post_facts = source.get("machine_facts"), post.get("machine_facts")
+    zero_fields = ("PRODUCT_CODE_DELTA", "PRODUCTION_MUTATION", "PUBLISH", "RESTORE",
+                   "REQ181_POINTER_MUTATION", "REQ181_HISTORY_MUTATION")
+    if (not isinstance(source_facts, dict) or not isinstance(post_facts, dict)
+            or any(facts.get(name) != 0 for facts in (source_facts, post_facts) for name in zero_fields)
+            or any(facts.get("IDENTITY_SEMANTIC_DELTA") != "ZERO" for facts in (source_facts, post_facts))
+            or any(facts.get("MASTER_MUTATION", 0) != 0 for facts in (source_facts, post_facts))
+            or any(facts.get("production_authority", False) is not False for facts in (source_facts, post_facts))):
+        raise P2AError("EXTERNAL_DESCENDANT_AUTHORITY_VIOLATION", "Opaque authority permits product, identity or Production mutation")
+    allowed_process = {"automation/models.py", "automation/orchestrator.py", "automation/verify.py"}
+    def process_path(path: str) -> bool:
+        return path in allowed_process or path.startswith("tests/automation/")
+    actual_files = set(git._run("diff", "--name-only", previous, entry["merge_commit_sha"]).splitlines())
+    if (not isinstance(source.get("changed_files"), list)
+            or not actual_files or actual_files != set(source["changed_files"])
+            or actual_files != set(post.get("changed_files", []))
+            or not all(process_path(path) for path in actual_files)):
+        raise P2AError("EXTERNAL_DESCENDANT_SCOPE_VIOLATION", "Opaque-authority merge changes forbidden files")
+    if (not git.is_ancestor(entry["reviewed_head_sha"], entry["actual_pr_head_sha"])
+            or git._run("rev-list", "--parents", "-n", "1", entry["merge_commit_sha"]).split()
+            != [entry["merge_commit_sha"], previous, entry["actual_pr_head_sha"]]):
+        raise P2AError("GIT_ANCESTRY_MISMATCH", "Opaque-authority merge ancestry differs")
+    commits = git._run("rev-list", "--reverse", f"{previous}..{entry['actual_pr_head_sha']}").splitlines()
+    if not commits or commits[-1] != entry["actual_pr_head_sha"]:
+        raise P2AError("GIT_ANCESTRY_MISMATCH", "Opaque-authority branch history is incomplete")
+    for commit in commits:
+        paths = git._run("diff-tree", "--no-commit-id", "--name-only", "-r", commit).splitlines()
+        if not all(process_path(path) for path in paths):
+            raise P2AError("EXTERNAL_DESCENDANT_SCOPE_VIOLATION", "Opaque-authority branch contains forbidden file")
+
+
 def _verify_external_control_plane_descendant(
     store: Any, task: Mapping[str, Any], entry: Mapping[str, Any], previous: str,
     github_inspector: Any, git: GitInspector,
 ) -> None:
     """Bind an independent process merge to five immutable workstream artifacts."""
+    mode = entry.get("authority_mode", "structured_stabilization_task")
+    if mode == "immutable_external_authority":
+        _verify_immutable_external_authority_descendant(store, task, entry, previous, github_inspector, git)
+        return
+    if mode != "structured_stabilization_task":
+        raise P2AError("EXTERNAL_DESCENDANT_UNBOUND", "Unknown external authority mode")
+    if "authority_mode" in entry:
+        entry = {key: value for key, value in entry.items() if key != "authority_mode"}
     require_exact_keys(entry, {
         "type", "merge_commit_sha", "reviewed_head_sha", "actual_pr_head_sha", "pr_number",
         "production_authority", "task_file_id", "task_sha256", "result_file_id", "result_sha256",
