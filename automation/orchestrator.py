@@ -12,7 +12,7 @@ from .handoff import TransitionIntent, transition_commit
 from .ledger import AppendOnlyLedger
 from .models import P2AError, canonical_json_bytes, load_json_bytes, load_yaml_bytes, read_bytes, sha256_bytes
 from .review_package import build_review_package
-from .verify import verify_result_bytes, verify_task_bytes
+from .verify import verify_historical_source_result, verify_result_bytes, verify_task_bytes
 
 
 def _emit(value: Any) -> None:
@@ -58,6 +58,26 @@ def _result_verify(args: argparse.Namespace) -> int:
             event="EXECUTION_RESULT_VERIFIED", result="PASS", policy_bundle_sha256=task["policy_bundle_sha256"],
             input_binding_sha256=sha256_bytes(task_bytes), output_binding_sha256=sha256_bytes(result_bytes),
         )
+    _emit(result.as_dict())
+    return 0 if result.ok else 2
+
+
+def _historical_source_verify(args: argparse.Namespace) -> int:
+    store = GoogleDriveStore.from_trusted_runtime(args.git_root, args.instance_root)
+    result = verify_historical_source_result(
+        store,
+        task_file_id=args.task_file_id,
+        result_file_id=args.result_file_id,
+        review_package_file_id=args.review_package_file_id,
+        expected_task_sha256=args.expected_task_sha256,
+        expected_result_sha256=args.expected_result_sha256,
+        expected_review_package_sha256=args.expected_review_package_sha256,
+        expected_requirement_sha256=args.expected_requirement_sha256,
+        expected_policy_sha256=args.expected_policy_sha256,
+        expected_repository=args.expected_repository,
+        git_root=args.git_root,
+        github_inspector=GitHubInspector(args.expected_repository),
+    )
     _emit(result.as_dict())
     return 0 if result.ok else 2
 
@@ -151,6 +171,15 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--git-root")
     result.add_argument("--ledger")
     result.set_defaults(handler=_result_verify)
+    historical = sub.add_parser("historical-source-verify")
+    for name in (
+        "task-file-id", "result-file-id", "review-package-file-id",
+        "expected-task-sha256", "expected-result-sha256", "expected-review-package-sha256",
+        "expected-requirement-sha256", "expected-policy-sha256", "expected-repository",
+        "git-root", "instance-root",
+    ):
+        historical.add_argument("--" + name, required=True)
+    historical.set_defaults(handler=_historical_source_verify)
     review = sub.add_parser("review-package")
     review.add_argument("--task", required=True)
     review.add_argument("--result", required=True)
