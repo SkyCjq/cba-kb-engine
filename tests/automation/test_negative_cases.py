@@ -8,8 +8,8 @@ from automation.handoff import TransitionIntent, dispatch_allowed, transition_co
 from automation.ledger import AppendOnlyLedger
 from automation.models import P2AError, canonical_json_bytes, sha256_bytes
 from automation.review_package import build_review_package
-from automation.verify import guarded_verify, verify_result_bytes, verify_task_bytes
-from test_verify import descendant_case, external_control_plane_case, human_merge_case, post_merge_case, retrospective_case
+from automation.verify import guarded_verify, verify_historical_source_result, verify_result_bytes, verify_task_bytes
+from test_verify import descendant_case, external_control_plane_case, historical_source_case, human_merge_case, post_merge_case, retrospective_case
 
 
 def _strict_case(tmp_path, task_dict, store=None):
@@ -652,6 +652,91 @@ def test_post_merge_contract_fails_closed(monkeypatch, task_dict, result_dict, m
     verified = verify_result_bytes(canonical_json_bytes(result), task_bytes,
                                    git_root="exact-main", github_inspector=github)
     assert not verified.ok
+    assert verified.classification == classification
+
+
+@pytest.mark.parametrize(("mutation", "classification"), [
+    ("diverged_main", "GIT_ANCESTRY_MISMATCH"),
+    ("wrong_local_main", "HISTORICAL_SOURCE_MAIN_MISMATCH"),
+    ("wrong_task_sha", "HISTORICAL_SOURCE_HASH_MISMATCH"),
+    ("rewritten_task", "HISTORICAL_SOURCE_HASH_MISMATCH"),
+    ("wrong_result_sha", "HISTORICAL_SOURCE_HASH_MISMATCH"),
+    ("rewritten_result", "HISTORICAL_SOURCE_HASH_MISMATCH"),
+    ("wrong_package_sha", "HISTORICAL_SOURCE_HASH_MISMATCH"),
+    ("wrong_package_binding", "HISTORICAL_SOURCE_PACKAGE_MISMATCH"),
+    ("wrong_merge", "HISTORICAL_SOURCE_PR_MISMATCH"),
+    ("wrong_reviewed_ci", "HISTORICAL_SOURCE_CI_MISMATCH"),
+    ("missing_historical_ci", "HISTORICAL_SOURCE_CI_MISMATCH"),
+    ("failed_historical_ci", "HISTORICAL_SOURCE_CI_MISMATCH"),
+    ("wrong_requirement", "HISTORICAL_SOURCE_BINDING_MISMATCH"),
+    ("wrong_policy", "HISTORICAL_SOURCE_BINDING_MISMATCH"),
+    ("wrong_repository", "HISTORICAL_SOURCE_BINDING_MISMATCH"),
+    ("identity_mutation", "HISTORICAL_SOURCE_MUTATION"),
+    ("production_mutation", "HISTORICAL_SOURCE_MUTATION"),
+    ("blocked_source", "HISTORICAL_SOURCE_NOT_PASS"),
+])
+def test_historical_source_verification_fails_closed(
+    monkeypatch, task_dict, result_dict, mutation, classification,
+):
+    import json
+
+    task, result, store, kwargs, main_ref, main_runs, reviewed_runs, observed, git_type = historical_source_case(
+        monkeypatch, task_dict, result_dict,
+    )
+    if mutation == "diverged_main":
+        class DivergedGit(git_type):
+            def is_ancestor(self, ancestor, descendant):
+                return False
+        monkeypatch.setattr("automation.verify.GitInspector", DivergedGit)
+    elif mutation == "wrong_local_main":
+        main_ref["object"]["sha"] = "9" * 40
+    elif mutation == "wrong_task_sha":
+        kwargs["expected_task_sha256"] = "0" * 64
+    elif mutation == "rewritten_task":
+        store.records["historical-task"].content += b"\n# rewritten\n"
+    elif mutation == "wrong_result_sha":
+        kwargs["expected_result_sha256"] = "0" * 64
+    elif mutation == "rewritten_result":
+        store.records["historical-result"].content += b"\n"
+    elif mutation == "wrong_package_sha":
+        kwargs["expected_review_package_sha256"] = "0" * 64
+    elif mutation == "wrong_package_binding":
+        item = store.records["historical-package"]
+        package = json.loads(item.content)
+        package["CONTROL"]["task_id"] = "00000000-0000-4000-8000-000000000000"
+        item.content = canonical_json_bytes(package)
+        kwargs["expected_review_package_sha256"] = sha256_bytes(item.content)
+    elif mutation == "wrong_merge":
+        observed["mergeCommit"]["oid"] = "0" * 40
+    elif mutation == "wrong_reviewed_ci":
+        reviewed_runs["workflow_runs"].clear()
+    elif mutation == "missing_historical_ci":
+        main_runs.clear()
+    elif mutation == "failed_historical_ci":
+        main_runs[0]["conclusion"] = "failure"
+    elif mutation == "wrong_requirement":
+        kwargs["expected_requirement_sha256"] = "0" * 64
+    elif mutation == "wrong_policy":
+        kwargs["expected_policy_sha256"] = "0" * 64
+    elif mutation == "wrong_repository":
+        kwargs["expected_repository"] = "unrelated/repository"
+    elif mutation in {"identity_mutation", "production_mutation", "blocked_source"}:
+        item = store.records["historical-result"]
+        document = json.loads(item.content)
+        if mutation == "identity_mutation":
+            document["machine_facts"]["identity_registry_mutation"] = 1
+        elif mutation == "production_mutation":
+            document["machine_facts"]["production_mutation"] = 1
+        else:
+            document["status"] = "BLOCKED"
+        item.content = canonical_json_bytes(document)
+        kwargs["expected_result_sha256"] = sha256_bytes(item.content)
+        package_item = store.records["historical-package"]
+        package = json.loads(package_item.content)
+        package["VERIFIED_MACHINE_FACTS"]["result_sha256"] = kwargs["expected_result_sha256"]
+        package_item.content = canonical_json_bytes(package)
+        kwargs["expected_review_package_sha256"] = sha256_bytes(package_item.content)
+    verified = verify_historical_source_result(store, **kwargs)
     assert verified.classification == classification
 
 

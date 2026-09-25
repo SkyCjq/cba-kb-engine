@@ -304,6 +304,166 @@ def _verify_human_merge_result(
         raise P2AError("GIT_ANCESTRY_MISMATCH", "Merge parents do not bind frozen base and reviewed head")
 
 
+def verify_historical_source_result(
+    store: Any, *, task_file_id: str, result_file_id: str, review_package_file_id: str,
+    expected_task_sha256: str, expected_result_sha256: str, expected_review_package_sha256: str,
+    expected_requirement_sha256: str, expected_policy_sha256: str, expected_repository: str,
+    git_root: str | Path, github_inspector: Any,
+) -> VerificationResult:
+    """Recheck immutable Human merge source evidence after authorized main descendants.
+
+    This is a separate transition-source gate. Current result verification retains its
+    exact-live-main contract and never calls this path.
+    """
+    facts: dict[str, Any] = {"task_file_id": task_file_id, "result_file_id": result_file_id,
+                             "review_package_file_id": review_package_file_id}
+    try:
+        for name, value in (
+            ("expected_task_sha256", expected_task_sha256),
+            ("expected_result_sha256", expected_result_sha256),
+            ("expected_review_package_sha256", expected_review_package_sha256),
+            ("expected_requirement_sha256", expected_requirement_sha256),
+            ("expected_policy_sha256", expected_policy_sha256),
+        ):
+            require_sha256(value, field_name=name, code="HISTORICAL_SOURCE_BINDING_MISMATCH")
+        if any(not isinstance(value, str) or not value for value in
+               (task_file_id, result_file_id, review_package_file_id, expected_repository)):
+            raise P2AError("HISTORICAL_SOURCE_BINDING_MISMATCH", "Immutable IDs and repository are required")
+        task_file, result_file, package_file = (store.read(file_id) for file_id in
+                                                (task_file_id, result_file_id, review_package_file_id))
+        if (sha256_bytes(task_file.content) != expected_task_sha256
+                or sha256_bytes(result_file.content) != expected_result_sha256
+                or sha256_bytes(package_file.content) != expected_review_package_sha256):
+            raise P2AError("HISTORICAL_SOURCE_HASH_MISMATCH", "Historical source bytes differ from frozen SHA")
+        task = load_yaml_bytes(task_file.content)
+        result = load_json_bytes(result_file.content)
+        package = load_json_bytes(package_file.content)
+        validate_task_document(task)
+        validate_result_document(result)
+        history_folder = task["canonical_binding"]["canonical_history_folder_id"]
+        if any(item.folder_id != history_folder for item in (task_file, result_file, package_file)):
+            raise P2AError("HISTORICAL_SOURCE_BINDING_MISMATCH", "Source evidence is outside immutable history")
+        if task["task_type"] != HUMAN_MERGE_TASK_TYPE:
+            raise P2AError("HISTORICAL_SOURCE_UNSUPPORTED", "Only frozen Human merge PASS sources are supported")
+        if result["status"] != "PASS" or result["forbidden_actions_observed"]:
+            raise P2AError("HISTORICAL_SOURCE_NOT_PASS", "Historical source must be a clean PASS result")
+        bindings = {
+            "req_id": task["req_id"], "canonical_generation": task["canonical_generation"],
+            "task_id": task["task_id"], "automation_version": task["automation_version"],
+            "policy_bundle_sha256": expected_policy_sha256, "repository": expected_repository,
+            "base_sha": task["expected_base_sha"], "feature_branch": task["feature_branch"],
+            "return_gate": task["return_gate"], "source_task_sha256": expected_task_sha256,
+        }
+        if (task["policy_bundle_sha256"] != expected_policy_sha256
+                or task["authority_binding"]["requirement_sha256"] != expected_requirement_sha256
+                or task["repository"] != expected_repository
+                or any(result.get(key) != expected for key, expected in bindings.items())):
+            raise P2AError("HISTORICAL_SOURCE_BINDING_MISMATCH", "Task/result/Requirement/policy/repository binding differs")
+        control = package.get("CONTROL") or {}
+        verified = package.get("VERIFIED_MACHINE_FACTS") or {}
+        if (package.get("review_package_version") != "cba-kb.p2a-review-package.v1"
+                or control.get("req_id") != task["req_id"]
+                or control.get("task_id") != task["task_id"]
+                or control.get("canonical_generation") != task["canonical_generation"]
+                or control.get("policy_bundle_sha256") != expected_policy_sha256
+                or control.get("requirement_sha256") != expected_requirement_sha256
+                or control.get("gate") != task["return_gate"]
+                or verified.get("task_sha256") != expected_task_sha256
+                or verified.get("result_sha256") != expected_result_sha256
+                or any(verified.get(key) != result[key] for key in (
+                    "base_sha", "head_sha", "changed_files", "focused_tests", "full_regression",
+                    "pr", "ci", "output_artifacts", "forbidden_actions_observed",
+                ))):
+            raise P2AError("HISTORICAL_SOURCE_PACKAGE_MISMATCH", "Immutable review package does not bind source")
+        if result["changed_files"] != []:
+            raise P2AError("HISTORICAL_SOURCE_SCOPE_VIOLATION", "Human merge result cannot declare repository edits")
+        machine = result["machine_facts"]
+        if (not isinstance(machine, dict)
+                or machine.get("requirement_sha256") != expected_requirement_sha256
+                or machine.get("evidence_mode") != "VERIFIED_PREDECESSOR_REUSE"
+                or machine.get("identity_semantic_delta") != "ZERO"
+                or any(machine.get(name) != 0 for name in (
+                    "identity_authority_change", "identity_registry_mutation", "master_mutation",
+                    "player_uid_mutation", "new_identity_decisions", "new_same_decisions",
+                    "new_not_same_decisions", "machine_final_uid_decisions", "production_mutation",
+                    "publish", "restore",
+                ))
+                or any(value != 0 for key, value in machine.items()
+                       if key == "product_code_delta" or key.endswith("_product_code_delta"))):
+            raise P2AError("HISTORICAL_SOURCE_MUTATION", "Identity, product or Production mutation is not eligible")
+        for name in ("focused_tests", "full_regression"):
+            evidence = result[name]
+            if (not isinstance(evidence, dict)
+                    or evidence.get("status") != "NOT_RERUN_DURING_HUMAN_MERGE"
+                    or evidence.get("evidence_mode") != "VERIFIED_PREDECESSOR_REUSE"
+                    or evidence.get("predecessor_result_sha256") != machine.get("predecessor_result_sha256")):
+                raise P2AError("HISTORICAL_SOURCE_TEST_EVIDENCE_MISMATCH", "Test reuse lacks exact predecessor binding")
+        number, reviewed_head, reviewed_run = _human_frozen_review(task)
+        _verify_human_predecessor(result, task, store, reviewed_head, reviewed_run)
+        pr, ci = result["pr"], result["ci"]
+        if (pr.get("number") != number or pr.get("state") != "MERGED"
+                or pr.get("head_sha") != reviewed_head
+                or pr.get("base_sha") != task["expected_base_sha"]
+                or pr.get("merge_commit_sha") != result["head_sha"]
+                or not pr.get("merged_at")):
+            raise P2AError("HISTORICAL_SOURCE_PR_MISMATCH", "Historical PR differs from frozen Human task")
+        observed = github_inspector._json(
+            "pr", "view", str(number), "--repo", expected_repository,
+            "--json", "number,url,state,baseRefOid,headRefOid,mergedAt,mergeCommit",
+        )
+        if (observed.get("number") != number or observed.get("url") != pr.get("url")
+                or observed.get("state") != "MERGED"
+                or observed.get("baseRefOid") != pr["base_sha"]
+                or observed.get("headRefOid") != reviewed_head
+                or observed.get("mergedAt") != pr["merged_at"]
+                or (observed.get("mergeCommit") or {}).get("oid") != result["head_sha"]):
+            raise P2AError("HISTORICAL_SOURCE_PR_MISMATCH", "Historical PR differs from GitHub Code Truth")
+        reviewed_runs = github_inspector._json(
+            "api", f"repos/{expected_repository}/actions/runs?head_sha={reviewed_head}&per_page=100",
+        ).get("workflow_runs", [])
+        if not any(run.get("id") == reviewed_run and run.get("name") == "Offline tests"
+                   and run.get("event") == "pull_request" and run.get("head_sha") == reviewed_head
+                   and run.get("status") == "completed" and run.get("conclusion") == "success"
+                   for run in reviewed_runs):
+            raise P2AError("HISTORICAL_SOURCE_CI_MISMATCH", "Frozen reviewed-head CI is not green")
+        if (ci.get("workflow_name") != "Offline tests" or ci.get("event") != "push"
+                or ci.get("head_branch") != "main" or ci.get("head_sha") != result["head_sha"]
+                or ci.get("status") != "completed" or ci.get("conclusion") != "success"):
+            raise P2AError("HISTORICAL_SOURCE_CI_MISMATCH", "Historical exact-main CI facts differ")
+        claimed_ids = {run.get("id") for run in ci.get("runs", [])}
+        historical_runs = github_inspector._json(
+            "api", f"repos/{expected_repository}/actions/runs?head_sha={result['head_sha']}&per_page=100",
+        ).get("workflow_runs", [])
+        green_ids = {run.get("id") for run in historical_runs if run.get("name") == "Offline tests"
+                     and run.get("event") == "push" and run.get("head_branch") == "main"
+                     and run.get("head_sha") == result["head_sha"]
+                     and run.get("status") == "completed" and run.get("conclusion") == "success"}
+        if not claimed_ids or not claimed_ids.issubset(green_ids):
+            raise P2AError("HISTORICAL_SOURCE_CI_MISMATCH", "Historical exact-main push CI is not independently green")
+        live_main = github_inspector._json("api", f"repos/{expected_repository}/git/ref/heads/main")
+        current_main_sha = (live_main.get("object") or {}).get("sha")
+        require_git_sha(current_main_sha, field_name="live_main.sha", code="HISTORICAL_SOURCE_MAIN_MISMATCH")
+        git = GitInspector(git_root)
+        if git.head_sha() != current_main_sha:
+            raise P2AError("HISTORICAL_SOURCE_MAIN_MISMATCH", "Local Git checkout differs from live main")
+        if (not git.is_ancestor(result["head_sha"], current_main_sha)
+                or git._run("rev-list", "--parents", "-n", "1", result["head_sha"]).split()
+                != [result["head_sha"], task["expected_base_sha"], reviewed_head]):
+            raise P2AError("GIT_ANCESTRY_MISMATCH", "Historical merge is not in current main's exact ancestry")
+        actual_delta = sorted(git._run("diff", "--name-only", task["expected_base_sha"], result["head_sha"]).splitlines())
+        if actual_delta != sorted(machine.get("pr_changed_files", [])):
+            raise P2AError("HISTORICAL_SOURCE_SCOPE_VIOLATION", "Historical merge files differ from reviewed PR scope")
+        facts.update({"task_sha256": expected_task_sha256, "result_sha256": expected_result_sha256,
+                      "review_package_sha256": expected_review_package_sha256,
+                      "historical_head_sha": result["head_sha"], "current_main_sha": current_main_sha,
+                      "historical_exact_main_ci_run_ids": sorted(claimed_ids), "task_id": task["task_id"]})
+        return VerificationResult("PASS", "HISTORICAL_SOURCE_RESULT_VERIFIED", facts)
+    except P2AError as exc:
+        return fail_result(exc, facts=facts)
+    except Exception as exc:  # pragma: no cover - deliberately defensive
+        return fail_result(P2AError("UNCLASSIFIED_EXCEPTION", "Historical source verification failed", error=repr(exc)), facts=facts)
+
+
 
 def _verify_post_merge_result(
     result: Mapping[str, Any], task: Mapping[str, Any], github_inspector: Any,

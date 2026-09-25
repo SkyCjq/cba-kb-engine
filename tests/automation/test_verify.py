@@ -5,7 +5,7 @@ import yaml
 from automation.models import canonical_json_bytes, sha256_bytes
 from automation.drive_io import MemoryDriveStore
 from automation.review_package import build_review_package
-from automation.verify import verify_result_bytes, verify_task_bytes
+from automation.verify import verify_historical_source_result, verify_result_bytes, verify_task_bytes
 
 
 def test_task_verify_accepts_frozen_schema(task_bytes, task_dict):
@@ -601,3 +601,123 @@ def test_external_control_plane_merge_follows_req_scoped_descendants(monkeypatch
     verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
                                    github_inspector=github, predecessor_store=store)
     assert verified.classification == "EXECUTION_RESULT_VERIFIED"
+
+
+def historical_source_case(monkeypatch, task_dict, result_dict):
+    task, task_bytes, result, store, _, observed, merge, main_ref, reviewed_runs, main_runs, git_type = human_merge_case(
+        monkeypatch, task_dict, result_dict,
+    )
+    current = "e" * 40
+    result["ci"].update(event="push", head_branch="main", status="completed")
+    result["machine_facts"].update(identity_semantic_delta="ZERO", req181_product_code_delta=0)
+    for name in (
+        "identity_authority_change", "identity_registry_mutation", "master_mutation",
+        "player_uid_mutation", "new_identity_decisions", "new_same_decisions",
+        "new_not_same_decisions", "machine_final_uid_decisions", "production_mutation", "publish", "restore",
+    ):
+        result["machine_facts"][name] = 0
+    result_bytes = canonical_json_bytes(result)
+    package = build_review_package(task, result, task_bytes=task_bytes, result_bytes=result_bytes)
+    package_bytes = canonical_json_bytes(package)
+    store.seed("historical-task", "history", "human-task.yaml", task_bytes)
+    store.seed("historical-result", "history", "human-result.json", result_bytes)
+    store.seed("historical-package", "history", "human-review.json", package_bytes)
+    observed.update(mergedAt=result["pr"]["merged_at"], mergeCommit={"oid": result["head_sha"]})
+    main_ref["object"]["sha"] = current
+    main_runs[0]["head_branch"] = "main"
+
+    class GitHub:
+        def collect(self, number, workflow, head):
+            return {"pr": observed, "runs": main_runs}
+
+        def _json(self, *args):
+            if args[:2] == ("pr", "view"):
+                return observed
+            if "git/ref/heads/main" in args[1]:
+                return main_ref
+            if result["pr"]["head_sha"] in args[1]:
+                return reviewed_runs
+            return {"workflow_runs": main_runs}
+
+    class Git(git_type):
+        def head_sha(self):
+            return current
+
+        def _run(self, *args):
+            if args[:2] == ("diff", "--name-only"):
+                return "automation/verify.py"
+            return super()._run(*args)
+
+    monkeypatch.setattr("automation.verify.GitInspector", Git)
+    kwargs = {
+        "task_file_id": "historical-task", "result_file_id": "historical-result",
+        "review_package_file_id": "historical-package",
+        "expected_task_sha256": sha256_bytes(task_bytes),
+        "expected_result_sha256": sha256_bytes(result_bytes),
+        "expected_review_package_sha256": sha256_bytes(package_bytes),
+        "expected_requirement_sha256": task["authority_binding"]["requirement_sha256"],
+        "expected_policy_sha256": task["policy_bundle_sha256"],
+        "expected_repository": task["repository"],
+        "git_root": "current-main", "github_inspector": GitHub(),
+    }
+    return task, result, store, kwargs, main_ref, main_runs, reviewed_runs, observed, Git
+
+
+def test_historical_human_merge_source_accepts_authorized_descendant_main(monkeypatch, task_dict, result_dict):
+    _, _, store, kwargs, main_ref, *_ = historical_source_case(monkeypatch, task_dict, result_dict)
+    verified = verify_historical_source_result(store, **kwargs)
+    assert verified.classification == "HISTORICAL_SOURCE_RESULT_VERIFIED"
+    assert verified.facts["historical_head_sha"] != main_ref["object"]["sha"]
+
+
+def test_current_human_merge_verification_still_requires_exact_live_main(monkeypatch, task_dict, result_dict):
+    task, result, store, kwargs, *_ = historical_source_case(monkeypatch, task_dict, result_dict)
+    current = verify_result_bytes(
+        canonical_json_bytes(result), store.read("historical-task").content,
+        git_root="current-main", github_inspector=kwargs["github_inspector"], predecessor_store=store,
+    )
+    assert current.classification == "FINAL_MAIN_MISMATCH"
+
+
+def test_historical_source_accepts_gen17_then_two_authorized_main_descendants(monkeypatch, task_dict, result_dict):
+    task, result, store, kwargs, main_ref, main_runs, _, observed, git_type = historical_source_case(
+        monkeypatch, task_dict, result_dict,
+    )
+    historical = "f54518c14a0559f8ef5c406ecc3fd4d77ad5081b"
+    first_descendant = "1a57053efabdbf60f891c59bc51652f99b8d22f1"
+    current_main = "2bb7cba71736dcdeda3dbd85aca73b39bdd79d98"
+    result["head_sha"] = historical
+    result["pr"]["merge_commit_sha"] = historical
+    result["ci"]["head_sha"] = historical
+    result["ci"]["runs"] = [{"id": 36108497705}]
+    observed["mergeCommit"]["oid"] = historical
+    main_runs[0].update(id=36108497705, head_sha=historical)
+    main_ref["object"]["sha"] = current_main
+    task_bytes = store.read("historical-task").content
+    result_bytes = canonical_json_bytes(result)
+    store.records["historical-result"].content = result_bytes
+    package = build_review_package(task, result, task_bytes=task_bytes, result_bytes=result_bytes)
+    package_bytes = canonical_json_bytes(package)
+    store.records["historical-package"].content = package_bytes
+    kwargs["expected_result_sha256"] = sha256_bytes(result_bytes)
+    kwargs["expected_review_package_sha256"] = sha256_bytes(package_bytes)
+
+    class DescendantChainGit(git_type):
+        def head_sha(self):
+            return current_main
+
+        def is_ancestor(self, ancestor, descendant):
+            chain = (historical, first_descendant, current_main)
+            return ancestor in chain and descendant in chain and chain.index(ancestor) <= chain.index(descendant)
+
+        def _run(self, *args):
+            if args[:2] == ("diff", "--name-only"):
+                return "automation/verify.py"
+            return f"{historical} {task['expected_base_sha']} {result['pr']['head_sha']}"
+
+    monkeypatch.setattr("automation.verify.GitInspector", DescendantChainGit)
+    verified = verify_historical_source_result(store, **kwargs)
+    assert verified.classification == "HISTORICAL_SOURCE_RESULT_VERIFIED"
+    assert verified.facts["historical_head_sha"] == historical
+    assert verified.facts["current_main_sha"] == current_main
+    assert verified.facts["historical_exact_main_ci_run_ids"] == [36108497705]
