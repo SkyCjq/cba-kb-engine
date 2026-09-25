@@ -227,3 +227,149 @@ def test_human_merge_accepts_truthful_verified_predecessor_reuse(monkeypatch, ta
     verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="final-main",
                                    github_inspector=github, predecessor_store=store)
     assert verified.classification == "EXECUTION_RESULT_VERIFIED"
+
+
+def descendant_case(monkeypatch, task_dict, result_dict):
+    base, reviewed, actual, historical, merge_one, final = (letter * 40 for letter in "abcdef")
+    heads = ("1" * 40, "2" * 40)
+    paths = ("automation/verify.py", "tests/automation/test_verify.py")
+    store = MemoryDriveStore()
+    task = copy.deepcopy(task_dict)
+    task.update(task_type="CODEX_READ_ONLY_POST_MERGE_RECONCILIATION", expected_base_sha=final,
+                feature_branch="main", allowed_paths=["NO_REPOSITORY_FILE_CHANGES_RECONCILIATION_ONLY"],
+                allowed_actions=["verify descendant-aware post-merge reconciliation",
+                                 f"require historical product PR 35 base {base} reviewed head {reviewed} merge commit {historical}",
+                                 "require historical reviewed CI run 80"])
+    entries = []
+    for index, (previous, merge, head, path) in enumerate(zip((historical, merge_one), (merge_one, final), heads, paths)):
+        number = 37 + index
+        process_task = copy.deepcopy(task_dict)
+        process_task.update(task_type="CODEX_PROCESS_REPAIR", canonical_generation=12 + index * 2,
+                            task_id=f"00000000-0000-4000-8000-{number:012d}", expected_base_sha=previous,
+                            feature_branch=f"codex/process-{number}", allowed_paths=[path])
+        process_bytes = yaml.safe_dump(process_task, sort_keys=False).encode()
+        process_result = copy.deepcopy(result_dict)
+        process_result.update(canonical_generation=process_task["canonical_generation"], task_id=process_task["task_id"],
+                              base_sha=previous, head_sha=head, feature_branch=process_task["feature_branch"],
+                              changed_files=[path], source_task_sha256=sha256_bytes(process_bytes),
+                              pr={"number": number, "url": f"https://example.test/pr/{number}", "head_sha": head, "base_sha": previous},
+                              ci={"workflow_name": "Offline tests", "head_sha": head, "conclusion": "success", "runs": [{"id": 100 + index}]})
+        human_task = copy.deepcopy(task_dict)
+        human_task.update(task_type="HUMAN_MERGE_EXECUTION", canonical_generation=process_task["canonical_generation"] + 1,
+                          task_id=f"00000000-0000-4000-9000-{number:012d}", expected_base_sha=previous,
+                          feature_branch=process_task["feature_branch"], allowed_paths=["NO_REPOSITORY_FILE_CHANGES_MERGE_ONLY"],
+                          allowed_actions=[f"require PR {number} head SHA exactly {head}",
+                                           f"require PR {number} base SHA {previous}",
+                                           f"require Offline tests run {100 + index} event pull_request status completed conclusion success and head SHA {head}"])
+        human_task["authority_binding"]["predecessor_terminal_task_id"] = process_task["task_id"]
+        human_task["authority_binding"]["predecessor_terminal_task_sha256"] = sha256_bytes(process_bytes)
+        human_bytes = yaml.safe_dump(human_task, sort_keys=False).encode()
+        human_result = copy.deepcopy(result_dict)
+        human_result.update(canonical_generation=human_task["canonical_generation"], task_id=human_task["task_id"],
+                            base_sha=previous, head_sha=merge, feature_branch=human_task["feature_branch"],
+                            changed_files=[], source_task_sha256=sha256_bytes(human_bytes),
+                            focused_tests={"status": "NOT_RERUN_DURING_HUMAN_MERGE"},
+                            full_regression={"status": "NOT_RERUN_DURING_HUMAN_MERGE"},
+                            pr={"number": number, "url": f"https://example.test/pr/{number}", "head_sha": head,
+                                "base_sha": previous, "merge_commit_sha": merge},
+                            ci={"workflow_name": "Offline tests", "head_sha": merge,
+                                "conclusion": "success", "runs": [{"id": 91 + index}]},
+                            machine_facts={"evidence_mode": "VERIFIED_PREDECESSOR_REUSE",
+                                           "predecessor_task_file_id": f"process-task-{number}",
+                                           "predecessor_result_file_id": f"process-result-{number}",
+                                           "predecessor_review_package_file_id": f"process-review_package-{number}",
+                                           "predecessor_result_sha256": sha256_bytes(canonical_json_bytes(process_result))})
+        entry = {"merge_commit_sha": merge, "reviewed_head_sha": head, "pr_number": number}
+        for prefix, source_task, source_bytes, source_result in (
+            ("process", process_task, process_bytes, process_result),
+            ("human", human_task, human_bytes, human_result),
+        ):
+            result_bytes = canonical_json_bytes(source_result)
+            package = build_review_package(source_task, source_result, task_bytes=source_bytes, result_bytes=result_bytes)
+            for kind, data in (("task", source_bytes), ("result", result_bytes), ("review_package", canonical_json_bytes(package))):
+                file_id = f"{prefix}-{kind}-{number}"
+                store.seed(file_id, "history", file_id, data)
+                entry[f"{prefix}_{kind}_file_id"] = file_id
+            entry[f"{prefix}_task_sha256"] = sha256_bytes(source_bytes)
+            entry[f"{prefix}_result_sha256"] = sha256_bytes(result_bytes)
+        entries.append(entry)
+    task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+    result = copy.deepcopy(result_dict)
+    result.update(canonical_generation=task["canonical_generation"], task_id=task["task_id"],
+                  base_sha=final, head_sha=final, feature_branch="main", changed_files=[],
+                  source_task_sha256=sha256_bytes(task_bytes),
+                  pr={"number": 35, "url": "https://example.test/pr/35", "state": "MERGED",
+                      "base_sha": base, "head_sha": reviewed, "actual_head_sha": actual,
+                      "reviewed_head_sha": reviewed, "reviewed_ci_run_id": 80, "merge_commit_sha": historical},
+                  ci={"workflow_name": "Offline tests", "head_sha": final, "conclusion": "success", "runs": [{"id": 92}]},
+                  machine_facts={"descendant_mode": "EXACT_P2A_PROCESS_CHAIN",
+                                 "requirement_sha256": task["authority_binding"]["requirement_sha256"],
+                                 "descendants": entries})
+    observed = {"number": 35, "url": result["pr"]["url"], "state": "MERGED",
+                "baseRefOid": base, "headRefOid": actual}
+    historical_pr = {"mergedAt": "2026-09-25T00:00:00Z", "mergeCommit": {"oid": historical}}
+    descendant_prs = {37: {"number": 37, "state": "MERGED", "baseRefOid": historical,
+                           "headRefOid": heads[0], "mergedAt": "2026-09-25T01:00:00Z", "mergeCommit": {"oid": merge_one}},
+                      38: {"number": 38, "state": "MERGED", "baseRefOid": merge_one,
+                           "headRefOid": heads[1], "mergedAt": "2026-09-25T02:00:00Z", "mergeCommit": {"oid": final}}}
+    main_ref = {"object": {"sha": final}}
+    runs = {reviewed: [{"id": 80, "name": "Offline tests", "event": "pull_request", "head_sha": reviewed,
+                        "status": "completed", "conclusion": "success"}],
+            heads[0]: [{"id": 100, "name": "Offline tests", "event": "pull_request", "head_sha": heads[0],
+                        "status": "completed", "conclusion": "success"}],
+            heads[1]: [{"id": 101, "name": "Offline tests", "event": "pull_request", "head_sha": heads[1],
+                        "status": "completed", "conclusion": "success"}],
+            merge_one: [{"id": 91, "name": "Offline tests", "event": "push", "head_sha": merge_one,
+                         "status": "completed", "conclusion": "success"}],
+            final: [{"id": 92, "name": "Offline tests", "event": "push", "head_sha": final,
+                     "status": "completed", "conclusion": "success"}]}
+
+    class GitHub:
+        def collect(self, number, workflow, head):
+            return {"pr": observed, "runs": runs[final]}
+
+        def _json(self, *args):
+            if args[:2] == ("pr", "view"):
+                number = int(args[2])
+                return historical_pr if number == 35 else descendant_prs[number]
+            if "git/ref/heads/main" in args[1]:
+                return main_ref
+            return {"workflow_runs": runs[args[1].split("head_sha=")[1].split("&")[0]]}
+
+    class Git:
+        def __init__(self, root):
+            pass
+
+        def head_sha(self):
+            return final
+
+        def is_ancestor(self, ancestor, descendant):
+            return True
+
+        def changed_files(self, base_sha):
+            return ()
+
+        def _run(self, *args):
+            if args[:3] == ("rev-list", "--parents", "-n"):
+                return {historical: f"{historical} {base} {actual}",
+                        merge_one: f"{merge_one} {historical} {heads[0]}",
+                        final: f"{final} {merge_one} {heads[1]}"}[args[-1]]
+            if args[:3] == ("rev-list", "--first-parent", "--reverse"):
+                return f"{merge_one}\n{final}"
+            if args[:2] == ("rev-list", "--reverse"):
+                return args[-1].split("..")[-1]
+            if args[0] == "diff-tree":
+                return paths[heads.index(args[-1])]
+            if args[:2] == ("diff", "--name-only"):
+                return {historical: paths[0], merge_one: paths[1]}[args[2]]
+            raise AssertionError(args)
+
+    monkeypatch.setattr("automation.verify.GitInspector", Git)
+    return task, task_bytes, result, store, GitHub(), observed, historical_pr, descendant_prs, main_ref, runs, Git
+
+
+def test_descendant_mode_accepts_exact_p2a_process_chain(monkeypatch, task_dict, result_dict):
+    _, task_bytes, result, store, github, *_ = descendant_case(monkeypatch, task_dict, result_dict)
+    verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
+                                   github_inspector=github, predecessor_store=store)
+    assert verified.classification == "EXECUTION_RESULT_VERIFIED"
