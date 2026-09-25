@@ -8,7 +8,7 @@ from automation.handoff import TransitionIntent, dispatch_allowed, transition_co
 from automation.ledger import AppendOnlyLedger
 from automation.models import P2AError, canonical_json_bytes, sha256_bytes
 from automation.verify import guarded_verify, verify_result_bytes, verify_task_bytes
-from test_verify import human_merge_case, post_merge_case
+from test_verify import descendant_case, human_merge_case, post_merge_case
 
 
 def _strict_case(tmp_path, task_dict, store=None):
@@ -175,6 +175,106 @@ def test_stable_revision_not_advanced_fails_closed(tmp_path, task_dict):
     with pytest.raises(P2AError) as caught:
         transition_commit(store, AppendOnlyLedger(tmp_path / "ledger"), intent)
     assert caught.value.code == "STABLE_REVISION_NOT_ADVANCED"
+
+
+@pytest.mark.parametrize(("mutation", "classification"), [
+    ("unbound_commit", "UNBOUND_DESCENDANT_COMMIT"),
+    ("unverified_result", "DESCENDANT_EVIDENCE_MISMATCH"),
+    ("missing_package", "DRIVE_FILE_NOT_FOUND"),
+    ("product_file", "DESCENDANT_SCOPE_VIOLATION"),
+    ("reverted_branch_product", "DESCENDANT_SCOPE_VIOLATION"),
+    ("historical_merge", "HISTORICAL_PR_MISMATCH"),
+    ("reviewed_head", "HISTORICAL_PR_MISMATCH"),
+    ("reviewed_ci", "HISTORICAL_CI_MISMATCH"),
+    ("final_main", "FINAL_MAIN_MISMATCH"),
+    ("missing_main_ci", "CI_FACTS_MISMATCH"),
+    ("stale_main_ci", "CI_FACTS_MISMATCH"),
+    ("wrong_main_event", "CI_FACTS_MISMATCH"),
+    ("policy", "DESCENDANT_EVIDENCE_MISMATCH"),
+    ("requirement", "DESCENDANT_EVIDENCE_MISMATCH"),
+    ("task_binding", "DESCENDANT_EVIDENCE_MISMATCH"),
+    ("ancestry", "GIT_ANCESTRY_MISMATCH"),
+    ("descendant_pr", "DESCENDANT_PR_MISMATCH"),
+    ("descendant_pr_ci", "DESCENDANT_CI_MISMATCH"),
+    ("descendant_push_ci", "DESCENDANT_CI_MISMATCH"),
+])
+def test_descendant_mode_rejects_unbound_or_drifted_evidence(
+    monkeypatch, task_dict, result_dict, mutation, classification,
+):
+    _, task_bytes, result, store, github, _, historical_pr, descendants, main_ref, runs, git_type = descendant_case(
+        monkeypatch, task_dict, result_dict,
+    )
+    entry = result["machine_facts"]["descendants"][0]
+    if mutation == "unbound_commit":
+        result["machine_facts"]["descendants"].pop()
+    elif mutation == "unverified_result":
+        import json
+        file = store.records[entry["process_result_file_id"]]
+        doc = json.loads(file.content)
+        doc["status"] = "FAIL"
+        file.content = canonical_json_bytes(doc)
+        entry["process_result_sha256"] = sha256_bytes(file.content)
+    elif mutation == "missing_package":
+        del store.records[entry["process_review_package_file_id"]]
+    elif mutation == "product_file":
+        class ProductGit(git_type):
+            def _run(self, *args):
+                if args[:2] == ("diff", "--name-only") and args[2] == "d" * 40:
+                    return "src/cba_kb/cli.py"
+                return super()._run(*args)
+        monkeypatch.setattr("automation.verify.GitInspector", ProductGit)
+    elif mutation == "reverted_branch_product":
+        class RevertedProductGit(git_type):
+            def _run(self, *args):
+                if args[0] == "diff-tree" and args[-1] == "1" * 40:
+                    return "src/cba_kb/cli.py"
+                return super()._run(*args)
+        monkeypatch.setattr("automation.verify.GitInspector", RevertedProductGit)
+    elif mutation == "historical_merge":
+        historical_pr["mergeCommit"]["oid"] = "0" * 40
+    elif mutation == "reviewed_head":
+        result["pr"]["reviewed_head_sha"] = "0" * 40
+    elif mutation == "reviewed_ci":
+        runs["b" * 40][0]["conclusion"] = "failure"
+    elif mutation == "final_main":
+        main_ref["object"]["sha"] = "0" * 40
+    elif mutation == "missing_main_ci":
+        runs["f" * 40].clear()
+    elif mutation == "stale_main_ci":
+        result["ci"]["runs"] = [{"id": 1}]
+    elif mutation == "wrong_main_event":
+        runs["f" * 40][0]["event"] = "pull_request"
+    elif mutation in {"policy", "requirement", "task_binding"}:
+        import json
+        file_id = entry["process_task_file_id"] if mutation != "task_binding" else entry["process_result_file_id"]
+        file = store.records[file_id]
+        if mutation == "task_binding":
+            doc = json.loads(file.content)
+            doc["task_id"] = "00000000-0000-4000-8000-000000000000"
+            file.content = canonical_json_bytes(doc)
+            entry["process_result_sha256"] = sha256_bytes(file.content)
+        else:
+            doc = yaml.safe_load(file.content)
+            if mutation == "policy":
+                doc["policy_bundle_sha256"] = "0" * 64
+            else:
+                doc["authority_binding"]["requirement_sha256"] = "0" * 64
+            file.content = yaml.safe_dump(doc, sort_keys=False).encode()
+            entry["process_task_sha256"] = sha256_bytes(file.content)
+    elif mutation == "ancestry":
+        class NonAncestorGit(git_type):
+            def is_ancestor(self, ancestor, descendant):
+                return False
+        monkeypatch.setattr("automation.verify.GitInspector", NonAncestorGit)
+    elif mutation == "descendant_pr":
+        descendants[37]["mergeCommit"]["oid"] = "0" * 40
+    elif mutation == "descendant_pr_ci":
+        runs["1" * 40][0]["event"] = "push"
+    elif mutation == "descendant_push_ci":
+        runs["e" * 40][0]["conclusion"] = "failure"
+    verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
+                                   github_inspector=github, predecessor_store=store)
+    assert verified.classification == classification
 
 
 def test_source_result_hash_mismatch_fails_closed(tmp_path, task_dict):

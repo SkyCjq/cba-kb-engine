@@ -146,6 +146,11 @@ def validate_result_document(result: Mapping[str, Any]) -> None:
 
 POST_MERGE_TASK_TYPE = "CODEX_READ_ONLY_POST_MERGE_RECONCILIATION"
 HUMAN_MERGE_TASK_TYPE = "HUMAN_MERGE_EXECUTION"
+DESCENDANT_MODE = "EXACT_P2A_PROCESS_CHAIN"
+PROCESS_DESCENDANT_PATHS = {
+    ".github/workflows/offline-tests.yml", "automation/verify.py",
+    "tests/automation/test_negative_cases.py", "tests/automation/test_verify.py",
+}
 
 
 def _human_frozen_review(task: Mapping[str, Any]) -> tuple[int, str, int]:
@@ -361,6 +366,215 @@ def _verify_post_merge_result(
         raise P2AError("GIT_ANCESTRY_MISMATCH", "Merge parents do not bind the reviewed PR provenance")
 
 
+def _descendant_frozen_product(task: Mapping[str, Any]) -> tuple[int, str, str, str, int]:
+    matches = [m.groups() for action in task["allowed_actions"] if (m := re.search(
+        r"\bhistorical product PR (\d+) base ([0-9a-f]{40}) reviewed head ([0-9a-f]{40}) merge commit ([0-9a-f]{40})\b",
+        action,
+    ))]
+    runs = [m.group(1) for action in task["allowed_actions"] if (m := re.search(
+        r"\bhistorical reviewed CI run (\d+)\b", action,
+    ))]
+    if len(matches) != 1 or len(runs) != 1 or not any("descendant-aware" in action for action in task["allowed_actions"]):
+        raise P2AError("DESCENDANT_AUTHORITY_MISSING", "Frozen task lacks exact historical PR, CI, or descendant mode authority")
+    number, base, reviewed, merge = matches[0]
+    return int(number), base, reviewed, merge, int(runs[0])
+
+
+def _read_descendant_package(store: Any, task: Mapping[str, Any], entry: Mapping[str, Any], prefix: str) -> tuple[dict, dict]:
+    folder = task["canonical_binding"]["canonical_history_folder_id"]
+    keys = (f"{prefix}_task_file_id", f"{prefix}_result_file_id", f"{prefix}_review_package_file_id")
+    if any(not isinstance(entry.get(key), str) or not entry[key] for key in keys):
+        raise P2AError("DESCENDANT_EVIDENCE_MISSING", "Descendant task/result/review package ID is required", prefix=prefix)
+    for key in (f"{prefix}_task_sha256", f"{prefix}_result_sha256"):
+        require_sha256(entry.get(key), field_name=key, code="DESCENDANT_EVIDENCE_MISMATCH")
+    task_file, result_file, package_file = (store.read(entry[key]) for key in keys)
+    if any(item.folder_id != folder for item in (task_file, result_file, package_file)):
+        raise P2AError("DESCENDANT_EVIDENCE_MISMATCH", "Descendant evidence is outside frozen history folder")
+    if (sha256_bytes(task_file.content) != entry[f"{prefix}_task_sha256"]
+            or sha256_bytes(result_file.content) != entry[f"{prefix}_result_sha256"]):
+        raise P2AError("DESCENDANT_EVIDENCE_MISMATCH", "Descendant task/result bytes differ from claimed SHA")
+    descendant_task = load_yaml_bytes(task_file.content)
+    descendant_result = load_json_bytes(result_file.content)
+    package = load_json_bytes(package_file.content)
+    validate_task_document(descendant_task)
+    validate_result_document(descendant_result)
+    control, verified = package.get("CONTROL") or {}, package.get("VERIFIED_MACHINE_FACTS") or {}
+    if (package.get("review_package_version") != "cba-kb.p2a-review-package.v1"
+            or descendant_task["req_id"] != task["req_id"]
+            or descendant_result["req_id"] != task["req_id"]
+            or descendant_result["canonical_generation"] != descendant_task["canonical_generation"]
+            or descendant_result["repository"] != task["repository"]
+            or descendant_task["policy_bundle_sha256"] != task["policy_bundle_sha256"]
+            or descendant_task["authority_binding"]["requirement_sha256"] != task["authority_binding"]["requirement_sha256"]
+            or descendant_result["status"] != "PASS"
+            or descendant_result["task_id"] != descendant_task["task_id"]
+            or descendant_result["source_task_sha256"] != entry[f"{prefix}_task_sha256"]
+            or descendant_result["policy_bundle_sha256"] != task["policy_bundle_sha256"]
+            or control.get("task_id") != descendant_task["task_id"]
+            or control.get("req_id") != task["req_id"]
+            or control.get("canonical_generation") != descendant_task["canonical_generation"]
+            or control.get("gate") != descendant_task["return_gate"]
+            or control.get("requirement_sha256") != task["authority_binding"]["requirement_sha256"]
+            or control.get("policy_bundle_sha256") != task["policy_bundle_sha256"]
+            or verified.get("task_sha256") != entry[f"{prefix}_task_sha256"]
+            or verified.get("result_sha256") != entry[f"{prefix}_result_sha256"]
+            or verified.get("base_sha") != descendant_result["base_sha"]
+            or verified.get("head_sha") != descendant_result["head_sha"]
+            or verified.get("changed_files") != descendant_result["changed_files"]
+            or verified.get("focused_tests") != descendant_result["focused_tests"]
+            or verified.get("full_regression") != descendant_result["full_regression"]
+            or verified.get("pr") != descendant_result["pr"]
+            or verified.get("ci") != descendant_result["ci"]):
+        raise P2AError("DESCENDANT_EVIDENCE_MISMATCH", "Descendant P2A PASS and review package bindings disagree")
+    return descendant_task, descendant_result
+
+
+def _verify_post_merge_descendants(
+    result: Mapping[str, Any], task: Mapping[str, Any], github_inspector: Any,
+    git_root: str | Path | None, github: Mapping[str, Any], store: Any,
+) -> None:
+    pr, ci, facts = result["pr"], result["ci"], result["machine_facts"]
+    number, historical_base, reviewed_head, historical_merge, reviewed_run = _descendant_frozen_product(task)
+    if (task["expected_base_branch"] != "main" or task["feature_branch"] != "main"
+            or result["head_sha"] != task["expected_base_sha"] or result["base_sha"] != result["head_sha"]):
+        raise P2AError("FINAL_MAIN_MISMATCH", "Descendant reconciliation must bind frozen final main")
+    if not isinstance(facts, dict) or facts.get("descendant_mode") != DESCENDANT_MODE:
+        raise P2AError("DESCENDANT_AUTHORITY_MISSING", "Explicit bounded descendant mode is required")
+    if facts.get("requirement_sha256") != task["authority_binding"]["requirement_sha256"]:
+        raise P2AError("REQUIREMENT_BINDING_MISMATCH", "Descendant result does not bind frozen Requirement")
+    if (pr.get("number") != number or pr.get("state") != "MERGED"
+            or pr.get("base_sha") != historical_base or pr.get("head_sha") != reviewed_head
+            or pr.get("merge_commit_sha") != historical_merge
+            or pr.get("reviewed_head_sha") != reviewed_head
+            or pr.get("reviewed_ci_run_id") != reviewed_run):
+        raise P2AError("HISTORICAL_PR_MISMATCH", "Historical PR differs from frozen product review")
+    require_git_sha(pr.get("actual_head_sha"), field_name="pr.actual_head_sha", code="HISTORICAL_PR_MISMATCH")
+    if ci.get("head_sha") != result["head_sha"] or ci.get("conclusion") != "success":
+        raise P2AError("CI_FACTS_MISMATCH", "Final-main CI must bind the frozen main SHA")
+    observed = github["pr"]
+    expected = {"number": number, "url": pr["url"], "state": "MERGED",
+                "baseRefOid": historical_base, "headRefOid": pr["actual_head_sha"]}
+    if any(observed.get(key) != value for key, value in expected.items()):
+        raise P2AError("PR_FACTS_MISMATCH", "Historical PR differs from GitHub Code Truth")
+    historical = github_inspector._json("pr", "view", str(number), "--repo", task["repository"], "--json", "mergedAt,mergeCommit")
+    if not historical.get("mergedAt") or (historical.get("mergeCommit") or {}).get("oid") != historical_merge:
+        raise P2AError("HISTORICAL_PR_MISMATCH", "Historical merge commit differs from GitHub")
+    reviewed_runs = github_inspector._json("api", f"repos/{task['repository']}/actions/runs?head_sha={reviewed_head}&per_page=100").get("workflow_runs", [])
+    if not any(run.get("id") == reviewed_run and run.get("name") == "Offline tests"
+               and run.get("event") == "pull_request" and run.get("head_sha") == reviewed_head
+               and run.get("status") == "completed" and run.get("conclusion") == "success" for run in reviewed_runs):
+        raise P2AError("HISTORICAL_CI_MISMATCH", "Frozen reviewed product CI is not independently green")
+    main_ref = github_inspector._json("api", f"repos/{task['repository']}/git/ref/heads/main")
+    if (main_ref.get("object") or {}).get("sha") != result["head_sha"]:
+        raise P2AError("FINAL_MAIN_MISMATCH", "Live main advanced beyond frozen final main")
+    main_runs = {run["id"] for run in github["runs"]
+                 if run["head_sha"] == result["head_sha"] and run["event"] == "push"
+                 and run["status"] == "completed" and run["conclusion"] == "success"}
+    claimed_main = {run["id"] for run in ci.get("runs", [])}
+    if not claimed_main or not claimed_main.issubset(main_runs):
+        raise P2AError("CI_FACTS_MISMATCH", "Final main requires successful hosted Offline tests push CI")
+    if git_root is None:
+        raise P2AError("GIT_FACTS_UNAVAILABLE", "Descendant reconciliation requires exact-main Git history")
+    git = GitInspector(git_root)
+    if not git.is_ancestor(reviewed_head, pr["actual_head_sha"]):
+        raise P2AError("GIT_ANCESTRY_MISMATCH", "Reviewed product head is not an ancestor of actual PR head")
+    if git._run("rev-list", "--parents", "-n", "1", historical_merge).split() != [historical_merge, historical_base, pr["actual_head_sha"]]:
+        raise P2AError("GIT_ANCESTRY_MISMATCH", "Historical product merge parents differ")
+    if not git.is_ancestor(historical_merge, result["head_sha"]):
+        raise P2AError("GIT_ANCESTRY_MISMATCH", "Historical product merge is not an ancestor of final main")
+    commits = git._run("rev-list", "--first-parent", "--reverse", f"{historical_merge}..{result['head_sha']}").splitlines()
+    descendants = facts.get("descendants")
+    if (not isinstance(descendants, list) or not descendants
+            or not all(isinstance(item, dict) for item in descendants)
+            or [item.get("merge_commit_sha") for item in descendants] != commits):
+        raise P2AError("UNBOUND_DESCENDANT_COMMIT", "Every first-parent descendant commit needs exact ordered P2A evidence")
+    previous = historical_merge
+    for entry in descendants:
+        merge_sha, pr_head = entry["merge_commit_sha"], entry["reviewed_head_sha"]
+        require_git_sha(merge_sha, field_name="descendant.merge_commit_sha", code="DESCENDANT_EVIDENCE_MISMATCH")
+        require_git_sha(pr_head, field_name="descendant.reviewed_head_sha", code="DESCENDANT_EVIDENCE_MISMATCH")
+        if git._run("rev-list", "--parents", "-n", "1", merge_sha).split() != [merge_sha, previous, pr_head]:
+            raise P2AError("GIT_ANCESTRY_MISMATCH", "Descendant merge parents do not form exact main chain")
+        if not git.is_ancestor(previous, pr_head):
+            raise P2AError("GIT_ANCESTRY_MISMATCH", "Descendant reviewed head does not descend from its frozen base")
+        process_task, process_result = _read_descendant_package(store, task, entry, "process")
+        human_task, human_result = _read_descendant_package(store, task, entry, "human")
+        if (process_task["task_type"] != "CODEX_PROCESS_REPAIR"
+                or human_task["task_type"] != HUMAN_MERGE_TASK_TYPE
+                or process_task["expected_base_sha"] != previous
+                or human_task["expected_base_sha"] != previous
+                or process_task["feature_branch"] != human_task["feature_branch"]
+                or human_task["canonical_generation"] != process_task["canonical_generation"] + 1
+                or human_task["authority_binding"]["predecessor_terminal_task_id"] != process_task["task_id"]
+                or human_task["authority_binding"]["predecessor_terminal_task_sha256"] != entry["process_task_sha256"]
+                or process_result["base_sha"] != previous
+                or process_result["pr"].get("number") != entry.get("pr_number")
+                or process_result["pr"].get("base_sha") != previous
+                or process_result["pr"].get("head_sha") != pr_head
+                or process_result["head_sha"] != pr_head
+                or human_result["pr"].get("number") != entry.get("pr_number")
+                or human_result["pr"].get("head_sha") != pr_head
+                or human_result["pr"].get("base_sha") != previous
+                or human_result["pr"].get("merge_commit_sha") != merge_sha
+                or human_result["head_sha"] != merge_sha):
+            raise P2AError("DESCENDANT_EVIDENCE_MISMATCH", "Descendant process/Human PASS evidence does not bind actual merge")
+        frozen_number, frozen_head, frozen_run = _human_frozen_review(human_task)
+        if frozen_number != entry["pr_number"] or frozen_head != pr_head:
+            raise P2AError("DESCENDANT_EVIDENCE_MISMATCH", "Human task frozen review differs from descendant PR")
+        human_facts = human_result["machine_facts"]
+        if (not isinstance(human_facts, dict)
+                or human_facts.get("evidence_mode") != "VERIFIED_PREDECESSOR_REUSE"
+                or human_facts.get("predecessor_task_file_id") != entry["process_task_file_id"]
+                or human_facts.get("predecessor_result_file_id") != entry["process_result_file_id"]
+                or human_facts.get("predecessor_review_package_file_id") != entry["process_review_package_file_id"]
+                or human_facts.get("predecessor_result_sha256") != entry["process_result_sha256"]):
+            raise P2AError("DESCENDANT_EVIDENCE_MISMATCH", "Human PASS does not bind verified process predecessor")
+        if (process_result["ci"].get("head_sha") != pr_head
+                or process_result["ci"].get("conclusion") != "success"
+                or human_result["ci"].get("head_sha") != merge_sha
+                or human_result["ci"].get("conclusion") != "success"):
+            raise P2AError("DESCENDANT_CI_MISMATCH", "Descendant PR or exact-main CI is not green")
+        observed_descendant = github_inspector._json("pr", "view", str(entry["pr_number"]), "--repo", task["repository"],
+                                                     "--json", "number,state,baseRefOid,headRefOid,mergedAt,mergeCommit")
+        if (observed_descendant.get("number") != entry["pr_number"]
+                or observed_descendant.get("state") != "MERGED"
+                or observed_descendant.get("baseRefOid") != previous
+                or observed_descendant.get("headRefOid") != pr_head
+                or (observed_descendant.get("mergeCommit") or {}).get("oid") != merge_sha
+                or not observed_descendant.get("mergedAt")):
+            raise P2AError("DESCENDANT_PR_MISMATCH", "Descendant PR is not the exact merged Code Truth")
+        pr_runs = github_inspector._json("api", f"repos/{task['repository']}/actions/runs?head_sha={pr_head}&per_page=100").get("workflow_runs", [])
+        process_run_ids = {run.get("id") for run in process_result["ci"].get("runs", [])}
+        if (frozen_run not in process_run_ids or not process_run_ids
+                or not process_run_ids.issubset({run.get("id") for run in pr_runs
+                    if run.get("name") == "Offline tests" and run.get("event") == "pull_request"
+                    and run.get("head_sha") == pr_head and run.get("status") == "completed"
+                    and run.get("conclusion") == "success"})):
+            raise P2AError("DESCENDANT_CI_MISMATCH", "Descendant reviewed head lacks exact successful PR CI")
+        runs = github_inspector._json("api", f"repos/{task['repository']}/actions/runs?head_sha={merge_sha}&per_page=100").get("workflow_runs", [])
+        claimed = {run.get("id") for run in human_result["ci"].get("runs", [])}
+        successful = {run.get("id") for run in runs if run.get("name") == "Offline tests"
+                      and run.get("event") == "push" and run.get("head_sha") == merge_sha
+                      and run.get("status") == "completed" and run.get("conclusion") == "success"}
+        if not claimed or not claimed.issubset(successful):
+            raise P2AError("DESCENDANT_CI_MISMATCH", "Descendant merge lacks exact-main hosted push CI")
+        actual_files = set(git._run("diff", "--name-only", previous, merge_sha).splitlines())
+        process_files = set(process_result["changed_files"])
+        if actual_files != process_files or not actual_files.issubset(PROCESS_DESCENDANT_PATHS):
+            raise P2AError("DESCENDANT_SCOPE_VIOLATION", "Descendant delta is not exact authorized process-only scope")
+        branch_commits = git._run("rev-list", "--reverse", f"{previous}..{pr_head}").splitlines()
+        if not branch_commits or branch_commits[-1] != pr_head:
+            raise P2AError("GIT_ANCESTRY_MISMATCH", "Descendant reviewed branch history is incomplete")
+        for commit in branch_commits:
+            commit_files = set(git._run("diff-tree", "--no-commit-id", "--name-only", "-r", commit).splitlines())
+            if (not commit_files.issubset(PROCESS_DESCENDANT_PATHS)
+                    or not all(path_allowed(path, process_task["allowed_paths"]) for path in commit_files)):
+                raise P2AError("DESCENDANT_SCOPE_VIOLATION", "Descendant branch contains a forbidden file delta")
+        if not all(path_allowed(path, process_task["allowed_paths"]) for path in actual_files):
+            raise P2AError("DESCENDANT_SCOPE_VIOLATION", "Descendant files exceed frozen process task allowlist")
+        previous = merge_sha
+
+
 def verify_result_bytes(
     result_data: bytes,
     task_data: bytes,
@@ -407,7 +621,11 @@ def verify_result_bytes(
                 raise P2AError("GITHUB_FACTS_UNAVAILABLE", "PASS result requires independent GitHub Code Truth")
             github = github_inspector.collect(result["pr"]["number"], result["ci"]["workflow_name"], result["head_sha"])
             if post_merge:
-                _verify_post_merge_result(result, task, github_inspector, git_root, github)
+                if isinstance(result["machine_facts"], dict) and result["machine_facts"].get("descendant_mode") == DESCENDANT_MODE:
+                    store = predecessor_store if predecessor_store is not None else _human_evidence_store(git_root)
+                    _verify_post_merge_descendants(result, task, github_inspector, git_root, github, store)
+                else:
+                    _verify_post_merge_result(result, task, github_inspector, git_root, github)
             elif human_merge:
                 store = predecessor_store if predecessor_store is not None else _human_evidence_store(git_root)
                 _verify_human_merge_result(result, task, github_inspector, git_root, github, store)
