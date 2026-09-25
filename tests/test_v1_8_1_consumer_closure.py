@@ -329,9 +329,10 @@ def test_identity_decision_registry_master_zero_diff():
 # 8. no Production mutation path is exercised
 def test_no_production_mutation_path_exercised():
     from scripts.prepare_production import _release_spec, ProjectionError
-    # Gen1 has false production_mutation_authority; production release path is blocked
-    with pytest.raises(ProjectionError, match="RELEASE_ID_FORBIDDEN:v1.8.1-1"):
-        _release_spec("v1.8.1-1")
+    # Looking up the release floor is read-only; publish still requires its own authority.
+    assert _release_spec("v1.8.1-1")["product_baseline_sha"] == (
+        "9cd5dab298012eadaf8345f3f9d2709a2b5c2288"
+    )
 
     with pytest.raises(ProjectionError, match="RELEASE_ID_FORBIDDEN"):
         _release_spec("v9.9.9")

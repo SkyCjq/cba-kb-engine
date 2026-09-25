@@ -1,9 +1,14 @@
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from cba_kb.common import digest
+from cba_kb.current_state import (
+    read_current_block, render_current_state, target_metadata,
+    validate_current_state,
+)
 from cba_kb.release import ReleaseContractError, publish
 from scripts import prepare_production as orchestration
 from test_canonical_registry import manifest as canonical_manifest, registry as canonical_registry
@@ -188,6 +193,52 @@ def test_v180_release_spec_uses_v161_production_baseline():
     assert spec["product_baseline_sha"] == (
         "81bd581fafbccb602f9ecaf9aaefca4533be69a4"
     )
+
+
+def test_v181_release_spec_uses_product_merge_floor():
+    baseline = "9cd5dab298012eadaf8345f3f9d2709a2b5c2288"
+    assert orchestration._release_spec("v1.8.1-1") == {
+        "product_baseline_sha": baseline,
+    }
+    with pytest.raises(orchestration.ProjectionError, match="RELEASE_ID_FORBIDDEN"):
+        orchestration._release_spec("v1.8.2-1")
+    inputs = projection_inputs()
+    inputs["release_id"] = "v1.8.1-1"
+    assert orchestration.project_targets(**inputs)["release_id"] == "v1.8.1-1"
+    repo = Path(__file__).resolve().parents[1]
+    assert subprocess.run(
+        ["git", "merge-base", "--is-ancestor", baseline,
+         "b30c66288fc1d44fd4dafc0a8ebcc286bcf41a9d"],
+        cwd=repo, check=False,
+    ).returncode == 0
+
+
+def test_v181_execution_sha_requires_clean_product_descendant(tmp_path):
+    repo = Path(__file__).resolve().parents[1]
+    checkout = tmp_path / "checkout"
+    subprocess.run(
+        ["git", "clone", "--quiet", "--no-hardlinks", str(repo), str(checkout)],
+        check=True,
+    )
+    head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=checkout, text=True,
+    ).strip()
+    baseline = orchestration._release_spec("v1.8.1-1")["product_baseline_sha"]
+    assert orchestration.verify_execution_sha(
+        checkout, head, baseline,
+    )["baseline_is_ancestor"]
+    with pytest.raises(orchestration.ProjectionError, match="CODE_PROVENANCE"):
+        orchestration.verify_execution_sha(checkout, "a" * 40, baseline)
+    (checkout / "README.md").write_text("dirty worktree\n")
+    with pytest.raises(orchestration.ProjectionError, match="CODE_PROVENANCE"):
+        orchestration.verify_execution_sha(checkout, head, baseline)
+    subprocess.run(["git", "checkout", "--quiet", "--", "README.md"],
+                   cwd=checkout, check=True)
+    pre_product = "81bd581fafbccb602f9ecaf9aaefca4533be69a4"
+    subprocess.run(["git", "checkout", "--quiet", pre_product],
+                   cwd=checkout, check=True)
+    with pytest.raises(orchestration.ProjectionError, match="CODE_PROVENANCE"):
+        orchestration.verify_execution_sha(checkout, pre_product, baseline)
 
 
 def test_v180_projection_is_accepted_and_deterministic():
@@ -1013,6 +1064,103 @@ def test_v161_candidate_identity_surfaces_are_generated():
         context.decode(),
     )
     assert block['release_id'] == 'v1.6.1-1'
+
+
+def test_v181_candidate_repairs_drifted_current_surfaces_without_remote_writes(
+        tmp_path, monkeypatch):
+    registry = canonical_registry()
+    registry['registry_release_id'] = 'v1.6.1-1'
+    old_metadata = target_metadata('v1.6.1-1', 'b' * 40, registry)
+    keys = {
+        'config/canonical_products.yaml': 'registry',
+        'input/manifest.csv': 'manifest',
+        'entry/README': 'readme',
+        'derived/INDEX.md': 'index',
+        'ai/CONTEXT_CARD.md': 'card',
+        'CURRENT_VERSION_DOC': 'version',
+        'facts/events.jsonl': 'event-file',
+        'facts/old_events.jsonl': 'compat-file',
+    }
+    old_block = render_current_state(old_metadata).encode()
+    previous = {
+        'registry': orchestration.yaml.safe_dump(
+            registry, allow_unicode=True, sort_keys=False,
+        ).encode(),
+        'readme': old_block + b'Historical navigation retained.\n',
+        'index': old_block + b'Historical index retained.\n',
+        'version': old_block + b'Historical version retained.\n',
+        'card': old_block + b'Code truth: private GitHub.\n',
+        'event-file': b'canonical facts\n',
+        'compat-file': b'compatibility facts\n',
+    }
+    previous['manifest'] = (
+        'drive_file_id,uid,content_hash\n' + ''.join(
+            f'{file_id},{key},old\n' for key, file_id in keys.items()
+        )
+    ).encode()
+    with pytest.raises(ValueError, match='CURRENT_STATE_DRIFT'):
+        validate_current_state(
+            {'state': 'COMPLETE', 'current_release_id': 'v1.8.0-1',
+             'code_commit': 'b' * 40},
+            registry, canonical_manifest(),
+            {'readme': previous['readme'].decode(),
+             'index': previous['index'].decode(),
+             'current_version_doc': previous['version'].decode(),
+             'context_card': previous['card'].decode()},
+        )
+    original = dict(previous)
+    snapshots = []
+
+    def read_previous(_drive, file_id, _mode):
+        snapshots.append(file_id)
+        return previous[file_id], {'id': file_id}
+
+    monkeypatch.setattr(orchestration, 'snapshot', read_previous)
+    projection = {
+        'release_id': 'v1.8.1-1', 'engine_sha': 'a' * 40,
+        'active_release_id': 'v1.8.0-1',
+        'existing_targets': [
+            {'logical_key': key, 'id': file_id, 'name': key,
+             'mime': 'text/plain', 'mode': 'binary'}
+            for key, file_id in keys.items()
+        ],
+        'new_targets': [],
+    }
+    output = tmp_path / 'candidate'
+    entries = orchestration._candidate_inputs(
+        object(), tmp_path, projection, {'status_id': 'status', 'reservations': {}},
+        output,
+    )
+    by_key = {entry['logical_key']: Path(entry['path']).read_bytes()
+              for entry in entries}
+    assert set(snapshots) == set(keys.values())
+    assert previous == original
+    candidate_registry = orchestration.yaml.safe_load(
+        by_key['config/canonical_products.yaml'],
+    )
+    candidate_manifest = list(orchestration.csv.DictReader(
+        orchestration.io.StringIO(
+            by_key['input/manifest.csv'].decode('utf-8-sig'),
+        ),
+    ))
+    documents = {
+        'readme': by_key['entry/README'].decode(),
+        'index': by_key['derived/INDEX.md'].decode(),
+        'current_version_doc': by_key['CURRENT_VERSION_DOC'].decode(),
+        'context_card': by_key['ai/CONTEXT_CARD.md'].decode(),
+    }
+    for text in documents.values():
+        assert read_current_block(text) == target_metadata(
+            'v1.8.1-1', 'a' * 40, candidate_registry,
+        )
+    assert 'Repository visibility: public.' in documents['context_card']
+    assert 'private GitHub' not in documents['context_card']
+    assert b'Historical navigation retained.' in by_key['entry/README']
+    assert validate_current_state(
+        {'state': 'COMPLETE', 'current_release_id': 'v1.8.1-1',
+         'code_commit': 'a' * 40},
+        candidate_registry, candidate_manifest, documents,
+    )['status'] == 'PASS'
 
 
 def _rollback_state_case():
