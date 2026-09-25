@@ -9,6 +9,8 @@ from .common import atomic, digest
 from .consumer_projection import (
     IDENTITY_SEMANTIC_STATES,
     derive_machine_counts,
+    derive_consumer_counts,
+    project_profile_identity,
     event_coverage,
     project_document,
     project_documents,
@@ -232,10 +234,46 @@ def build_consumer_payload(
             "source_index_items": len(source_index),
         },
     }
-    return {
+    if profile["profile_version"] == "v2.0":
+        projection = project_profile_identity(profile)
+        # Logical artifacts actually present in this canonical payload; package
+        # file counts are independently derived from each target's manifest.
+        artifacts = ["player_profile", "source_index", "event_coverage"] + [
+            "document:" + item["doc_id"] for item in projections
+        ]
+        counts = derive_consumer_counts(artifacts, projection)
+        core["identity_projection"] = projection
+        core["machine_count_scope"] = {
+            "identity": projection["scope"],
+            "artifacts": "CANONICAL_PAYLOAD_LOGICAL_ARTIFACTS",
+        }
+        core["coverage"].update(counts)
+    value = {
         **core,
         "consumer_payload_sha256": digest(canonical_bytes(core)),
     }
+    _validate_consumer_closure(value)
+    return value
+
+
+def _validate_consumer_closure(payload):
+    profile = _validated_profile(payload["player_profile"])
+    if profile["profile_version"] != "v2.0":
+        return
+    expected = project_profile_identity(profile)
+    if payload.get("identity_projection") != expected:
+        raise ConsumerPackageError("CONSUMER_IDENTITY_PROJECTION_MISMATCH")
+    if payload.get("machine_count_scope") != {
+        "identity": expected["scope"],
+        "artifacts": "CANONICAL_PAYLOAD_LOGICAL_ARTIFACTS",
+    }:
+        raise ConsumerPackageError("CONSUMER_COUNT_SCOPE_MISMATCH")
+    artifacts = ["player_profile", "source_index", "event_coverage"] + [
+        "document:" + item["doc_id"] for item in payload["selected_document_projections"]
+    ]
+    actual = derive_consumer_counts(artifacts, expected)
+    declared = {key: payload["coverage"].get(key) for key in actual}
+    validate_machine_counts(declared, actual)
 
 
 def payload_bytes(payload):
@@ -250,6 +288,7 @@ def payload_bytes(payload):
         "consumer_payload_sha256",
     ):
         raise ConsumerPackageError("CONSUMER_PAYLOAD_HASH_MISMATCH")
+    _validate_consumer_closure(payload)
     return canonical_bytes(payload) + b"\n"
 
 
@@ -535,6 +574,16 @@ def _manifest(
         "sha256": digest(content.encode("utf-8")),
         "bytes": len(content.encode("utf-8")),
     } for path, content in sorted(files.items())]
+    if payload["player_profile"]["profile_version"] == "v2.0":
+        _validate_consumer_closure(payload)
+        coverage = dict(coverage)
+        coverage["machine_counts"] = derive_consumer_counts(
+            entries, payload["identity_projection"],
+        )
+        coverage["machine_count_scope"] = {
+            "identity": payload["identity_projection"]["scope"],
+            "artifacts": "PACKAGE_MANIFEST_FILES_EXCLUDING_MANIFEST",
+        }
     package_core = {
         "schema_version": SCHEMA_VERSION,
         "target": target,
@@ -1057,6 +1106,21 @@ def validate_package(package):
         canonical_value = json.loads(canonical_payload)
     except ValueError as exc:
         raise ConsumerPackageError("CANONICAL_PAYLOAD_FILE_INVALID") from exc
+    payload_bytes(canonical_value)
+    if canonical_value["player_profile"]["profile_version"] == "v2.0":
+        actual = derive_consumer_counts(
+            [path for path in files if path != "package_manifest.json"],
+            canonical_value["identity_projection"],
+        )
+        declared_counts = coverage.get("machine_counts")
+        if not isinstance(declared_counts, dict) or set(declared_counts) != set(actual):
+            raise ConsumerPackageError("PACKAGE_MACHINE_COUNTS_REQUIRED")
+        validate_machine_counts(declared_counts, actual)
+        if coverage.get("machine_count_scope") != {
+            "identity": canonical_value["identity_projection"]["scope"],
+            "artifacts": "PACKAGE_MANIFEST_FILES_EXCLUDING_MANIFEST",
+        }:
+            raise ConsumerPackageError("PACKAGE_MACHINE_COUNT_SCOPE_MISMATCH")
     evidence_ids = set()
     for entry in evidence_entries:
         if not isinstance(entry, dict):

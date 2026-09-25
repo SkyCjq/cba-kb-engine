@@ -314,3 +314,87 @@ def test_no_production_mutation_path_exercised():
     with pytest.raises(ProjectionError, match="RELEASE_ID_FORBIDDEN"):
         _release_spec("v9.9.9")
 
+
+
+@pytest.mark.parametrize("same_count", [1, 3])
+def test_emitted_packages_close_identity_and_counts_without_mutating_truth(same_count):
+    import copy
+    from cba_kb.common import digest
+    from cba_kb.evidence_ledger import canonical_bytes
+    from cba_kb.consumer_package import ConsumerPackageError, payload_bytes
+
+    uid = "pid_0000000000000001"
+    statuses = ["same"] * same_count + ["not_same", "undecided", None]
+    rows = []
+    links = []
+    for index, status in enumerate(statuses):
+        key = f"record-{index}"
+        row = {field: None for field in HEADERS}
+        row.update(record_key=key, season="2026-2027", club_id="test-club",
+                   player="TEST PLAYER", source_file_id="src-1",
+                   source_url="https://example.test", verification_level="machine_validated")
+        rows.append(row)
+        if status:
+            links.append(dict(schema_version=1, record_key=key, player_uid=uid,
+                              link_status=status, method="MANUAL_REVIEW",
+                              confidence="HIGH", evidence_refs=["ev-1"]))
+    registry_value = new_registry([
+        dict(schema_version=1, player_uid=uid, canonical_name="TEST PLAYER",
+             status="ACTIVE", redirect_to=None),
+    ], record_links=links)
+    frozen = copy.deepcopy((rows, registry_value))
+    profile = build_profile_v2(
+        rows, player_uid=uid, identity_registry=registry_value,
+        mention_artifact=build_mention_artifact([], []), release_id="v1.8.1-1",
+        as_of="2026-09-24T00:00:00Z", source_master_sha256="a" * 64,
+        generator_sha="b" * 64,
+    )
+    frozen_profile = copy.deepcopy(profile)
+    payload = build_consumer_payload(
+        release_scope=dict(release_id="v1.8.1-1", as_of="2026-09-24T00:00:00Z",
+                           provenance="frozen"), profile=profile, documents=[], sources=[],
+    )
+    packages = build_target_packages(payload)
+    for package in packages.values():
+        validate_package(package)
+        emitted = json.loads(package["files"][package["canonical_payload_file"]])
+        relations = emitted["identity_projection"]["relations"]
+        assert {item["state"] for item in relations} == {
+            "SAME", "NOT_SAME", "UNDECIDED", "NOT_MATERIALIZED",
+        }
+        absent = next(item for item in relations if item["state"] == "NOT_MATERIALIZED")
+        assert absent["player_uid"] is None
+        assert absent["record_key"] == rows[-1]["record_key"]
+        for counts in (emitted["coverage"], package["manifest"]["coverage"]["machine_counts"]):
+            assert counts["player_count"] == len(emitted["identity_projection"]["players"])
+            assert counts["record_link_count"] == len(links)
+            assert counts["same_count"] == same_count
+            assert counts["not_same_count"] == 1
+            assert counts["undecided_count"] == 1
+            assert counts["unavailable_count"] == 1
+        assert emitted["coverage"]["production_artifact_count"] == 3
+        assert package["manifest"]["coverage"]["machine_counts"]["production_artifact_count"] == len(package["files"]) - 1
+        assert emitted["player_profile"] == frozen_profile
+        tampered = copy.deepcopy(package)
+        tampered["manifest"]["coverage"]["machine_counts"]["production_artifact_count"] += 1
+        with pytest.raises(ConsumerProjectionError, match="COUNT_MISMATCH"):
+            validate_package(tampered)
+
+    # A freshly recomputed payload hash cannot legitimize invented relations or counts.
+    for mutation in ("state", "count", "missing_count"):
+        tampered = copy.deepcopy(payload)
+        if mutation == "state":
+            next(item for item in tampered["identity_projection"]["relations"]
+                 if item["state"] == "NOT_MATERIALIZED")["state"] = "SAME"
+        elif mutation == "count":
+            tampered["coverage"]["player_count"] += 1
+        else:
+            del tampered["coverage"]["same_count"]
+        core = {k: v for k, v in tampered.items() if k != "consumer_payload_sha256"}
+        tampered["consumer_payload_sha256"] = digest(canonical_bytes(core))
+        with pytest.raises((ConsumerPackageError, ConsumerProjectionError)):
+            payload_bytes(tampered)
+        with pytest.raises((ConsumerPackageError, ConsumerProjectionError)):
+            build_target_packages(tampered)
+    assert (rows, registry_value) == frozen
+    assert profile == frozen_profile

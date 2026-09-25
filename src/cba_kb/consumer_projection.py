@@ -400,3 +400,50 @@ def validate_machine_counts(declared_counts, actual_counts):
             )
     return True
 
+
+
+def project_profile_identity(profile):
+    """Project only relations already represented by a validated profile v2.
+
+    Counts are scoped to the selected player and the supplied profile's
+    unlinked records, never presented as counts of the private registry.
+    """
+    if profile.get("profile_version") != "v2.0":
+        raise ConsumerProjectionError("PROFILE_V2_REQUIRED")
+    coverage = profile["identity_coverage"]
+    relations = []
+    for status, keys in (
+        ("same", profile["record_keys"]),
+        ("not_same", coverage["selected_not_same_record_keys"]),
+        ("undecided", coverage["undecided_record_keys"]),
+        ("unlinked", coverage["unlinked_record_keys"]),
+    ):
+        for key in keys:
+            relations.append({
+                "record_key": key,
+                "player_uid": None if status == "unlinked" else profile["player_uid"],
+                "state": project_identity_state(status),
+            })
+    return {
+        "scope": "SELECTED_PROFILE_RELATIONS_AND_SUPPLIED_UNLINKED_RECORDS",
+        "source_profile_sha256": profile["profile_sha256"],
+        "identity_selector": "player_uid",
+        "record_key_is_person_identity": False,
+        "automatic_merge": False,
+        "same_person_assertion_without_independent_evidence": False,
+        "players": [{"player_uid": profile["player_uid"]}],
+        "relations": sorted(relations, key=lambda item: (item["record_key"], item["state"])),
+    }
+
+
+def derive_consumer_counts(artifacts, projection):
+    """Count emitted projection data; this is not an identity registry."""
+    links = [
+        {"record_key": item["record_key"], "link_status": item["state"].lower()}
+        for item in projection["relations"]
+        if item["state"] in {"SAME", "NOT_SAME", "UNDECIDED"}
+    ]
+    rows = [{"record_key": item["record_key"]} for item in projection["relations"]]
+    return derive_machine_counts(
+        artifacts, {"players": projection["players"], "record_links": links}, rows,
+    )
