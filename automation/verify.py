@@ -186,8 +186,13 @@ def verify_result_bytes(
             observed_pr = github["pr"]
             expected_pr = {
                 "number": result["pr"]["number"], "url": result["pr"]["url"], "state": "OPEN",
-                "baseRefOid": result["base_sha"], "headRefOid": result["head_sha"],
+                "headRefOid": result["head_sha"],
             }
+            # A bounded repair starts at the previous feature head while its
+            # existing pull request still targets the original base branch.
+            # For every other task, the task baseline remains the PR base.
+            if task["task_type"] != "CODEX_BOUNDED_REPAIR":
+                expected_pr["baseRefOid"] = result["base_sha"]
             for name, expected in expected_pr.items():
                 if observed_pr.get(name) != expected:
                     raise P2AError("PR_FACTS_MISMATCH", "Result PR fact differs from GitHub Code Truth", field=name, expected=expected, observed=observed_pr.get(name))

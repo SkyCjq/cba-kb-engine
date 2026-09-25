@@ -1,3 +1,5 @@
+import yaml
+
 from automation.models import canonical_json_bytes, sha256_bytes
 from automation.verify import verify_result_bytes, verify_task_bytes
 
@@ -55,3 +57,19 @@ def test_result_verify_rejects_forged_ci_run(task_bytes, result_dict, github_ins
     result = verify_result_bytes(canonical_json_bytes(result_dict), task_bytes, github_inspector=github_inspector)
     assert result.classification == "CI_FACTS_MISMATCH"
     assert not result.ok
+
+
+def test_bounded_repair_accepts_incremental_base_on_existing_pr(task_dict, result_dict, github_inspector):
+    task_dict["task_type"] = "CODEX_BOUNDED_REPAIR"
+    task_bytes = yaml.safe_dump(task_dict, sort_keys=False).encode()
+    result_dict["source_task_sha256"] = sha256_bytes(task_bytes)
+    observed = github_inspector.collect(33, "Offline tests", result_dict["head_sha"])
+    observed["pr"]["baseRefOid"] = "c" * 40
+    assert verify_result_bytes(canonical_json_bytes(result_dict), task_bytes, github_inspector=github_inspector).classification == "EXECUTION_RESULT_VERIFIED"
+
+
+def test_non_repair_still_rejects_wrong_pr_base(task_bytes, result_dict, github_inspector):
+    observed = github_inspector.collect(33, "Offline tests", result_dict["head_sha"])
+    observed["pr"]["baseRefOid"] = "c" * 40
+    result = verify_result_bytes(canonical_json_bytes(result_dict), task_bytes, github_inspector=github_inspector)
+    assert result.classification == "PR_FACTS_MISMATCH"

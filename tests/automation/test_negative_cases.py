@@ -120,6 +120,49 @@ def test_git_ancestry_mismatch_fails_closed(monkeypatch, task_bytes, result_dict
     assert result.classification == "GIT_ANCESTRY_MISMATCH"
 
 
+@pytest.mark.parametrize(
+    ("mutation", "classification"),
+    [
+        ("pr_head", "PR_FACTS_MISMATCH"),
+        ("ci_head", "PR_CI_HEAD_MISMATCH"),
+        ("scope", "SCOPE_VIOLATION"),
+        ("ancestry", "GIT_ANCESTRY_MISMATCH"),
+    ],
+)
+def test_bounded_repair_keeps_other_result_guards(
+    monkeypatch, task_dict, result_dict, github_inspector, mutation, classification,
+):
+    task_dict["task_type"] = "CODEX_BOUNDED_REPAIR"
+    task_bytes = yaml.safe_dump(task_dict, sort_keys=False).encode()
+    result_dict["source_task_sha256"] = sha256_bytes(task_bytes)
+    observed_pr = github_inspector.collect(33, "Offline tests", result_dict["head_sha"])["pr"]
+    observed_pr["baseRefOid"] = "c" * 40
+    if mutation == "pr_head":
+        observed_pr["headRefOid"] = "d" * 40
+    elif mutation == "ci_head":
+        result_dict["ci"]["head_sha"] = "d" * 40
+    elif mutation == "scope":
+        result_dict["changed_files"].append("src/cba_kb/release.py")
+    else:
+        class NonAncestorGit:
+            def __init__(self, root):
+                pass
+
+            def head_sha(self):
+                return result_dict["head_sha"]
+
+            def is_ancestor(self, ancestor, descendant):
+                return False
+
+        monkeypatch.setattr("automation.verify.GitInspector", NonAncestorGit)
+    result = verify_result_bytes(
+        canonical_json_bytes(result_dict), task_bytes,
+        git_root="unused" if mutation == "ancestry" else None,
+        github_inspector=github_inspector,
+    )
+    assert result.classification == classification
+
+
 def test_stable_revision_not_advanced_fails_closed(tmp_path, task_dict):
     class NoRevisionStore(MemoryDriveStore):
         def update(self, file_id, content):
