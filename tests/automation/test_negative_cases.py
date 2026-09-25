@@ -9,7 +9,7 @@ from automation.ledger import AppendOnlyLedger
 from automation.models import P2AError, canonical_json_bytes, sha256_bytes
 from automation.review_package import build_review_package
 from automation.verify import guarded_verify, verify_result_bytes, verify_task_bytes
-from test_verify import descendant_case, human_merge_case, post_merge_case, retrospective_case
+from test_verify import descendant_case, external_control_plane_case, human_merge_case, post_merge_case, retrospective_case
 
 
 def _strict_case(tmp_path, task_dict, store=None):
@@ -388,6 +388,117 @@ def test_retrospective_proof_rejects_invalid_history_or_authority(
             f"authority SHA256 {proof['authority']['task_sha256']}")
     if mutation == "proof_hash_drift":
         store.records["later-proof"].content += b"\n"
+    task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+    result["source_task_sha256"] = sha256_bytes(task_bytes)
+    verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
+                                   github_inspector=github, predecessor_store=store)
+    assert verified.classification == classification
+
+
+@pytest.mark.parametrize(("mutation", "classification"), [
+    ("missing_task", "DRIVE_FILE_NOT_FOUND"),
+    ("missing_result", "DRIVE_FILE_NOT_FOUND"),
+    ("missing_review_package", "DRIVE_FILE_NOT_FOUND"),
+    ("missing_post_merge_result", "DRIVE_FILE_NOT_FOUND"),
+    ("missing_post_merge_review_package", "DRIVE_FILE_NOT_FOUND"),
+    ("task_sha", "EXTERNAL_DESCENDANT_EVIDENCE_MISMATCH"),
+    ("result_sha", "EXTERNAL_DESCENDANT_EVIDENCE_MISMATCH"),
+    ("review_package_sha", "EXTERNAL_DESCENDANT_EVIDENCE_MISMATCH"),
+    ("post_merge_result_sha", "EXTERNAL_DESCENDANT_EVIDENCE_MISMATCH"),
+    ("post_merge_review_package_sha", "EXTERNAL_DESCENDANT_EVIDENCE_MISMATCH"),
+    ("unfrozen_evidence", "EXTERNAL_DESCENDANT_UNBOUND"),
+    ("wrong_pr_number", "EXTERNAL_DESCENDANT_PR_MISMATCH"),
+    ("wrong_reviewed_head", "EXTERNAL_DESCENDANT_EVIDENCE_MISMATCH"),
+    ("wrong_merge", "UNBOUND_DESCENDANT_COMMIT"),
+    ("wrong_merge_time", "EXTERNAL_DESCENDANT_PR_MISMATCH"),
+    ("failed_reviewed_ci", "EXTERNAL_DESCENDANT_CI_MISMATCH"),
+    ("stale_exact_main_ci", "CI_FACTS_MISMATCH"),
+    ("wrong_main_event", "CI_FACTS_MISMATCH"),
+    ("wrong_repository", "EXTERNAL_DESCENDANT_EVIDENCE_MISMATCH"),
+    ("product_code_delta", "EXTERNAL_DESCENDANT_AUTHORITY_VIOLATION"),
+    ("identity_delta", "EXTERNAL_DESCENDANT_AUTHORITY_VIOLATION"),
+    ("production_mutation", "EXTERNAL_DESCENDANT_AUTHORITY_VIOLATION"),
+    ("publish", "EXTERNAL_DESCENDANT_AUTHORITY_VIOLATION"),
+    ("restore", "EXTERNAL_DESCENDANT_AUTHORITY_VIOLATION"),
+    ("production_authority", "EXTERNAL_DESCENDANT_AUTHORITY_VIOLATION"),
+    ("product_file", "EXTERNAL_DESCENDANT_SCOPE_VIOLATION"),
+    ("unbound_first_parent", "UNBOUND_DESCENDANT_COMMIT"),
+    ("wrong_ancestry", "GIT_ANCESTRY_MISMATCH"),
+])
+def test_external_control_plane_descendant_fails_closed(
+    monkeypatch, task_dict, result_dict, mutation, classification,
+):
+    import json
+    import automation.verify as verifier
+
+    task, _, result, store, github, entry, observed_prs, _, runs = external_control_plane_case(
+        monkeypatch, task_dict, result_dict,
+    )
+    kinds = ("task", "result", "review_package", "post_merge_result", "post_merge_review_package")
+    if mutation.startswith("missing_") and mutation.removeprefix("missing_") in kinds:
+        del store.records[entry[mutation.removeprefix("missing_") + "_file_id"]]
+    elif mutation.endswith("_sha") and mutation.removesuffix("_sha") in kinds:
+        entry[mutation.removesuffix("_sha") + "_sha256"] = "0" * 64
+    elif mutation == "unfrozen_evidence":
+        task["allowed_actions"].pop()
+    elif mutation == "wrong_pr_number":
+        entry["pr_number"] = 999
+    elif mutation == "wrong_reviewed_head":
+        entry["reviewed_head_sha"] = "0" * 40
+    elif mutation == "wrong_merge":
+        entry["merge_commit_sha"] = "0" * 40
+    elif mutation == "wrong_merge_time":
+        observed_prs[77]["mergedAt"] = "2026-09-25T04:00:00Z"
+    elif mutation == "failed_reviewed_ci":
+        runs["3" * 40][0]["conclusion"] = "failure"
+    elif mutation == "stale_exact_main_ci":
+        runs["4" * 40].clear()
+    elif mutation == "wrong_main_event":
+        runs["4" * 40][0]["event"] = "pull_request"
+    elif mutation in {"wrong_repository", "product_code_delta", "identity_delta", "production_mutation", "publish", "restore"}:
+        file = store.records[entry["post_merge_result_file_id"]]
+        doc = json.loads(file.content)
+        if mutation == "wrong_repository":
+            doc["repository"] = "unrelated/repository"
+        else:
+            field, value = {
+                "product_code_delta": ("PRODUCT_CODE_DELTA", 1),
+                "identity_delta": ("IDENTITY_SEMANTIC_DELTA", "NONZERO"),
+                "production_mutation": ("PRODUCTION_MUTATION", 1),
+                "publish": ("PUBLISH", 1), "restore": ("RESTORE", 1),
+            }[mutation]
+            doc["machine_facts"][field] = value
+        file.content = canonical_json_bytes(doc)
+        entry["post_merge_result_sha256"] = sha256_bytes(file.content)
+        package_file = store.records[entry["post_merge_review_package_file_id"]]
+        package = json.loads(package_file.content)
+        package["CONTROL"]["post_merge_result_sha256"] = entry["post_merge_result_sha256"]
+        package["VERIFIED_MACHINE_FACTS"]["machine_facts"] = doc["machine_facts"]
+        package_file.content = canonical_json_bytes(package)
+        entry["post_merge_review_package_sha256"] = sha256_bytes(package_file.content)
+    elif mutation == "production_authority":
+        entry["production_authority"] = True
+    elif mutation == "product_file":
+        base_git = verifier.GitInspector
+        class ProductGit(base_git):
+            def _run(self, *args):
+                if args[:2] == ("diff", "--name-only") and args[2] == "f" * 40:
+                    return "src/cba_kb/cli.py"
+                return super()._run(*args)
+        monkeypatch.setattr("automation.verify.GitInspector", ProductGit)
+    elif mutation == "unbound_first_parent":
+        result["machine_facts"]["descendants"].pop()
+    elif mutation == "wrong_ancestry":
+        base_git = verifier.GitInspector
+        class WrongGit(base_git):
+            def is_ancestor(self, ancestor, descendant):
+                return False
+        monkeypatch.setattr("automation.verify.GitInspector", WrongGit)
+    if mutation not in {"unfrozen_evidence", "wrong_merge", "unbound_first_parent", "wrong_ancestry"}:
+        task["allowed_actions"][-1] = (
+            "external control-plane descendant task SHA256 {task_sha256} result SHA256 {result_sha256} "
+            "review SHA256 {review_package_sha256} post-merge result SHA256 {post_merge_result_sha256} "
+            "post-merge review SHA256 {post_merge_review_package_sha256}").format(**entry)
     task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
     result["source_task_sha256"] = sha256_bytes(task_bytes)
     verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
