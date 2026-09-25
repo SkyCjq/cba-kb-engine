@@ -516,7 +516,7 @@ def reserve_staging(
         key = item["logical_key"]
         file_id = drive.ensure(
             staging_id,
-            f"reserve:{release_id}:{key}",
+            _reservation_key(release_id, key),
             item["name"],
             item["mime"],
             b"",
@@ -567,6 +567,14 @@ def reserve_staging(
     save(instance.config_path("production.json"), policy)
     save(allocation_path, allocation)
     return {"allocation": allocation, "validated": validated}
+
+
+def _reservation_key(release_id, logical_key):
+    """Keep existing keys unless Drive's 124-byte app-property limit requires a digest."""
+    key = f"reserve:{release_id}:{logical_key}"
+    if len(("cba_key" + key).encode("utf-8")) <= 124:
+        return key
+    return f"reserve:{release_id}:sha256:{digest(logical_key.encode('utf-8'))}"
 
 
 def _candidate_inputs(drive, engine_root, projection, allocation, output):
