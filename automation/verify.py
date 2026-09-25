@@ -3,12 +3,14 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .git_io import GitInspector, GitHubInspector
 from .models import (
     AUTOMATION_VERSION,
+    RETROSPECTIVE_PROOF_SCHEMA,
     RESULT_SCHEMA,
     TASK_SCHEMA,
     P2AError,
@@ -150,6 +152,11 @@ DESCENDANT_MODE = "EXACT_P2A_PROCESS_CHAIN"
 PROCESS_DESCENDANT_PATHS = {
     ".github/workflows/offline-tests.yml", "automation/verify.py",
     "tests/automation/test_negative_cases.py", "tests/automation/test_verify.py",
+}
+RETROSPECTIVE_CAPABILITIES = {
+    "VERIFIED_PREDECESSOR_REUSE_MERGED_PR": frozenset({
+        "HUMAN_MERGE_TEST_EVIDENCE_CONTRACT", "HUMAN_MERGE_PR_STATE_CONTRACT",
+    }),
 }
 
 
@@ -380,7 +387,10 @@ def _descendant_frozen_product(task: Mapping[str, Any]) -> tuple[int, str, str, 
     return int(number), base, reviewed, merge, int(runs[0])
 
 
-def _read_descendant_package(store: Any, task: Mapping[str, Any], entry: Mapping[str, Any], prefix: str) -> tuple[dict, dict]:
+def _read_descendant_package(
+    store: Any, task: Mapping[str, Any], entry: Mapping[str, Any], prefix: str,
+    *, required_status: str = "PASS",
+) -> tuple[dict, dict]:
     folder = task["canonical_binding"]["canonical_history_folder_id"]
     keys = (f"{prefix}_task_file_id", f"{prefix}_result_file_id", f"{prefix}_review_package_file_id")
     if any(not isinstance(entry.get(key), str) or not entry[key] for key in keys):
@@ -406,7 +416,7 @@ def _read_descendant_package(store: Any, task: Mapping[str, Any], entry: Mapping
             or descendant_result["repository"] != task["repository"]
             or descendant_task["policy_bundle_sha256"] != task["policy_bundle_sha256"]
             or descendant_task["authority_binding"]["requirement_sha256"] != task["authority_binding"]["requirement_sha256"]
-            or descendant_result["status"] != "PASS"
+            or descendant_result["status"] != required_status
             or descendant_result["task_id"] != descendant_task["task_id"]
             or descendant_result["source_task_sha256"] != entry[f"{prefix}_task_sha256"]
             or descendant_result["policy_bundle_sha256"] != task["policy_bundle_sha256"]
@@ -427,6 +437,166 @@ def _read_descendant_package(store: Any, task: Mapping[str, Any], entry: Mapping
             or verified.get("ci") != descendant_result["ci"]):
         raise P2AError("DESCENDANT_EVIDENCE_MISMATCH", "Descendant P2A PASS and review package bindings disagree")
     return descendant_task, descendant_result
+
+
+def _verify_retrospective_proof(
+    store: Any, task: Mapping[str, Any], entry: Mapping[str, Any],
+    historical_task: Mapping[str, Any], historical_result: Mapping[str, Any],
+    process_result: Mapping[str, Any], github_inspector: Any, git: GitInspector,
+) -> None:
+    """Independently validate a later proof without rewriting a BLOCKED result."""
+    proof_id = entry.get("retrospective_proof_file_id")
+    proof_sha = require_sha256(entry.get("retrospective_proof_sha256"),
+                               field_name="retrospective_proof_sha256", code="RETROSPECTIVE_PROOF_UNBOUND")
+    if not isinstance(proof_id, str) or not proof_id:
+        raise P2AError("RETROSPECTIVE_PROOF_UNBOUND", "Exact proof file ID is required")
+    proof_file = store.read(proof_id)
+    if sha256_bytes(proof_file.content) != proof_sha:
+        raise P2AError("RETROSPECTIVE_PROOF_HASH_MISMATCH", "Proof bytes differ from frozen SHA")
+    proof = load_json_bytes(proof_file.content)
+    require_exact_keys(proof, {
+        "schema_version", "status", "capability", "verifier_version", "verified_at_utc",
+        "authority", "historical", "predecessor", "event", "repository",
+        "requirement_sha256", "policy_bundle_sha256", "production_authority",
+    }, code="RETROSPECTIVE_PROOF_INVALID", location="proof")
+    require_exact_keys(proof["authority"], {"task_file_id", "task_sha256", "task_id", "workstream_id"},
+                       code="RETROSPECTIVE_PROOF_INVALID", location="proof.authority")
+    require_exact_keys(proof["historical"], {
+        "task_file_id", "task_sha256", "result_file_id", "result_sha256",
+        "review_package_file_id", "review_package_sha256", "status", "classification", "error_codes",
+    }, code="RETROSPECTIVE_PROOF_INVALID", location="proof.historical")
+    require_exact_keys(proof["predecessor"], {
+        "task_file_id", "task_sha256", "result_file_id", "result_sha256", "review_package_file_id",
+    }, code="RETROSPECTIVE_PROOF_INVALID", location="proof.predecessor")
+    require_exact_keys(proof["event"], {
+        "pr_number", "reviewed_head_sha", "actual_pr_head_sha", "base_sha", "merge_commit_sha",
+        "merged_at", "reviewed_ci_run_id", "exact_main_ci_run_id",
+    }, code="RETROSPECTIVE_PROOF_INVALID", location="proof.event")
+    authority_sha = require_sha256(proof["authority"]["task_sha256"], field_name="proof.authority.task_sha256",
+                                   code="RETROSPECTIVE_PROOF_UNBOUND")
+    frozen_binding = f"retrospective proof SHA256 {proof_sha} authority SHA256 {authority_sha}"
+    if not any(frozen_binding in action for action in task["allowed_actions"]):
+        raise P2AError("RETROSPECTIVE_PROOF_UNBOUND", "Proof and authority hashes must be frozen in reconciliation task")
+    authority_file = store.read(proof["authority"]["task_file_id"])
+    if sha256_bytes(authority_file.content) != authority_sha:
+        raise P2AError("RETROSPECTIVE_PROOF_UNBOUND", "Proof authority task bytes changed")
+    authority = load_yaml_bytes(authority_file.content)
+    if (authority.get("schema_version") != "cba-kb.p2a-stabilization-task.v1"
+            or authority.get("task_id") != proof["authority"]["task_id"]
+            or authority.get("workstream_id") != proof["authority"]["workstream_id"]
+            or authority.get("repository") != task["repository"]):
+        raise P2AError("RETROSPECTIVE_PROOF_UNBOUND", "Proof does not bind an independent frozen stabilization task")
+    capability_codes = RETROSPECTIVE_CAPABILITIES.get(proof["capability"])
+    if (proof["schema_version"] != RETROSPECTIVE_PROOF_SCHEMA or proof["status"] != "PASS"
+            or proof["verifier_version"] != AUTOMATION_VERSION or capability_codes is None
+            or proof["production_authority"] is not False):
+        raise P2AError("RETROSPECTIVE_PROOF_INVALID", "Unsupported proof capability, version, status, or Production claim")
+    if (proof["repository"] != task["repository"]
+            or proof["requirement_sha256"] != task["authority_binding"]["requirement_sha256"]
+            or proof["policy_bundle_sha256"] != task["policy_bundle_sha256"]):
+        raise P2AError("RETROSPECTIVE_PROOF_BINDING_MISMATCH", "Proof authority bindings differ from reconciliation")
+    historical = proof["historical"]
+    package_file = store.read(entry["human_review_package_file_id"])
+    if (historical["task_file_id"] != entry["human_task_file_id"]
+            or historical["task_sha256"] != entry["human_task_sha256"]
+            or historical["result_file_id"] != entry["human_result_file_id"]
+            or historical["result_sha256"] != entry["human_result_sha256"]
+            or historical["review_package_file_id"] != entry["human_review_package_file_id"]
+            or historical["review_package_sha256"] != sha256_bytes(package_file.content)
+            or historical["status"] != "BLOCKED"
+            or historical["classification"] != historical_result["classification"]
+            or historical["error_codes"] != [error.get("code") for error in historical_result["errors"]]):
+        raise P2AError("RETROSPECTIVE_PROOF_BINDING_MISMATCH", "Proof does not bind unchanged historical BLOCKED bytes")
+    predecessor = proof["predecessor"]
+    if (predecessor["task_file_id"] != entry["process_task_file_id"]
+            or predecessor["task_sha256"] != entry["process_task_sha256"]
+            or predecessor["result_file_id"] != entry["process_result_file_id"]
+            or predecessor["result_sha256"] != entry["process_result_sha256"]
+            or predecessor["review_package_file_id"] != entry["process_review_package_file_id"]
+            or process_result["status"] != "PASS"):
+        raise P2AError("RETROSPECTIVE_PROOF_BINDING_MISMATCH", "Proof does not bind verified process predecessor")
+    errors = historical_result["errors"]
+    historical_facts = historical_result["machine_facts"]
+    forbidden_mutations = (
+        "production_mutation", "publish", "restore", "identity_authority_change",
+        "identity_registry_mutation", "master_mutation", "player_uid_mutation",
+        "new_identity_decisions", "new_same_decisions", "new_not_same_decisions",
+        "machine_final_uid_decisions",
+    )
+    if (historical_result["status"] != "BLOCKED" or not isinstance(errors, list) or not errors
+            or any(not isinstance(error, dict) or error.get("classification") != "PROCESS"
+                   or error.get("re_freeze") != "NO" or error.get("code") not in capability_codes
+                   for error in errors)
+            or historical_result["forbidden_actions_observed"]
+            or not isinstance(historical_facts, dict)
+            or historical_facts.get("product_failure") is not False
+            or historical_facts.get("identity_semantic_delta") != "ZERO"
+            or any(historical_facts.get(key) != 0 for key in forbidden_mutations)
+            or any(value != 0 for key, value in historical_facts.items() if key.endswith("_product_code_delta"))):
+        raise P2AError("RETROSPECTIVE_INELIGIBLE", "Historical BLOCKED was not solely a registered process capability gap")
+    predecessor_sha = entry["process_result_sha256"]
+    for field in ("focused_tests", "full_regression"):
+        evidence = historical_result[field]
+        if (process_result[field].get("status") != "PASS"
+                or not isinstance(evidence, dict)
+                or evidence.get("status") != "NOT_RERUN_DURING_HUMAN_MERGE"
+                or not isinstance(evidence.get("evidence_mode"), str)
+                or not re.fullmatch(r"VERIFIED_[A-Z0-9_]*PREDECESSOR_REUSE", evidence["evidence_mode"])
+                or predecessor_sha not in {value for key, value in evidence.items()
+                                           if key.endswith("result_sha256")}):
+            raise P2AError("RETROSPECTIVE_INELIGIBLE", "Historical test evidence does not bind verified predecessor PASS")
+    event = proof["event"]
+    number, reviewed_head, reviewed_run = _human_frozen_review(historical_task)
+    historical_pr, historical_ci = historical_result["pr"], historical_result["ci"]
+    if (event["pr_number"] != number or event["pr_number"] != entry["pr_number"]
+            or event["reviewed_head_sha"] != reviewed_head
+            or event["reviewed_head_sha"] != entry["reviewed_head_sha"]
+            or event["actual_pr_head_sha"] != entry.get("actual_pr_head_sha", reviewed_head)
+            or event["base_sha"] != historical_task["expected_base_sha"]
+            or event["merge_commit_sha"] != entry["merge_commit_sha"]
+            or event["reviewed_ci_run_id"] != reviewed_run
+            or historical_pr.get("number") != number
+            or historical_pr.get("head_sha") != reviewed_head
+            or historical_pr.get("base_sha") != event["base_sha"]
+            or historical_pr.get("merge_commit_sha") != event["merge_commit_sha"]
+            or historical_pr.get("merged_at") != event["merged_at"]
+            or historical_result["head_sha"] != event["merge_commit_sha"]
+            or historical_ci.get("head_sha") != event["merge_commit_sha"]
+            or historical_ci.get("conclusion") != "success"
+            or historical_ci.get("event") != "push"
+            or event["exact_main_ci_run_id"] not in {run.get("id") for run in historical_ci.get("runs", [])}):
+        raise P2AError("RETROSPECTIVE_EVENT_MISMATCH", "Proof does not bind frozen Human task and historical event")
+    observed = github_inspector._json("pr", "view", str(number), "--repo", task["repository"],
+                                      "--json", "number,state,baseRefOid,headRefOid,mergedAt,mergeCommit")
+    if (observed.get("number") != number or observed.get("state") != "MERGED"
+            or observed.get("baseRefOid") != event["base_sha"]
+            or observed.get("headRefOid") != event["actual_pr_head_sha"]
+            or observed.get("mergedAt") != event["merged_at"]
+            or (observed.get("mergeCommit") or {}).get("oid") != event["merge_commit_sha"]):
+        raise P2AError("RETROSPECTIVE_EVENT_MISMATCH", "Proof differs from live merged PR Code Truth")
+    runs = github_inspector._json("api", f"repos/{task['repository']}/actions/runs?head_sha={reviewed_head}&per_page=100").get("workflow_runs", [])
+    if not any(run.get("id") == reviewed_run and run.get("name") == "Offline tests"
+               and run.get("event") == "pull_request" and run.get("head_sha") == reviewed_head
+               and run.get("status") == "completed" and run.get("conclusion") == "success" for run in runs):
+        raise P2AError("RETROSPECTIVE_CI_MISMATCH", "Frozen reviewed PR CI is not independently green")
+    runs = github_inspector._json("api", f"repos/{task['repository']}/actions/runs?head_sha={event['merge_commit_sha']}&per_page=100").get("workflow_runs", [])
+    if not any(run.get("id") == event["exact_main_ci_run_id"] and run.get("name") == "Offline tests"
+               and run.get("event") == "push" and run.get("head_branch") == "main"
+               and run.get("head_sha") == event["merge_commit_sha"]
+               and run.get("status") == "completed" and run.get("conclusion") == "success" for run in runs):
+        raise P2AError("RETROSPECTIVE_CI_MISMATCH", "Historical merge lacks independently green exact-main CI")
+    if (not git.is_ancestor(reviewed_head, event["actual_pr_head_sha"])
+            or git._run("rev-list", "--parents", "-n", "1", event["merge_commit_sha"]).split()
+            != [event["merge_commit_sha"], event["base_sha"], event["actual_pr_head_sha"]]):
+        raise P2AError("GIT_ANCESTRY_MISMATCH", "Proof does not bind exact historical merge ancestry")
+    try:
+        verified_at = datetime.fromisoformat(proof["verified_at_utc"].replace("Z", "+00:00"))
+        blocked_at = datetime.fromisoformat(historical_result["generated_at_utc"].replace("Z", "+00:00"))
+        merged_at = datetime.fromisoformat(event["merged_at"].replace("Z", "+00:00"))
+    except (AttributeError, ValueError) as exc:
+        raise P2AError("RETROSPECTIVE_PROOF_INVALID", "Proof chronology is invalid") from exc
+    if verified_at <= blocked_at or verified_at <= merged_at:
+        raise P2AError("RETROSPECTIVE_PROOF_INVALID", "Proof must postdate historical BLOCKED and merge")
 
 
 def _verify_post_merge_descendants(
@@ -491,14 +661,19 @@ def _verify_post_merge_descendants(
     previous = historical_merge
     for entry in descendants:
         merge_sha, pr_head = entry["merge_commit_sha"], entry["reviewed_head_sha"]
+        actual_pr_head = entry.get("actual_pr_head_sha", pr_head)
+        retrospective = ("retrospective_proof_file_id" in entry or "retrospective_proof_sha256" in entry)
         require_git_sha(merge_sha, field_name="descendant.merge_commit_sha", code="DESCENDANT_EVIDENCE_MISMATCH")
         require_git_sha(pr_head, field_name="descendant.reviewed_head_sha", code="DESCENDANT_EVIDENCE_MISMATCH")
-        if git._run("rev-list", "--parents", "-n", "1", merge_sha).split() != [merge_sha, previous, pr_head]:
+        require_git_sha(actual_pr_head, field_name="descendant.actual_pr_head_sha", code="DESCENDANT_EVIDENCE_MISMATCH")
+        if git._run("rev-list", "--parents", "-n", "1", merge_sha).split() != [merge_sha, previous, actual_pr_head]:
             raise P2AError("GIT_ANCESTRY_MISMATCH", "Descendant merge parents do not form exact main chain")
-        if not git.is_ancestor(previous, pr_head):
+        if not git.is_ancestor(previous, actual_pr_head) or not git.is_ancestor(pr_head, actual_pr_head):
             raise P2AError("GIT_ANCESTRY_MISMATCH", "Descendant reviewed head does not descend from its frozen base")
         process_task, process_result = _read_descendant_package(store, task, entry, "process")
-        human_task, human_result = _read_descendant_package(store, task, entry, "human")
+        human_task, human_result = _read_descendant_package(
+            store, task, entry, "human", required_status="BLOCKED" if retrospective else "PASS",
+        )
         if (process_task["task_type"] != "CODEX_PROCESS_REPAIR"
                 or human_task["task_type"] != HUMAN_MERGE_TASK_TYPE
                 or process_task["expected_base_sha"] != previous
@@ -516,19 +691,24 @@ def _verify_post_merge_descendants(
                 or human_result["pr"].get("head_sha") != pr_head
                 or human_result["pr"].get("base_sha") != previous
                 or human_result["pr"].get("merge_commit_sha") != merge_sha
+                or human_result["pr"].get("state") != "MERGED"
                 or human_result["head_sha"] != merge_sha):
             raise P2AError("DESCENDANT_EVIDENCE_MISMATCH", "Descendant process/Human PASS evidence does not bind actual merge")
         frozen_number, frozen_head, frozen_run = _human_frozen_review(human_task)
         if frozen_number != entry["pr_number"] or frozen_head != pr_head:
             raise P2AError("DESCENDANT_EVIDENCE_MISMATCH", "Human task frozen review differs from descendant PR")
-        human_facts = human_result["machine_facts"]
-        if (not isinstance(human_facts, dict)
-                or human_facts.get("evidence_mode") != "VERIFIED_PREDECESSOR_REUSE"
-                or human_facts.get("predecessor_task_file_id") != entry["process_task_file_id"]
-                or human_facts.get("predecessor_result_file_id") != entry["process_result_file_id"]
-                or human_facts.get("predecessor_review_package_file_id") != entry["process_review_package_file_id"]
-                or human_facts.get("predecessor_result_sha256") != entry["process_result_sha256"]):
-            raise P2AError("DESCENDANT_EVIDENCE_MISMATCH", "Human PASS does not bind verified process predecessor")
+        if retrospective:
+            _verify_retrospective_proof(store, task, entry, human_task, human_result,
+                                        process_result, github_inspector, git)
+        else:
+            human_facts = human_result["machine_facts"]
+            if (not isinstance(human_facts, dict)
+                    or human_facts.get("evidence_mode") != "VERIFIED_PREDECESSOR_REUSE"
+                    or human_facts.get("predecessor_task_file_id") != entry["process_task_file_id"]
+                    or human_facts.get("predecessor_result_file_id") != entry["process_result_file_id"]
+                    or human_facts.get("predecessor_review_package_file_id") != entry["process_review_package_file_id"]
+                    or human_facts.get("predecessor_result_sha256") != entry["process_result_sha256"]):
+                raise P2AError("DESCENDANT_EVIDENCE_MISMATCH", "Human PASS does not bind verified process predecessor")
         if (process_result["ci"].get("head_sha") != pr_head
                 or process_result["ci"].get("conclusion") != "success"
                 or human_result["ci"].get("head_sha") != merge_sha
@@ -539,7 +719,7 @@ def _verify_post_merge_descendants(
         if (observed_descendant.get("number") != entry["pr_number"]
                 or observed_descendant.get("state") != "MERGED"
                 or observed_descendant.get("baseRefOid") != previous
-                or observed_descendant.get("headRefOid") != pr_head
+                or observed_descendant.get("headRefOid") != actual_pr_head
                 or (observed_descendant.get("mergeCommit") or {}).get("oid") != merge_sha
                 or not observed_descendant.get("mergedAt")):
             raise P2AError("DESCENDANT_PR_MISMATCH", "Descendant PR is not the exact merged Code Truth")
@@ -562,8 +742,8 @@ def _verify_post_merge_descendants(
         process_files = set(process_result["changed_files"])
         if actual_files != process_files or not actual_files.issubset(PROCESS_DESCENDANT_PATHS):
             raise P2AError("DESCENDANT_SCOPE_VIOLATION", "Descendant delta is not exact authorized process-only scope")
-        branch_commits = git._run("rev-list", "--reverse", f"{previous}..{pr_head}").splitlines()
-        if not branch_commits or branch_commits[-1] != pr_head:
+        branch_commits = git._run("rev-list", "--reverse", f"{previous}..{actual_pr_head}").splitlines()
+        if not branch_commits or branch_commits[-1] != actual_pr_head:
             raise P2AError("GIT_ANCESTRY_MISMATCH", "Descendant reviewed branch history is incomplete")
         for commit in branch_commits:
             commit_files = set(git._run("diff-tree", "--no-commit-id", "--name-only", "-r", commit).splitlines())

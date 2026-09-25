@@ -1,0 +1,77 @@
+schema_version: cba-kb.p2a-task.v1
+req_id: REQ-181-CONSUMER-CLOSURE-01
+canonical_generation: 13
+task_id: 1fd42a9b-4f32-4db1-a809-9382261db473
+task_type: HUMAN_MERGE_EXECUTION
+stage: V181_PR37_EXACT_HEAD_HUMAN_MERGE
+issued_at_utc: '2026-09-25T05:36:00Z'
+issued_by: ChatGPT-Web-Auditor
+automation_version: 0.1.0
+policy_bundle_sha256: c628cc45e855090464eaaf1f4f8dae15636ddbc9451096654095759a3c2050b5
+repository: SkyCjq/cba-kb-engine
+expected_base_branch: main
+expected_base_sha: 9cd5dab298012eadaf8345f3f9d2709a2b5c2288
+feature_branch: codex/REQ-181-POST-MERGE-VERIFY-COMPAT
+allowed_paths:
+- NO_REPOSITORY_FILE_CHANGES_MERGE_ONLY
+must_not_change:
+- repository working tree or commit contents
+- PR 37 reviewed head
+- PR 37 base branch
+- any other PR
+- MASTER and six-table canonical business facts
+- Private Identity Registry
+- Production Identity Registry
+- Production Drive artifacts
+- Production manifest
+- Production release_status
+allowed_actions:
+- fresh-read GitHub PR 37 immediately before merge
+- require PR 37 state OPEN and merged false
+- require PR 37 base branch main
+- require PR 37 base SHA 9cd5dab298012eadaf8345f3f9d2709a2b5c2288
+- require PR 37 head SHA exactly acd69e479220222ff640e4de78b22e6e56e644c6
+- require Offline tests run 36098606914 event pull_request status completed conclusion success and head SHA acd69e479220222ff640e4de78b22e6e56e644c6
+- require the changed file set remains exactly .github/workflows/offline-tests.yml, automation/verify.py, tests/automation/test_negative_cases.py, tests/automation/test_verify.py
+- merge PR 37 using the repository normal human merge mechanism without altering commits
+- record the actual merge commit SHA, merge timestamp, PR URL, and merged_by
+- stop immediately after successful merge and return POST_MERGE_PROCESS_VERIFICATION
+forbidden_actions:
+- modify code, tests, workflow, automation, configuration, dependencies, or documentation before merge
+- amend, rebase, squash-rewrite, force-push, or otherwise change the reviewed PR head
+- merge any PR other than PR 37
+- close PR 37 without merging
+- create another pull request
+- delete the process branch before post-merge verification
+- publish or restore Production
+- mutate MASTER, canonical facts, any Identity Registry, Production Drive artifacts, Production manifest, or Production release_status
+- declare REQ-181 reconciled, Production GO, or CLOSED
+- hand-edit P2A stable pointers, history, results, or ledger
+focused_tests:
+- N/A_HUMAN_MERGE_USES_GEN12_VERIFIED_EXACT_HEAD_AND_CI
+full_regression: NOT_RERUN_DURING_MERGE_EXECUTION_USE_GEN12_VERIFIED_EVIDENCE
+max_internal_steps: 8
+max_internal_retries: 0
+max_runtime_minutes: 30
+next_executor: HUMAN
+return_gate: POST_MERGE_PROCESS_VERIFICATION
+canonical_binding:
+  canonical_req_root_folder_id: 1DPN6zv9hcNsb-GLsKogZ4gQxnHpqaNC4
+  canonical_current_folder_id: 17JTaOCgdpzsIngq2UVKgPdUzOgKwkTid
+  canonical_history_folder_id: 1HCHxoj-nVeDrv5faUF1ZDhrJ1n8KofAb
+  canonical_next_task_file_id: 12zXWAdS8xqAZTMa0UfYt4bTpRIKvAIRR
+  canonical_codex_result_file_id: 1fPMWEpSAagEdnKa6YNrYbBp1zoUuBdg9
+  canonical_update_mode: IN_PLACE_SAME_FILE_ID
+authority_binding:
+  requirement_revision: r2-20260924-antigravity-first-p2a-canary
+  requirement_sha256: b0eeb4dce691e2e7cce1d749ab7aef417756841f24c629c93dc4e22e3621a66c
+  predecessor_req_id: REQ-181-CONSUMER-CLOSURE-01
+  predecessor_terminal_generation: 12
+  predecessor_terminal_task_id: 0db5f066-e314-4ea4-8c50-ea9ad5db9c2d
+  predecessor_terminal_task_sha256: 196a2c36c06d109ba5ad7b1d5adcc2ba5bc89aff4c1f7ad7ae1db0123e077a95
+transition_binding:
+  source_result_required: true
+  supersedes_task_id: 0db5f066-e314-4ea4-8c50-ea9ad5db9c2d
+  supersedes_task_sha256: 196a2c36c06d109ba5ad7b1d5adcc2ba5bc89aff4c1f7ad7ae1db0123e077a95
+  transition_from_gate: CODEX_SUPERVISORY_REVIEW
+  transition_commit_required: true
