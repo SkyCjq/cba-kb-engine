@@ -111,6 +111,21 @@ def build_sample_profile_v2(player_uid="pid_0000000000000001"):
     )
 
 
+def sample_global_count_inputs():
+    uid = "pid_0000000000000001"
+    return {
+        "production_manifest": manifest(),
+        "identity_registry": new_registry(
+            [{"schema_version": 1, "player_uid": uid,
+              "canonical_name": "TEST PLAYER", "status": "ACTIVE", "redirect_to": None}],
+            record_links=[{"schema_version": 1, "record_key": "r1", "player_uid": uid,
+                           "link_status": "same", "method": "MANUAL_REVIEW",
+                           "confidence": "HIGH", "evidence_refs": ["ev-1"]}],
+        ),
+        "master_rows": [{"record_key": "r1"}],
+    }
+
+
 # 1. modern CURRENT_VERSION_DOC remains current for v1.8.1 and future non-v1.6.1 release IDs
 @pytest.mark.parametrize("release_id", ["v1.8.1-1", "v1.9.0-1", "v2.0.0-1"])
 def test_modern_current_version_doc_remains_current_for_v181_and_future_releases(release_id):
@@ -180,16 +195,18 @@ def test_public_github_wording_closure():
 # 4. existing profile-v2 identity boundary remains unchanged
 def test_existing_profile_v2_identity_boundary_remains_unchanged():
     profile = build_sample_profile_v2()
+    authority = sample_global_count_inputs()
     payload = build_consumer_payload(
         release_scope={"release_id": "v1.8.1-1", "as_of": "2026-09-24T00:00:00Z", "provenance": "frozen"},
         profile=profile,
         documents=[],
         sources=[],
+        **authority,
     )
-    packages = build_target_packages(payload)
+    packages = build_target_packages(payload, **authority)
     for target in CONSUMER_TARGETS:
         pkg = packages[target]
-        validated = validate_package(pkg)
+        validated = validate_package(pkg, **authority)
         nav = json.loads(validated["files"]["consumer_navigation_contract.json"])
         identity_policy = nav["identity_policy"]
         assert identity_policy["identity_selector"] == "player_uid"
@@ -266,7 +283,7 @@ def test_declared_machine_counts_equal_actual_machine_counts():
     assert validate_machine_counts(actual_counts, actual_counts) is True
 
     # Predecessor hardcoded count 246 must fail when declared != actual
-    with pytest.raises(ConsumerProjectionError, match="COUNT_MISMATCH"):
+    with pytest.raises(ConsumerProjectionError, match="MACHINE_COUNT_KEYS_MISMATCH"):
         validate_machine_counts({"production_artifact_count": 246}, actual_counts)
 
 
@@ -350,13 +367,19 @@ def test_emitted_packages_close_identity_and_counts_without_mutating_truth(same_
         generator_sha="b" * 64,
     )
     frozen_profile = copy.deepcopy(profile)
+    authority = {
+        "production_manifest": manifest(),
+        "identity_registry": registry_value,
+        "master_rows": rows,
+    }
     payload = build_consumer_payload(
         release_scope=dict(release_id="v1.8.1-1", as_of="2026-09-24T00:00:00Z",
                            provenance="frozen"), profile=profile, documents=[], sources=[],
+        **authority,
     )
-    packages = build_target_packages(payload)
+    packages = build_target_packages(payload, **authority)
     for package in packages.values():
-        validate_package(package)
+        validate_package(package, **authority)
         emitted = json.loads(package["files"][package["canonical_payload_file"]])
         relations = emitted["identity_projection"]["relations"]
         assert {item["state"] for item in relations} == {
@@ -372,13 +395,13 @@ def test_emitted_packages_close_identity_and_counts_without_mutating_truth(same_
             assert counts["not_same_count"] == 1
             assert counts["undecided_count"] == 1
             assert counts["unavailable_count"] == 1
-        assert emitted["coverage"]["production_artifact_count"] == 3
-        assert package["manifest"]["coverage"]["machine_counts"]["production_artifact_count"] == len(package["files"]) - 1
+        assert emitted["coverage"]["production_artifact_count"] == len(manifest())
+        assert package["manifest"]["coverage"]["machine_counts"]["production_artifact_count"] == len(manifest())
         assert emitted["player_profile"] == frozen_profile
         tampered = copy.deepcopy(package)
         tampered["manifest"]["coverage"]["machine_counts"]["production_artifact_count"] += 1
         with pytest.raises(ConsumerProjectionError, match="COUNT_MISMATCH"):
-            validate_package(tampered)
+            validate_package(tampered, **authority)
 
     # A freshly recomputed payload hash cannot legitimize invented relations or counts.
     for mutation in ("state", "count", "missing_count"):
@@ -395,6 +418,6 @@ def test_emitted_packages_close_identity_and_counts_without_mutating_truth(same_
         with pytest.raises((ConsumerPackageError, ConsumerProjectionError)):
             payload_bytes(tampered)
         with pytest.raises((ConsumerPackageError, ConsumerProjectionError)):
-            build_target_packages(tampered)
+            build_target_packages(tampered, **authority)
     assert (rows, registry_value) == frozen
     assert profile == frozen_profile

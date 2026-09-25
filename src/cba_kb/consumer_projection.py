@@ -347,18 +347,29 @@ def derive_machine_counts(manifest, identity_registry, master_rows=None):
     Never hard-code expected counts.
     Every declared count must be machine-derived and satisfy declared == actual.
     """
-    if isinstance(manifest, list):
-        artifacts_count = len(manifest)
-    elif isinstance(manifest, dict):
-        artifacts_count = len(manifest.get("artifacts", manifest.get("rows", [])))
-    else:
+    from .canonical_registry import manifest_index
+
+    if manifest is None:
         raise ConsumerProjectionError("MANIFEST_COLLECTION_REQUIRED")
+    try:
+        artifacts_count = len(manifest_index(manifest))
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise ConsumerProjectionError("MANIFEST_INVALID") from exc
+    if artifacts_count == 0:
+        raise ConsumerProjectionError("MANIFEST_EMPTY")
 
     if not isinstance(identity_registry, dict):
         raise ConsumerProjectionError("IDENTITY_REGISTRY_REQUIRED")
 
-    players = identity_registry.get("players", [])
-    record_links = identity_registry.get("record_links", [])
+    players = identity_registry.get("players")
+    record_links = identity_registry.get("record_links")
+    if not isinstance(players, list) or not isinstance(record_links, list):
+        raise ConsumerProjectionError("IDENTITY_REGISTRY_LISTS_REQUIRED")
+    if any(not isinstance(item, dict) for item in players + record_links):
+        raise ConsumerProjectionError("IDENTITY_REGISTRY_ROWS_INVALID")
+    if any(link.get("link_status") not in {"same", "not_same", "undecided"}
+           for link in record_links):
+        raise ConsumerProjectionError("IDENTITY_LINK_STATUS_INVALID")
 
     player_count = len(players)
     record_link_count = len(record_links)
@@ -367,13 +378,15 @@ def derive_machine_counts(manifest, identity_registry, master_rows=None):
     undecided_count = sum(1 for link in record_links if str(link.get("link_status")).lower() == "undecided")
 
     linked_keys = {link.get("record_key") for link in record_links if link.get("record_key")}
-    if master_rows is not None:
-        if not isinstance(master_rows, list):
-            raise ConsumerProjectionError("MASTER_ROWS_COLLECTION_REQUIRED")
-        all_record_keys = {row.get("record_key") for row in master_rows if row.get("record_key")}
-        unavailable_count = len(all_record_keys - linked_keys)
-    else:
-        unavailable_count = 0
+    if not isinstance(master_rows, list):
+        raise ConsumerProjectionError("MASTER_ROWS_COLLECTION_REQUIRED")
+    if any(not isinstance(row, dict) or not isinstance(row.get("record_key"), str)
+           or not row["record_key"] for row in master_rows):
+        raise ConsumerProjectionError("MASTER_ROWS_INVALID")
+    all_record_keys = {row["record_key"] for row in master_rows}
+    if len(all_record_keys) != len(master_rows) or not linked_keys <= all_record_keys:
+        raise ConsumerProjectionError("MASTER_LINK_COVERAGE_INVALID")
+    unavailable_count = len(all_record_keys - linked_keys)
 
     return {
         "production_artifact_count": artifacts_count,
@@ -391,9 +404,11 @@ def validate_machine_counts(declared_counts, actual_counts):
     """Verify that every declared count equals the actual machine-derived count."""
     if not isinstance(declared_counts, dict) or not isinstance(actual_counts, dict):
         raise ConsumerProjectionError("MACHINE_COUNTS_OBJECT_REQUIRED")
+    if set(declared_counts) != set(actual_counts):
+        raise ConsumerProjectionError("MACHINE_COUNT_KEYS_MISMATCH")
     for key, expected_val in declared_counts.items():
-        if key not in actual_counts:
-            raise ConsumerProjectionError(f"UNDECLARED_COUNT_KEY:{key}")
+        if type(expected_val) is not int or expected_val < 0:
+            raise ConsumerProjectionError(f"MACHINE_COUNT_INVALID:{key}")
         if actual_counts[key] != expected_val:
             raise ConsumerProjectionError(
                 f"COUNT_MISMATCH:{key}:declared={expected_val},actual={actual_counts[key]}"
@@ -438,6 +453,8 @@ def project_profile_identity(profile):
 
 def derive_consumer_counts(artifacts, projection):
     """Count emitted projection data; this is not an identity registry."""
+    if not isinstance(artifacts, list):
+        raise ConsumerProjectionError("ARTIFACT_COLLECTION_REQUIRED")
     links = [
         {"record_key": item["record_key"], "link_status": item["state"].lower()}
         for item in projection["relations"]
@@ -445,5 +462,6 @@ def derive_consumer_counts(artifacts, projection):
     ]
     rows = [{"record_key": item["record_key"]} for item in projection["relations"]]
     return derive_machine_counts(
-        artifacts, {"players": projection["players"], "record_links": links}, rows,
+        [{"uid": str(index)} for index, _ in enumerate(artifacts)],
+        {"players": projection["players"], "record_links": links}, rows,
     )
