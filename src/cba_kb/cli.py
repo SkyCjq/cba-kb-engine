@@ -8,7 +8,7 @@ from pathlib import Path
 from .common import atomic, digest, read, save
 from .master import inspect, build
 from .drive import Drive, credentials
-from .release import snapshot, prepare, publish, verify, restore
+from .release import snapshot, prepare, publish, verify, restore, adopt_execution_authority
 from .transport import stage
 from .instance import load_instance
 
@@ -255,6 +255,11 @@ def main():
             q.add_argument('--execution-authority-id')
             q.add_argument('--execution-authority-sha256')
         if cmd!='verify':q.add_argument('--single-writer',action='store_true')
+    q=sub.add_parser('adopt-authority'); q.add_argument('--release',type=Path,required=True)
+    q.add_argument('--execution-authority-id',required=True)
+    q.add_argument('--execution-authority-sha256',required=True)
+    q.add_argument('--reason',default='AUTHORIZED_RELEASE_ENGINEERING_RECOVERY')
+    q.add_argument('--single-writer',action='store_true')
     a=p.parse_args(); root=a.root.resolve()
     def private_instance():
         return load_instance(root,a.instance_root)
@@ -1186,18 +1191,26 @@ def main():
             plan=read(a.release/'plan.json')
             from .gates import authorize_plan
             authorize_plan(drive,root,plan,plan.get('environment','sandbox'),instance)
-            fn={'publish':publish,'verify':verify,'restore':restore}[a.command]
-            kwargs={'single_writer':a.single_writer} if a.command!='verify' else {}
-            if a.command in {'publish','verify'}:
-                values=(a.execution_authority_id,a.execution_authority_sha256)
-                if any(values) and not all(values):
-                    raise ValueError('EXECUTION_AUTHORITY_ID_AND_SHA_REQUIRED')
-                if all(values):
-                    kwargs['execution_authority']={
-                        'file_id':a.execution_authority_id,
-                        'sha256':a.execution_authority_sha256,
-                    }
-            result=fn(drive,a.release,**kwargs)
+            if a.command=='adopt-authority':
+                result=adopt_execution_authority(
+                    drive,a.release,
+                    {'file_id':a.execution_authority_id,'sha256':a.execution_authority_sha256},
+                    single_writer=a.single_writer,
+                    reason=a.reason,
+                )
+            else:
+                fn={'publish':publish,'verify':verify,'restore':restore}[a.command]
+                kwargs={'single_writer':a.single_writer} if a.command!='verify' else {}
+                if a.command in {'publish','verify'}:
+                    values=(a.execution_authority_id,a.execution_authority_sha256)
+                    if any(values) and not all(values):
+                        raise ValueError('EXECUTION_AUTHORITY_ID_AND_SHA_REQUIRED')
+                    if all(values):
+                        kwargs['execution_authority']={
+                            'file_id':a.execution_authority_id,
+                            'sha256':a.execution_authority_sha256,
+                        }
+                result=fn(drive,a.release,**kwargs)
         stage(a.command,'done')
         print(json.dumps(result,ensure_ascii=False,indent=2))
     except Exception as exc:

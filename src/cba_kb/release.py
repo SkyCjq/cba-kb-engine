@@ -1103,6 +1103,13 @@ def validate_execution_authority(root, plan, authority):
         }
         if recorded != expected_record:
             raise ValueError('EXECUTION_AUTHORITY_JOURNAL_BINDING_INVALID')
+        # Any supersession recorded for this transaction must stay a valid,
+        # contiguous and consistent audit chain; history loss fails closed.
+        history = _supersession_history(journal)
+        for sequence, entry in enumerate(history, 1):
+            _validate_supersession_event(entry, sequence)
+        if history and history[-1]['to'] != recorded:
+            raise ValueError('EXECUTION_AUTHORITY_JOURNAL_BINDING_INVALID')
         journal_sha = value.get('journal_sha256')
     required = {
         'schema_version': 'cba-kb.release-execution-rebind.v1',
@@ -1150,6 +1157,248 @@ def validate_execution_authority(root, plan, authority):
         'execution_authority_file_id': authority['file_id'],
         'execution_authority_sha256': authority['sha256'],
     }
+
+
+# In-flight recoverable states where an authorized release-engineering repair may
+# supersede the recorded executor. Product canonical mutation states are excluded.
+SUPERSESSION_STATES = ('ARCHIVING', 'ARCHIVE_COMPLETE')
+SUPERSESSION_CLASSIFICATION = 'EXECUTION_AUTHORITY_SUPERSESSION'
+SUPERSESSION_REASON = 'AUTHORIZED_RELEASE_ENGINEERING_RECOVERY'
+SUPERSESSION_AUTHORITY_FIELDS = {'file_id', 'sha256', 'release_execution_sha'}
+
+
+def _authority_record(file_id, sha256, release_execution_sha):
+    return {
+        'file_id': file_id,
+        'sha256': sha256,
+        'release_execution_sha': release_execution_sha,
+    }
+
+
+def _authority_record_valid(record):
+    return (isinstance(record, dict)
+            and set(record) == SUPERSESSION_AUTHORITY_FIELDS
+            and isinstance(record.get('file_id'), str)
+            and bool(record['file_id'])
+            and re.fullmatch('[0-9a-f]{64}', record.get('sha256') or '')
+            and re.fullmatch('[0-9a-f]{40}', record.get('release_execution_sha') or ''))
+
+
+def _supersession_history(journal):
+    history = journal.get('authority_supersessions')
+    if history is None:
+        return []
+    if not isinstance(history, list):
+        raise ValueError('AUTHORITY_SUPERSESSION_HISTORY_INVALID')
+    return history
+
+
+def _validate_supersession_event(entry, sequence):
+    required = {'sequence', 'classification', 'reason', 'state_at_adoption',
+                'pre_supersession_journal_sha256', 'from', 'to', 'release_id',
+                'plan_sha256', 'adopted_at'}
+    if not isinstance(entry, dict) or set(entry) != required:
+        raise ValueError('AUTHORITY_SUPERSESSION_HISTORY_INVALID')
+    if (entry['sequence'] != sequence
+            or entry['classification'] != SUPERSESSION_CLASSIFICATION
+            or not isinstance(entry['reason'], str)
+            or not re.fullmatch('[A-Z0-9_]{1,64}', entry['reason'])
+            or not re.fullmatch('[0-9a-f]{64}', entry['pre_supersession_journal_sha256'] or '')
+            or not re.fullmatch('[0-9a-f]{64}', entry['plan_sha256'] or '')
+            or entry['state_at_adoption'] not in SUPERSESSION_STATES
+            or not isinstance(entry['adopted_at'], str)
+            or not entry['adopted_at']
+            or not _authority_record_valid(entry['from'])
+            or not _authority_record_valid(entry['to'])):
+        raise ValueError('AUTHORITY_SUPERSESSION_HISTORY_INVALID')
+    return entry
+
+
+def _supersession_required_bindings(root, plan):
+    target_ids = [entry['id'] for entry in plan['entries']]
+    if len(target_ids) != len(set(target_ids)):
+        raise ValueError('EXECUTION_AUTHORITY_TARGET_INVALID')
+    return {
+        'schema_version': 'cba-kb.release-execution-rebind.v1',
+        'classification': 'V181_PRODUCTION_GO_EXECUTION_REBIND',
+        'status': 'APPROVED',
+        'approved_by': 'HUMAN_WEB',
+        'release_id': plan['release_id'],
+        'product_candidate_sha': (
+            plan.get('closure', {}).get('code_commit') or plan.get('code_commit')
+        ),
+        'candidate_entry_count': len(plan['entries']),
+        'candidate_hash_set_sha256': _candidate_hash_set(plan),
+        'target_id_count': len(target_ids),
+        'plan_sha256': digest(Path(root, 'plan.json').read_bytes()),
+        'release_readiness_file_id': V181_READINESS_ID,
+        'release_readiness_sha256': V181_READINESS_SHA256,
+        'original_production_go_file_id': V181_PRODUCTION_GO_ID,
+        'original_production_go_authority_payload_sha256': V181_PRODUCTION_GO_PAYLOAD_SHA256,
+        'production_baseline_state': 'COMPLETE',
+        'production_baseline_release_id': plan['previous_release_id'],
+        'production_baseline_release_status_sha256': plan['status_before_hash'],
+        'publish_authorized': True,
+        'pre_publish_canary_required': True,
+        'fail_closed_on_binding_drift': True,
+        'restore_authorized': False,
+        'official_controlled_publish_only': True,
+        'product_candidate_content_must_remain_unchanged': True,
+        'release_ci_workflow': 'Offline tests',
+        'release_ci_event': 'push',
+        'release_ci_conclusion': 'success',
+    }
+
+
+def validate_supersession_contract(root, plan, authority, journal=None, journal_raw=None):
+    """Fail-closed contract for adopting a superseding executor in flight.
+
+    Supersession is only permitted for an explicitly allowed recoverable state,
+    only from the exact predecessor recorded in the journal, only when every
+    immutable release binding is unchanged, and never as a replay or cycle.
+    """
+    root = Path(root)
+    if journal_raw is None or journal is None:
+        journal_raw = (root / 'journal.json').read_bytes()
+        journal = json.loads(journal_raw)
+    if plan.get('release_id') != V181_RELEASE_ID:
+        raise ValueError('EXECUTION_AUTHORITY_RELEASE_INVALID')
+    state = journal.get('state')
+    if state not in SUPERSESSION_STATES:
+        raise ValueError('AUTHORITY_SUPERSESSION_STATE_INVALID')
+    if state == 'ARCHIVING' and (journal.get('uploaded') != {}
+                                 or journal.get('inflight') is not None):
+        raise ValueError('AUTHORITY_SUPERSESSION_STATE_CONFLICT')
+    if state == 'ARCHIVE_COMPLETE':
+        validate_previous_snapshot(plan, journal.get('previous_snapshot'))
+    recorded = journal.get('execution_authority')
+    if not _authority_record_valid(recorded):
+        raise ValueError('EXECUTION_AUTHORITY_JOURNAL_BINDING_INVALID')
+    for entry in plan['entries']:
+        try:
+            observed = verified_local(root, entry, 'candidate')
+        except RuntimeError:
+            raise ValueError('EXECUTION_AUTHORITY_CANDIDATE_INVALID') from None
+        if digest(observed) != entry['after_hash']:
+            raise ValueError('EXECUTION_AUTHORITY_CANDIDATE_INVALID')
+    value = authority['value']
+    required = _supersession_required_bindings(root, plan)
+    new_sha = value.get('release_execution_sha')
+    if (not re.fullmatch('[0-9a-f]{40}', new_sha or '')
+            or value.get('release_merge_sha') != new_sha
+            or value.get('production_execution_sha_expected') != new_sha):
+        raise ValueError('AUTHORITY_SUPERSESSION_EXECUTOR_INVALID')
+    if (not isinstance(value.get('release_ci_run_id'), int)
+            or value['release_ci_run_id'] <= 0
+            or value.get('release_ci_head_sha') != new_sha
+            or any(value.get(key) != expected for key, expected in required.items())):
+        raise ValueError('AUTHORITY_SUPERSESSION_BINDING_INVALID')
+    if value.get('previous_release_execution_sha') != recorded['release_execution_sha']:
+        raise ValueError('AUTHORITY_SUPERSESSION_PREDECESSOR_MISMATCH')
+    history = _supersession_history(journal)
+    for sequence, entry in enumerate(history, 1):
+        _validate_supersession_event(entry, sequence)
+    if history:
+        last = history[-1]
+        if (last['to'] != recorded
+                or last['release_id'] != required['release_id']
+                or last['plan_sha256'] != required['plan_sha256']):
+            raise ValueError('AUTHORITY_SUPERSESSION_HISTORY_INVALID')
+    seen = {recorded['release_execution_sha']}
+    for entry in history:
+        seen.add(entry['from']['release_execution_sha'])
+        seen.add(entry['to']['release_execution_sha'])
+        if (entry['from']['release_execution_sha'] == recorded['release_execution_sha']
+                and entry['to']['release_execution_sha'] != new_sha):
+            raise ValueError('AUTHORITY_SUPERSESSION_CONFLICT')
+    if new_sha in seen:
+        raise ValueError('AUTHORITY_SUPERSESSION_CYCLE')
+    return {
+        'status': 'PERMITTED',
+        'release_id': required['release_id'],
+        'product_candidate_sha': required['product_candidate_sha'],
+        'candidate_hash_set_sha256': required['candidate_hash_set_sha256'],
+        'state': state,
+        'predecessor': dict(recorded),
+        'successor': _authority_record(authority['file_id'], authority['sha256'], new_sha),
+        'pre_supersession_journal_sha256': digest(journal_raw),
+        'sequence': len(history) + 1,
+    }
+
+
+def adopt_superseding_authority(root, plan, authority, *, reason=SUPERSESSION_REASON, now=None):
+    """Adopt a superseding executor authority into an in-flight journal checkpoint.
+
+    The prior authority record is preserved in an append-only audit chain; the
+    transaction identity, candidate, plan, archive checkpoint and release
+    state are never rewritten. Replaying the exact same adoption is a
+    deterministic no-op.
+    """
+    import datetime
+    root = Path(root)
+    if not isinstance(reason, str) or not re.fullmatch('[A-Z0-9_]{1,64}', reason):
+        raise ValueError('AUTHORITY_SUPERSESSION_REASON_INVALID')
+    journal_path = root / 'journal.json'
+    journal_raw = journal_path.read_bytes()
+    journal = json.loads(journal_raw)
+    value = authority['value']
+    target = _authority_record(authority['file_id'], authority['sha256'],
+                               value['release_execution_sha'])
+    if journal.get('execution_authority') == target:
+        history = _supersession_history(journal)
+        if not history or history[-1]['to'] != target:
+            raise ValueError('AUTHORITY_SUPERSESSION_HISTORY_INVALID')
+        return {
+            'status': 'ALREADY_ADOPTED',
+            'execution_authority': target,
+            'sequence': history[-1]['sequence'],
+            'pre_supersession_journal_sha256': history[-1]['pre_supersession_journal_sha256'],
+            'pre_journal_sha256': digest(journal_raw),
+            'post_journal_sha256': digest(journal_raw),
+        }
+    contract = validate_supersession_contract(root, plan, authority, journal, journal_raw)
+    moment = now or datetime.datetime.now(datetime.timezone.utc)
+    entry = {
+        'sequence': contract['sequence'],
+        'classification': SUPERSESSION_CLASSIFICATION,
+        'reason': reason,
+        'state_at_adoption': journal['state'],
+        'pre_supersession_journal_sha256': contract['pre_supersession_journal_sha256'],
+        'from': contract['predecessor'],
+        'to': contract['successor'],
+        'release_id': contract['release_id'],
+        'plan_sha256': digest((root / 'plan.json').read_bytes()),
+        'adopted_at': moment.astimezone(datetime.timezone.utc)
+                          .isoformat(timespec='seconds').replace('+00:00', 'Z'),
+    }
+    updated = dict(journal)
+    updated['authority_supersessions'] = _supersession_history(journal) + [entry]
+    updated['execution_authority'] = target
+    save(journal_path, updated)
+    post_raw = journal_path.read_bytes()
+    return {
+        'status': 'SUPERSEDED',
+        'execution_authority': target,
+        'sequence': entry['sequence'],
+        'state': updated['state'],
+        'pre_supersession_journal_sha256': contract['pre_supersession_journal_sha256'],
+        'pre_journal_sha256': contract['pre_supersession_journal_sha256'],
+        'post_journal_sha256': digest(post_raw),
+    }
+
+
+def adopt_execution_authority(drive, root, execution_authority=None, *,
+                              single_writer=False, reason=SUPERSESSION_REASON, now=None):
+    """Official single-writer entry point for in-flight executor supersession."""
+    root = Path(root)
+    if not single_writer:
+        raise RuntimeError('Single-writer maintenance window must be acknowledged')
+    with lock(root.parent / 'publish.lock'):
+        plan = read(root / 'plan.json')
+        authority = read_execution_authority(drive, execution_authority)
+        if authority is None:
+            raise ValueError('EXECUTION_AUTHORITY_REQUIRED')
+        return adopt_superseding_authority(root, plan, authority, reason=reason, now=now)
 
 
 def _authority_fields(data):
