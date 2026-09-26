@@ -251,6 +251,9 @@ def main():
     q.add_argument('--closure',type=Path,help='Frozen canonical/security closure JSON (required for v1.5.4)')
     for cmd in ('publish','verify','restore'):
         q=sub.add_parser(cmd); q.add_argument('--release',type=Path,required=True)
+        if cmd in {'publish','verify'}:
+            q.add_argument('--execution-authority-id')
+            q.add_argument('--execution-authority-sha256')
         if cmd!='verify':q.add_argument('--single-writer',action='store_true')
     a=p.parse_args(); root=a.root.resolve()
     def private_instance():
@@ -1184,7 +1187,17 @@ def main():
             from .gates import authorize_plan
             authorize_plan(drive,root,plan,plan.get('environment','sandbox'),instance)
             fn={'publish':publish,'verify':verify,'restore':restore}[a.command]
-            result=fn(drive,a.release,**({'single_writer':a.single_writer} if a.command!='verify' else {}))
+            kwargs={'single_writer':a.single_writer} if a.command!='verify' else {}
+            if a.command in {'publish','verify'}:
+                values=(a.execution_authority_id,a.execution_authority_sha256)
+                if any(values) and not all(values):
+                    raise ValueError('EXECUTION_AUTHORITY_ID_AND_SHA_REQUIRED')
+                if all(values):
+                    kwargs['execution_authority']={
+                        'file_id':a.execution_authority_id,
+                        'sha256':a.execution_authority_sha256,
+                    }
+            result=fn(drive,a.release,**kwargs)
         stage(a.command,'done')
         print(json.dumps(result,ensure_ascii=False,indent=2))
     except Exception as exc:

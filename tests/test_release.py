@@ -616,6 +616,54 @@ def test_code_mirror_rejects_release_outside_historical_baseline_lineage(tmp_pat
         verify_code_provenance(repo, release)
 
 
+def test_code_mirror_verifies_distinct_product_and_execution_commits(tmp_path):
+    import subprocess
+    import yaml
+    from cba_kb.release import verify_code_provenance
+
+    def run(repo, *args):
+        subprocess.run(['git', *args], cwd=repo, check=True)
+
+    def output(repo, *args):
+        return subprocess.check_output(['git', *args], cwd=repo, text=True).strip()
+
+    repo = tmp_path / 'repo'
+    run(tmp_path, 'init', '-q', str(repo))
+    (repo / 'module.py').write_text('baseline = 1\n')
+    run(repo, 'add', '.')
+    run(repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '-qm', 'baseline')
+    baseline = output(repo, 'rev-parse', 'HEAD')
+    directory = repo / 'requirements/REQ-154-CANONSEC-01'
+    directory.mkdir(parents=True)
+    (directory / 'task.yaml').write_text(yaml.safe_dump({'baseline_code_commit': baseline}))
+    run(repo, 'add', '.')
+    run(repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '-qm', 'product candidate')
+    product = output(repo, 'rev-parse', 'HEAD')
+    (repo / 'release.py').write_text('executor = 1\n')
+    run(repo, 'add', '.')
+    run(repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '-qm', 'release executor')
+    execution = output(repo, 'rev-parse', 'HEAD')
+    run(repo, 'update-ref', 'refs/remotes/origin/main', execution)
+
+    assert verify_code_provenance(repo, product, execution) == {
+        'status': 'PASS',
+        'product_candidate_sha': product,
+        'release_execution_sha': execution,
+    }
+    run(repo, 'checkout', '-q', product)
+    with pytest.raises(ValueError, match='NOT_MERGED'):
+        verify_code_provenance(repo, product, execution)
+    run(repo, 'checkout', '-q', execution)
+    with pytest.raises(ValueError, match='NOT_MERGED'):
+        verify_code_provenance(repo, product, '0' * 40)
+    (repo / 'release.py').write_text('executor = dirty\n')
+    with pytest.raises(ValueError, match='NOT_MERGED'):
+        verify_code_provenance(repo, product, execution)
+
+
 def test_incomplete_evidence_inventory_cannot_pass_closure(tmp_path):
     d, r = closure_setup(tmp_path)
     d.add('unfrozen-evidence', b'original evidence')
@@ -791,6 +839,144 @@ def test_native_authority_text_is_read_from_full_document():
         }] }},
     }]}
     assert release_module._native_evidence_text(document) == b'status: APPROVED\n'
+
+
+def _execution_authority_setup(tmp_path, mutate=None):
+    from cba_kb.common import save
+    d, r = closure_setup(tmp_path, 'v1.8.1-1')
+    plan = read(r / 'plan.json')
+    plan['environment'] = 'production'
+    save(r / 'plan.json', plan)
+    plan = read(r / 'plan.json')
+    execution_sha = 'c' * 40
+    value = {
+        'schema_version': 'cba-kb.release-execution-rebind.v1',
+        'classification': 'V181_PRODUCTION_GO_EXECUTION_REBIND',
+        'status': 'APPROVED',
+        'approved_by': 'HUMAN_WEB',
+        'release_id': plan['release_id'],
+        'product_candidate_sha': plan['closure']['code_commit'],
+        'candidate_entry_count': len(plan['entries']),
+        'candidate_hash_set_sha256': release_module._candidate_hash_set(plan),
+        'target_id_count': len(plan['entries']),
+        'plan_sha256': digest((r / 'plan.json').read_bytes()),
+        'journal_sha256': digest((r / 'journal.json').read_bytes()),
+        'journal_state': read(r / 'journal.json')['state'],
+        'release_readiness_file_id': release_module.V181_READINESS_ID,
+        'release_readiness_sha256': release_module.V181_READINESS_SHA256,
+        'original_production_go_file_id': release_module.V181_PRODUCTION_GO_ID,
+        'original_production_go_authority_payload_sha256': release_module.V181_PRODUCTION_GO_PAYLOAD_SHA256,
+        'release_execution_sha': execution_sha,
+        'release_merge_sha': execution_sha,
+        'production_execution_sha_expected': execution_sha,
+        'production_baseline_state': 'COMPLETE',
+        'production_baseline_release_id': plan['previous_release_id'],
+        'production_baseline_release_status_sha256': plan['status_before_hash'],
+        'publish_authorized': True,
+        'pre_publish_canary_required': True,
+        'fail_closed_on_binding_drift': True,
+        'restore_authorized': False,
+        'official_controlled_publish_only': True,
+        'product_candidate_content_must_remain_unchanged': True,
+        'release_ci_workflow': 'Offline tests',
+        'release_ci_event': 'push',
+        'release_ci_run_id': 12345,
+        'release_ci_head_sha': execution_sha,
+        'release_ci_conclusion': 'success',
+    }
+    if mutate:
+        mutate(value)
+    raw = json.dumps(value, sort_keys=True).encode()
+    d.add('execution-authority', raw, 'application/json')
+    binding = {'file_id': 'execution-authority', 'sha256': digest(raw)}
+    return d, r, plan, binding, execution_sha
+
+
+def test_execution_authority_allows_separate_frozen_product_and_executor(tmp_path, monkeypatch):
+    d, r, plan, binding, execution_sha = _execution_authority_setup(tmp_path)
+    authority = release_module.read_execution_authority(d, binding)
+    observed = {}
+
+    def verify(repo, product_candidate_sha, release_execution_sha):
+        observed.update(product=product_candidate_sha, execution=release_execution_sha)
+        return {'status': 'PASS'}
+
+    monkeypatch.setattr(release_module, 'verify_code_provenance', verify)
+    result = release_module.security_preflight(r, plan, authority)
+    assert result['status'] == 'PASS'
+    assert observed == {
+        'product': plan['closure']['code_commit'],
+        'execution': execution_sha,
+    }
+    assert read(r / 'plan.json')['closure']['code_commit'] != execution_sha
+
+
+@pytest.mark.parametrize(('mutate', 'error'), [
+    (lambda value: value.__setitem__('release_id', 'v1.8.0-1'), 'SEMANTIC_BINDING'),
+    (lambda value: value.__setitem__('product_candidate_sha', '0' * 40), 'SEMANTIC_BINDING'),
+    (lambda value: value.__setitem__('candidate_hash_set_sha256', '0' * 64), 'SEMANTIC_BINDING'),
+    (lambda value: value.__setitem__('release_readiness_sha256', '0' * 64), 'SEMANTIC_BINDING'),
+    (lambda value: value.__setitem__('original_production_go_file_id', 'wrong'), 'SEMANTIC_BINDING'),
+    (lambda value: value.__setitem__('production_baseline_release_status_sha256', '0' * 64), 'SEMANTIC_BINDING'),
+    (lambda value: value.__setitem__('production_execution_sha_expected', '0' * 40), 'SEMANTIC_BINDING'),
+    (lambda value: value.__setitem__('publish_authorized', False), 'SEMANTIC_BINDING'),
+    (lambda value: value.__setitem__('restore_authorized', True), 'SEMANTIC_BINDING'),
+])
+def test_execution_authority_binding_mismatch_fails_closed(tmp_path, mutate, error):
+    d, r, plan, binding, _ = _execution_authority_setup(tmp_path, mutate)
+    authority = release_module.read_execution_authority(d, binding)
+    with pytest.raises(ValueError, match=error):
+        release_module.validate_execution_authority(r, plan, authority)
+
+
+def test_v181_production_preflight_requires_execution_authority(tmp_path):
+    _, r, plan, _, _ = _execution_authority_setup(tmp_path)
+    with pytest.raises(ValueError, match='EXECUTION_AUTHORITY_REQUIRED'):
+        release_module.security_preflight(r, plan)
+
+
+def test_execution_authority_exact_hash_and_toc_tou_are_fail_closed(tmp_path):
+    d, _, _, binding, _ = _execution_authority_setup(tmp_path)
+    initial = release_module.read_execution_authority(d, binding)
+    d.files['execution-authority']['data'] += b'\n'
+    d.files['execution-authority']['version'] = '2'
+    with pytest.raises(ValueError, match='READBACK_MISMATCH'):
+        release_module.read_execution_authority(d, binding)
+    changed = copy.deepcopy(initial)
+    changed['fingerprint']['version'] = '2'
+    with pytest.raises(ValueError, match='CHANGED_DURING_PREFLIGHT'):
+        release_module.require_execution_authority_unchanged(initial, changed)
+
+
+def test_execution_authority_cannot_replace_frozen_plan_identity(tmp_path):
+    d, r, plan, binding, execution_sha = _execution_authority_setup(tmp_path)
+    authority = release_module.read_execution_authority(d, binding)
+    plan['closure']['code_commit'] = execution_sha
+    with pytest.raises(ValueError, match='FROZEN_PLAN_BINDING_INVALID'):
+        release_module.validate_execution_authority(r, plan, authority)
+
+
+def test_official_publish_preserves_product_executor_split_through_completion(
+        tmp_path, monkeypatch):
+    d, r, plan, binding, execution_sha = _execution_authority_setup(tmp_path)
+    _add_v181_post_freeze_evidence(d, r)
+    monkeypatch.setattr(
+        release_module, 'verify_code_provenance',
+        lambda repo, product, execution: {'status': 'PASS'},
+    )
+    journal = publish(d, r, True, binding)
+    assert journal['state'] == 'COMPLETE'
+    assert journal['execution_authority'] == {
+        'file_id': binding['file_id'],
+        'sha256': binding['sha256'],
+        'release_execution_sha': execution_sha,
+    }
+    status = json.loads(d.get('status'))
+    assert status['state'] == 'COMPLETE'
+    assert status['code_commit'] == plan['closure']['code_commit']
+    assert status['product_candidate_sha'] == plan['closure']['code_commit']
+    assert status['release_execution_sha'] == execution_sha
+    assert verify(d, r, binding)['verified'] == len(plan['entries'])
 
 
 def test_security_preflight_uses_logical_path_for_candidate(tmp_path):

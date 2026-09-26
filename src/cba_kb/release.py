@@ -14,6 +14,13 @@ from .current_state import clean
 
 FOLDER = 'application/vnd.google-apps.folder'
 DOC = 'application/vnd.google-apps.document'
+JSON = 'application/json'
+
+V181_RELEASE_ID = 'v1.8.1-1'
+V181_READINESS_ID = '1sA2TxUYAOGtcLfr2AhTLR4moBGIu2hoF'
+V181_READINESS_SHA256 = 'd167dfd6d3dc7e81cc37fa9629f6a8f62532ca19896ee7f80913b58a0acd77af'
+V181_PRODUCTION_GO_ID = '1H25ty3673TbSBTPs4S_lliPmZgRecxzhXD8i2lrl_CM'
+V181_PRODUCTION_GO_PAYLOAD_SHA256 = '014f37695af833d0d3d6796406a200253684a03b44e33a50b636f6fb5b72363c'
 
 RELEASE_STATE_SEQUENCE = (
     'PROJECTED',
@@ -549,7 +556,7 @@ def archive_snapshot(drive, root, plan):
     return previous
 
 
-def set_status(drive, plan, state, previous_snapshot):
+def set_status(drive, plan, state, previous_snapshot, release_execution_sha=None):
     import json
     if state == 'PUBLISHING':
         validate_previous_snapshot(plan, previous_snapshot)
@@ -571,6 +578,9 @@ def set_status(drive, plan, state, previous_snapshot):
             plan['closure']['code_commit'] if state == 'COMPLETE'
             else plan['closure'].get('previous_code_commit')
         )
+        if release_execution_sha and state != 'ROLLED_BACK':
+            status['product_candidate_sha'] = plan['closure']['code_commit']
+            status['release_execution_sha'] = release_execution_sha
     elif plan.get('code_commit'):
         status['code_commit'] = (
             plan['code_commit'] if state == 'COMPLETE'
@@ -584,12 +594,17 @@ def set_status(drive, plan, state, previous_snapshot):
     if drive.get(plan['status_id'])!=content: raise RuntimeError('Status readback failed')
 
 
-def publish(drive, root, single_writer=False):
+def publish(drive, root, single_writer=False, execution_authority=None):
     root=Path(root)
     if not single_writer: raise RuntimeError('Single-writer maintenance window must be acknowledged')
     with lock(root.parent/'publish.lock'):
         plan,journal=read(root/'plan.json'),read(root/'journal.json')
-        security_preflight(root, plan)
+        authority = read_execution_authority(drive, execution_authority)
+        security_preflight(root, plan, authority)
+        release_execution_sha = (
+            authority['value']['release_execution_sha'] if authority else
+            (plan.get('closure') or {}).get('code_commit') or plan.get('code_commit')
+        )
         stage('publish',f'release {plan["release_id"]} journal {journal["state"]}')
         if journal['state'] in ('ROLLED_BACK','ROLLING_BACK'):
             raise RuntimeError('Create a new plan after rollback')
@@ -614,7 +629,7 @@ def publish(drive, root, single_writer=False):
             current=json.loads(drive.get(plan['status_id']))
             if current.get('state')!='COMPLETE' or current.get('current_release_id')!=plan['release_id']:
                 raise RuntimeError('Publication status no longer refers to this complete release')
-            verify(drive,root); return journal
+            verify(drive,root,execution_authority); return journal
         # Preflight every object before any production mutation.
         for e in plan['entries']:
             data,meta=snapshot(drive,e['id'],e.get('mode','binary')); sha=digest(data)
@@ -628,7 +643,13 @@ def publish(drive, root, single_writer=False):
         if journal['state']=='PREPARED':
             require_archive_status_unchanged(drive, plan)
         if plan.get('closure'):
-            validate_closure(drive, root, plan, candidate=True)
+            validate_closure(
+                drive, root, plan, candidate=True,
+                execution_authority=authority,
+            )
+        current_authority = read_execution_authority(drive, execution_authority)
+        require_execution_authority_unchanged(authority, current_authority)
+        security_preflight(root, plan, current_authority)
         stage('publish','preflight passed')
         state = journal['state']
         pending_states = {'ARCHIVE_COMPLETE','PUBLISHING','VERIFYING'}
@@ -642,6 +663,12 @@ def publish(drive, root, single_writer=False):
             if state == 'PREPARED':
                 validate_state_transition('PREPARED','ARCHIVING')
             journal.update(state='ARCHIVING', uploaded={}, inflight=None)
+            if authority:
+                journal['execution_authority'] = {
+                    'file_id': authority['file_id'],
+                    'sha256': authority['sha256'],
+                    'release_execution_sha': release_execution_sha,
+                }
             save(root/'journal.json', journal)
             previous = archive_snapshot(drive, root, plan)
             validate_previous_snapshot(plan, previous)
@@ -664,10 +691,7 @@ def publish(drive, root, single_writer=False):
             if version_meta.get('modifiedTime'):
                 append_archive_checkpoint(
                     root/'archive-checkpoints',
-                    release_execution_sha=(
-                        (plan.get('closure') or {}).get('code_commit')
-                        or plan.get('code_commit') or '0' * 40
-                    ),
+                    release_execution_sha=release_execution_sha or '0' * 40,
                     release_id=plan['release_id'],
                     state='ARCHIVE_COMPLETE',
                     progress={'snapshots': len(previous)},
@@ -678,7 +702,10 @@ def publish(drive, root, single_writer=False):
                 validate_state_transition('ARCHIVE_COMPLETE','PUBLISHING')
                 journal['state']='PUBLISHING'
                 save(root/'journal.json',journal)
-                set_status(drive,plan,'PUBLISHING',previous)
+                set_status(
+                    drive, plan, 'PUBLISHING', previous,
+                    release_execution_sha,
+                )
             else:
                 current_status=json.loads(drive.get(plan['status_id']))
                 if current_status.get('pending_release_id')!=plan['release_id'] and current_status.get('current_release_id')!=plan['release_id']:
@@ -722,27 +749,41 @@ def publish(drive, root, single_writer=False):
             if state == 'PUBLISHING':
                 validate_state_transition('PUBLISHING','VERIFYING')
             journal['state']='VERIFYING'; save(root/'journal.json',journal)
-            verify(drive,root)
+            verify(drive,root,execution_authority)
             check_dependencies(drive,plan)
             for e in plan['entries']:relocate(drive,e,e.get('publish_parent'))
             if plan.get('closure'):
-                validate_closure(drive, root, plan, candidate=False, relocated=True)
+                validate_closure(
+                    drive, root, plan, candidate=False, relocated=True,
+                    execution_authority=authority,
+                )
             validate_state_transition('VERIFYING','COMPLETE')
-            set_status(drive,plan,'COMPLETE',previous)
+            set_status(
+                drive, plan, 'COMPLETE', previous,
+                release_execution_sha,
+            )
             if plan.get('closure'):
-                validate_closure(drive, root, plan, candidate=False, relocated=True, final=True)
+                validate_closure(
+                    drive, root, plan, candidate=False, relocated=True,
+                    final=True, execution_authority=authority,
+                )
             journal['state']='COMPLETE'; save(root/'journal.json',journal)
             stage('publish','COMPLETE')
         except BaseException:
             journal['failed_from']=journal.get('state')
             journal['state']='FAILED'; save(root/'journal.json',journal)
             if previous:
-                try: set_status(drive,plan,'FAILED',previous)
-                except Exception: pass
+                try:
+                    set_status(
+                        drive, plan, 'FAILED', previous,
+                        release_execution_sha,
+                    )
+                except Exception:
+                    pass
             raise
         return journal
 
-def security_preflight(root, plan):
+def security_preflight(root, plan, execution_authority=None):
     """Scan every frozen byte, including reports and retained rollback evidence."""
     import json
     from .common import child
@@ -773,13 +814,31 @@ def security_preflight(root, plan):
             or plan.get('code_commit')
         )
         if code_commit:
+            if plan['release_id'] == V181_RELEASE_ID:
+                if execution_authority is None:
+                    raise ValueError('EXECUTION_AUTHORITY_REQUIRED')
+                binding = validate_execution_authority(
+                    root, plan, execution_authority,
+                )
+                verify_code_provenance(
+                    Path(__file__).resolve().parents[2],
+                    code_commit,
+                    binding['release_execution_sha'],
+                )
+                return {
+                    'status': 'PASS',
+                    'product_candidate_sha': code_commit,
+                    'release_execution_sha': binding['release_execution_sha'],
+                    'execution_authority_sha256': execution_authority['sha256'],
+                }
             verify_code_provenance(
                 Path(__file__).resolve().parents[2], code_commit,
             )
+    return {'status': 'PASS'}
 
 
-def verify_code_provenance(repo, code_commit):
-    """Require a clean checkout of a baseline-descended commit merged to main."""
+def verify_code_provenance(repo, product_candidate_sha, release_execution_sha=None):
+    """Require the exact clean executor and product candidate on governed main."""
     import subprocess
     import yaml
     task_path = Path(repo) / 'requirements/REQ-154-CANONSEC-01/task.yaml'
@@ -788,20 +847,31 @@ def verify_code_provenance(repo, code_commit):
     trusted_main = 'refs/remotes/origin/main'
     def git(*args):
         return subprocess.check_output(['git', *args], cwd=repo, stderr=subprocess.DEVNULL, text=True).strip()
+    release_execution_sha = release_execution_sha or product_candidate_sha
     try:
-        if git('rev-parse', 'HEAD') != code_commit or git('status', '--porcelain', '--untracked-files=no'):
+        if (git('rev-parse', 'HEAD') != release_execution_sha
+                or git('status', '--porcelain', '--untracked-files=no')):
             raise ValueError('CODE_MIRROR_NOT_MERGED_COMMIT')
         git('rev-parse', '--verify', baseline + '^{commit}')
+        git('rev-parse', '--verify', product_candidate_sha + '^{commit}')
+        git('rev-parse', '--verify', release_execution_sha + '^{commit}')
         git('rev-parse', '--verify', trusted_main + '^{commit}')
-        if subprocess.run(['git', 'merge-base', '--is-ancestor', baseline, code_commit],
-                          cwd=repo, capture_output=True).returncode:
-            raise ValueError('CODE_MIRROR_NOT_MERGED_COMMIT')
-        if subprocess.run(['git', 'merge-base', '--is-ancestor', code_commit, trusted_main],
-                          cwd=repo, capture_output=True).returncode:
-            raise ValueError('CODE_MIRROR_NOT_MERGED_COMMIT')
+        for ancestor, descendant in (
+            (baseline, product_candidate_sha),
+            (product_candidate_sha, release_execution_sha),
+            (release_execution_sha, trusted_main),
+        ):
+            if subprocess.run(
+                    ['git', 'merge-base', '--is-ancestor', ancestor, descendant],
+                    cwd=repo, capture_output=True).returncode:
+                raise ValueError('CODE_MIRROR_NOT_MERGED_COMMIT')
     except subprocess.CalledProcessError:
         raise ValueError('CODE_MIRROR_NOT_MERGED_COMMIT') from None
-    return {'status': 'PASS', 'code_commit': code_commit}
+    return {
+        'status': 'PASS',
+        'product_candidate_sha': product_candidate_sha,
+        'release_execution_sha': release_execution_sha,
+    }
 
 
 def freeze_closure(drive, root, plan):
@@ -960,6 +1030,128 @@ def _candidate_hash_set(plan):
     return digest(canonical_bytes(values))
 
 
+def read_execution_authority(drive, binding):
+    """Exact-read a caller-bound immutable JSON execution authority."""
+    if binding is None:
+        return None
+    if (not isinstance(binding, dict)
+            or set(binding) != {'file_id', 'sha256'}
+            or not binding['file_id']
+            or not re.fullmatch('[0-9a-f]{64}', binding['sha256'])):
+        raise ValueError('EXECUTION_AUTHORITY_BINDING_INVALID')
+    raw, meta = snapshot(drive, binding['file_id'])
+    if meta['mimeType'] != JSON or digest(raw) != binding['sha256']:
+        raise ValueError('EXECUTION_AUTHORITY_READBACK_MISMATCH')
+    clean(raw, 'execution-authority/' + meta['id'])
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError('EXECUTION_AUTHORITY_SCHEMA_INVALID') from None
+    if not isinstance(value, dict):
+        raise ValueError('EXECUTION_AUTHORITY_SCHEMA_INVALID')
+    return {
+        'file_id': binding['file_id'],
+        'sha256': binding['sha256'],
+        'fingerprint': fingerprint(meta),
+        'value': value,
+    }
+
+
+def require_execution_authority_unchanged(before, after):
+    if before is None and after is None:
+        return True
+    if (before is None or after is None
+            or before['file_id'] != after['file_id']
+            or before['sha256'] != after['sha256']
+            or before['fingerprint'] != after['fingerprint']
+            or before['value'] != after['value']):
+        raise ValueError('EXECUTION_AUTHORITY_CHANGED_DURING_PREFLIGHT')
+    return True
+
+
+def validate_execution_authority(root, plan, authority):
+    """Bind legacy v1.8.1 product bytes to an independently reviewed executor."""
+    if authority is None:
+        raise ValueError('EXECUTION_AUTHORITY_REQUIRED')
+    root = Path(root)
+    frozen_plan = (root / 'plan.json').read_bytes()
+    frozen_journal = (root / 'journal.json').read_bytes()
+    if read(root / 'plan.json') != plan:
+        raise ValueError('FROZEN_PLAN_BINDING_INVALID')
+    product_candidate_sha = (
+        plan.get('closure', {}).get('code_commit') or plan.get('code_commit')
+    )
+    if plan.get('release_id') != V181_RELEASE_ID:
+        raise ValueError('EXECUTION_AUTHORITY_RELEASE_INVALID')
+    for entry in plan['entries']:
+        if digest(verified_local(root, entry, 'candidate')) != entry['after_hash']:
+            raise ValueError('EXECUTION_AUTHORITY_CANDIDATE_INVALID')
+    target_ids = [entry['id'] for entry in plan['entries']]
+    if len(target_ids) != len(set(target_ids)):
+        raise ValueError('EXECUTION_AUTHORITY_TARGET_INVALID')
+    value = authority['value']
+    execution_sha = value.get('release_execution_sha')
+    journal = json.loads(frozen_journal)
+    if journal.get('state') == 'PREPARED':
+        journal_sha = digest(frozen_journal)
+    else:
+        recorded = journal.get('execution_authority')
+        expected_record = {
+            'file_id': authority['file_id'],
+            'sha256': authority['sha256'],
+            'release_execution_sha': execution_sha,
+        }
+        if recorded != expected_record:
+            raise ValueError('EXECUTION_AUTHORITY_JOURNAL_BINDING_INVALID')
+        journal_sha = value.get('journal_sha256')
+    required = {
+        'schema_version': 'cba-kb.release-execution-rebind.v1',
+        'classification': 'V181_PRODUCTION_GO_EXECUTION_REBIND',
+        'status': 'APPROVED',
+        'approved_by': 'HUMAN_WEB',
+        'release_id': plan['release_id'],
+        'product_candidate_sha': product_candidate_sha,
+        'candidate_entry_count': len(plan['entries']),
+        'candidate_hash_set_sha256': _candidate_hash_set(plan),
+        'target_id_count': len(target_ids),
+        'plan_sha256': digest(frozen_plan),
+        'journal_sha256': journal_sha,
+        'journal_state': 'PREPARED',
+        'release_readiness_file_id': V181_READINESS_ID,
+        'release_readiness_sha256': V181_READINESS_SHA256,
+        'original_production_go_file_id': V181_PRODUCTION_GO_ID,
+        'original_production_go_authority_payload_sha256': V181_PRODUCTION_GO_PAYLOAD_SHA256,
+        'release_merge_sha': execution_sha,
+        'production_execution_sha_expected': execution_sha,
+        'production_baseline_state': 'COMPLETE',
+        'production_baseline_release_id': plan['previous_release_id'],
+        'production_baseline_release_status_sha256': plan['status_before_hash'],
+        'publish_authorized': True,
+        'pre_publish_canary_required': True,
+        'fail_closed_on_binding_drift': True,
+        'restore_authorized': False,
+        'official_controlled_publish_only': True,
+        'product_candidate_content_must_remain_unchanged': True,
+        'release_ci_workflow': 'Offline tests',
+        'release_ci_event': 'push',
+        'release_ci_head_sha': execution_sha,
+        'release_ci_conclusion': 'success',
+    }
+    if (not re.fullmatch('[0-9a-f]{40}', execution_sha or '')
+            or not isinstance(value.get('release_ci_run_id'), int)
+            or value['release_ci_run_id'] <= 0
+            or any(value.get(key) != expected for key, expected in required.items())):
+        raise ValueError('EXECUTION_AUTHORITY_SEMANTIC_BINDING_INVALID')
+    return {
+        'status': 'PASS',
+        'product_candidate_sha': product_candidate_sha,
+        'release_execution_sha': execution_sha,
+        'candidate_hash_set_sha256': required['candidate_hash_set_sha256'],
+        'execution_authority_file_id': authority['file_id'],
+        'execution_authority_sha256': authority['sha256'],
+    }
+
+
 def _authority_fields(data):
     fields = {}
     for line in data.decode('utf-8-sig').splitlines():
@@ -974,17 +1166,19 @@ def _authority_fields(data):
     return fields
 
 
-def validate_post_freeze_release_evidence(drive, root, plan, items):
+def validate_post_freeze_release_evidence(
+        drive, root, plan, items, execution_authority=None):
     """Validate the exact v1.8.1 acceptance -> readiness -> Human GO chain."""
-    production_go_id = '1H25ty3673TbSBTPs4S_lliPmZgRecxzhXD8i2lrl_CM'
-    production_go_payload = '014f37695af833d0d3d6796406a200253684a03b44e33a50b636f6fb5b72363c'
-    if plan['release_id'] != 'v1.8.1-1':
+    if plan['release_id'] != V181_RELEASE_ID:
         raise ValueError('EVIDENCE_BASELINE_COVERAGE')
     root = Path(root)
     plan_sha = digest((root / 'plan.json').read_bytes())
     journal_raw = (root / 'journal.json').read_bytes()
     journal_sha = digest(journal_raw)
     journal = json.loads(journal_raw)
+    if execution_authority:
+        journal_sha = execution_authority['value']['journal_sha256']
+        journal = {'state': execution_authority['value']['journal_state']}
     code_commit = plan['closure']['code_commit']
     candidate_hash = _candidate_hash_set(plan)
     baseline_status = {
@@ -1097,9 +1291,9 @@ def validate_post_freeze_release_evidence(drive, root, plan, items):
         'restore_authorized': 'false',
         'direct_manual_drive_copy_authorized': 'false',
         'official_controlled_publish_only': 'true',
-        'authority_payload_sha256': production_go_payload,
+        'authority_payload_sha256': V181_PRODUCTION_GO_PAYLOAD_SHA256,
     }
-    if (authority_item['id'] != production_go_id
+    if (authority_item['id'] != V181_PRODUCTION_GO_ID
             or any(authority.get(key) != value for key, value in required_authority.items())):
         raise ValueError('POST_FREEZE_AUTHORITY_BINDING_INVALID')
     return {
@@ -1112,7 +1306,9 @@ def validate_post_freeze_release_evidence(drive, root, plan, items):
     }
 
 
-def validate_closure(drive, root, plan, *, candidate, relocated=False, final=False):
+def validate_closure(
+        drive, root, plan, *, candidate, relocated=False, final=False,
+        execution_authority=None):
     import copy
     import csv
     import io
@@ -1240,7 +1436,9 @@ def validate_closure(drive, root, plan, *, candidate, relocated=False, final=Fal
         item for item in items if item['id'] in evidence_ids - frozen_evidence_ids
     ]
     if extra_evidence:
-        validate_post_freeze_release_evidence(drive, root, plan, extra_evidence)
+        validate_post_freeze_release_evidence(
+            drive, root, plan, extra_evidence, execution_authority,
+        )
     return {'status': 'PASS', 'release_id': plan['release_id']}
 
 
@@ -1256,9 +1454,10 @@ def _under(parents, roots, folders):
     return False
 
 
-def verify(drive, root):
+def verify(drive, root, execution_authority=None):
     plan=read(Path(root)/'plan.json')
-    security_preflight(Path(root), plan)
+    authority=read_execution_authority(drive, execution_authority)
+    security_preflight(Path(root), plan, authority)
     for e in plan['entries']:
         content = payload(drive,e)
         clean(content, 'readback/' + e['name'])
@@ -1266,7 +1465,10 @@ def verify(drive, root):
         if drive.meta(e['id'])['mimeType']!=e['mime'] or digest(content)!=e['after_hash']:
             raise RuntimeError('Remote verification failed: '+e['name'])
     if plan.get('closure'):
-        validate_closure(drive, Path(root), plan, candidate=False)
+        validate_closure(
+            drive, Path(root), plan, candidate=False,
+            execution_authority=authority,
+        )
     return {'verified':len(plan['entries'])}
 
 
