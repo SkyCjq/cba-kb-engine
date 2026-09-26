@@ -2,11 +2,16 @@
 
 Only read-only calls are retried. Writes stay single-attempt so that a lost
 response is resumed through the release journal instead of repeated blindly.
+
+A retryable read failure never implies a missing object: the caller must still
+complete exact identity/hash verification before any create path may run.
 """
+import importlib
 import json
 import http.client
 import re
 import socket
+import ssl
 import sys
 import time
 from datetime import datetime, timezone
@@ -15,7 +20,33 @@ URL_QUERY = re.compile(r'(https?://[^\s?]+)\?[^\s]+')
 SECRET = re.compile(r'(access_token|refresh_token|id_token|client_secret|key|sig|signature)=[^\s&]+')
 TRANSIENT_STATUS = (408, 429, 500, 502, 503, 504)
 TRANSIENT_TYPES = (TimeoutError, ConnectionError, socket.timeout, socket.gaierror,
-                   http.client.IncompleteRead, http.client.RemoteDisconnected)
+                   http.client.HTTPException, ssl.SSLError)
+RETRY_ATTEMPTS = 6
+RETRY_BASE_SECONDS = 1.0
+RETRY_MAX_DELAY = 8.0
+# Optional transport-layer libraries: classified only when importable. HTTP
+# errors stay status-classified so 401/403/404 can never become retryable.
+for _module, _name in (('httplib2', 'HttpLib2Error'),
+                       ('google.auth.exceptions', 'TransportError'),
+                       ('requests.exceptions', 'ConnectionError')):
+    try:
+        _type = getattr(importlib.import_module(_module), _name)
+    except Exception:
+        continue
+    if _type not in TRANSIENT_TYPES:
+        TRANSIENT_TYPES = TRANSIENT_TYPES + (_type,)
+
+READ_RETRY_STATS = {'attempts': 0, 'retries': 0, 'resets': 0, 'failures': 0}
+
+
+def read_retry_stats():
+    """Deterministic counters for release evidence; never contains payload data."""
+    return dict(READ_RETRY_STATS)
+
+
+def reset_read_retry_stats():
+    for key in READ_RETRY_STATS:
+        READ_RETRY_STATS[key] = 0
 
 
 def stage(name, message=''):
@@ -60,17 +91,28 @@ def transient(exception):
     return isinstance(exception, TRANSIENT_TYPES)
 
 
-def retry_read(call, attempts=4, base=0.5, label='drive', reset=None):
-    """Retry a read-only call; the original exception is re-raised when it gives up."""
+def retry_read(call, attempts=RETRY_ATTEMPTS, base=RETRY_BASE_SECONDS, label='drive',
+               reset=None, max_delay=RETRY_MAX_DELAY, sleep=None):
+    """Retry a read-only call with bounded deterministic backoff.
+
+    The `reset` hook must recreate a fresh transport so a known-broken session
+    is never reused; it is invoked before every retry, never before a write.
+    The original exception is re-raised once the budget is exhausted or the
+    failure is deterministic and non-transient.
+    """
     for attempt in range(1, attempts + 1):
+        READ_RETRY_STATS['attempts'] += 1
         try:
             return call()
         except Exception as exception:
             if attempt == attempts or not transient(exception):
+                READ_RETRY_STATS['failures'] += 1
                 stage(f'{label} failed', reason(exception))
                 raise
+            READ_RETRY_STATS['retries'] += 1
             if reset is not None:
                 reset()
-            delay = base * 2 ** (attempt - 1)
+                READ_RETRY_STATS['resets'] += 1
+            delay = min(base * 2 ** (attempt - 1), max_delay)
             stage(f'{label} retry', f'{reason(exception)}; attempt {attempt}/{attempts} in {delay:.1f}s')
-            time.sleep(delay)
+            (sleep or time.sleep)(delay)
