@@ -38,21 +38,54 @@ def credentials(root, interactive=False, credentials_store=None):
 
 class Drive:
     def __init__(self, root, instance=None):
+        self._credentials = credentials(
+            root, credentials_store=instance.credentials_store if instance else None,
+        )
+        self.docs = None
+        self._build_clients()
+
+    def _build_clients(self):
+        """Build a fresh Drive/Docs transport pair from the same credentials."""
         from googleapiclient.discovery import build
-        creds=credentials(root, credentials_store=instance.credentials_store if instance else None)
-        self.api = build('drive','v3',credentials=creds,cache_discovery=False)
         from .native import NativeDocs
-        docs_api = build('docs','v1',credentials=creds,cache_discovery=False)
-        self.docs=NativeDocs(docs_api)
+        docs_api = build('docs','v1',credentials=self._credentials,cache_discovery=False)
+        self.api = build('drive','v3',credentials=self._credentials,cache_discovery=False)
+        if self.docs is None:
+            self.docs = NativeDocs(docs_api)
+        else:
+            self.docs.api = docs_api
         self._read_clients = (self.api, docs_api)
 
     def _reset_read_connections(self):
-        """Discard broken pooled sockets before retrying a read, never a write."""
-        for api in getattr(self, '_read_clients', (self.api,)):
+        """Recreate fresh read transports before a read retry, never a write.
+
+        Credentials are reused unchanged; only the pooled transport is rebuilt
+        so a stale or broken session cannot be reused across attempts.
+        """
+        clients = getattr(self, '_read_clients', None) or (getattr(self, 'api', None),)
+        for api in clients:
+            if api is None:
+                continue
             http = getattr(api, '_http', None)
             http = getattr(http, 'http', http)
             if http is not None:
-                http.close()
+                try:
+                    http.close()
+                except Exception:
+                    pass
+        if getattr(self, '_credentials', None) is None:
+            return
+        try:
+            self._build_clients()
+        except Exception:
+            # Keep the closed transport: the next attempt fails closed instead
+            # of silently reusing a known-broken session.
+            pass
+
+    def document_json(self, file_id):
+        """Raw Docs readback under the bounded read-retry policy."""
+        return retry_read(lambda: self.docs.document(file_id), label='native document',
+                          reset=self._reset_read_connections)
 
     def get_managed_doc(self,file_id):
         if self.meta(file_id)['mimeType']!='application/vnd.google-apps.document':

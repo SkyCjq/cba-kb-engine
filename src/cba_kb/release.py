@@ -310,7 +310,7 @@ def scan_native_document(drive, entry):
     if entry.get('mode') != 'managed_doc':
         return
     import json
-    document = drive.docs.document(entry['id'])
+    document = drive.document_json(entry['id'])
     clean(json.dumps(document, ensure_ascii=False).encode(), 'native/' + entry['name'])
 
 
@@ -1016,7 +1016,7 @@ def _native_evidence_text(document):
 def _post_freeze_evidence_bytes(drive, item):
     if item['mimeType'] == DOC:
         before = fingerprint(drive.meta(item['id']))
-        data = _native_evidence_text(drive.docs.document(item['id']))
+        data = _native_evidence_text(drive.document_json(item['id']))
         after = fingerprint(drive.meta(item['id']))
         if before != after:
             raise RuntimeError('Remote changed during post-freeze evidence read')

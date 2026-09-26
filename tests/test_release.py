@@ -25,6 +25,8 @@ class FakeDrive:
         if self.fail==fid:self.fail=None;raise OSError('Lost response after accepted write')
     def list(self, parent):
         return [self.meta(fid) for fid in self.files if parent in self.files[fid]['parents']]
+    def document_json(self, fid):
+        return self.docs.document(fid)
     def ensure(self,parent,key,name,mime,content=None,*,index=None):
         fid=parent+'/'+key
         if fid not in self.files:
@@ -1574,7 +1576,8 @@ def test_read_retry_is_bounded_and_does_not_reset_for_permanent_error(monkeypatc
         raise BrokenPipeError('bounded')
     with pytest.raises(BrokenPipeError):
         transport.retry_read(broken, reset=lambda: resets.append(True))
-    assert len(attempts) == 4 and len(resets) == 3
+    assert len(attempts) == transport.RETRY_ATTEMPTS
+    assert len(resets) == transport.RETRY_ATTEMPTS - 1
     def permanent():
         raise ValueError('permanent')
     with pytest.raises(ValueError):
