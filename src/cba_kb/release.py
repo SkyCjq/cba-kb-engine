@@ -914,6 +914,204 @@ def _inventory(drive, zones):
     return list(items.values()), dict(zones, folders=parents)
 
 
+def _native_evidence_text(document):
+    """Read plain text from a single-tab authority Doc."""
+    tabs = document.get('tabs')
+    if tabs is None:
+        bodies = [document.get('body', {}).get('content', [])]
+    else:
+        if len(tabs) != 1 or tabs[0].get('childTabs'):
+            raise ValueError('POST_FREEZE_EVIDENCE_NATIVE_LAYOUT_UNSUPPORTED')
+        bodies = [tabs[0].get('documentTab', {}).get('body', {}).get('content', [])]
+
+    def text(elements):
+        result = []
+        for element in elements:
+            paragraph = element.get('paragraph')
+            if paragraph:
+                for part in paragraph.get('elements', []):
+                    run = part.get('textRun')
+                    if run:
+                        result.append(run.get('content', ''))
+            table = element.get('table')
+            if table:
+                for row in table.get('tableRows', []):
+                    for cell in row.get('tableCells', []):
+                        result.append(text(cell.get('content', [])))
+        return ''.join(result)
+
+    return ''.join(text(body) for body in bodies).encode('utf-8')
+
+
+def _post_freeze_evidence_bytes(drive, item):
+    if item['mimeType'] == DOC:
+        before = fingerprint(drive.meta(item['id']))
+        data = _native_evidence_text(drive.docs.document(item['id']))
+        after = fingerprint(drive.meta(item['id']))
+        if before != after:
+            raise RuntimeError('Remote changed during post-freeze evidence read')
+        return data
+    return snapshot(drive, item['id'])[0]
+
+
+def _candidate_hash_set(plan):
+    from .evidence_ledger import canonical_bytes
+    values = {entry['logical_key']: entry['after_hash'] for entry in plan['entries']}
+    return digest(canonical_bytes(values))
+
+
+def _authority_fields(data):
+    fields = {}
+    for line in data.decode('utf-8-sig').splitlines():
+        if ':' not in line:
+            continue
+        key, value = line.split(':', 1)
+        key, value = key.strip(), value.strip()
+        if re.fullmatch('[a-z][a-z0-9_]*', key) and value:
+            if key in fields:
+                raise ValueError('POST_FREEZE_AUTHORITY_DUPLICATE_FIELD')
+            fields[key] = value
+    return fields
+
+
+def validate_post_freeze_release_evidence(drive, root, plan, items):
+    """Validate the exact v1.8.1 acceptance -> readiness -> Human GO chain."""
+    production_go_id = '1H25ty3673TbSBTPs4S_lliPmZgRecxzhXD8i2lrl_CM'
+    production_go_payload = '014f37695af833d0d3d6796406a200253684a03b44e33a50b636f6fb5b72363c'
+    if plan['release_id'] != 'v1.8.1-1':
+        raise ValueError('EVIDENCE_BASELINE_COVERAGE')
+    root = Path(root)
+    plan_sha = digest((root / 'plan.json').read_bytes())
+    journal_raw = (root / 'journal.json').read_bytes()
+    journal_sha = digest(journal_raw)
+    journal = json.loads(journal_raw)
+    code_commit = plan['closure']['code_commit']
+    candidate_hash = _candidate_hash_set(plan)
+    baseline_status = {
+        'state': 'COMPLETE',
+        'current_release_id': plan['previous_release_id'],
+        'release_status_sha256': plan['status_before_hash'],
+    }
+    evidence = []
+    for item in items:
+        raw = _post_freeze_evidence_bytes(drive, item)
+        clean(raw, 'post-freeze/' + item['name'])
+        evidence.append((item, raw))
+
+    json_values, authorities = [], []
+    for item, raw in evidence:
+        try:
+            value = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            fields = _authority_fields(raw)
+            if fields.get('schema_version') != 'cba-kb.production-go.v1':
+                raise ValueError('POST_FREEZE_EVIDENCE_UNRECOGNIZED')
+            authorities.append((item, fields))
+        else:
+            if not isinstance(value, dict):
+                raise ValueError('POST_FREEZE_EVIDENCE_UNRECOGNIZED')
+            json_values.append((item, raw, value))
+
+    acceptances = [row for row in json_values if row[2].get('classification') == 'V181_CONSUMER_ACCEPTANCE_PASS']
+    readinesses = [row for row in json_values if row[2].get('classification') == 'V181_RELEASE_READINESS_PASS']
+    if len(evidence) != 3 or len(acceptances) != 1 or len(readinesses) != 1 or len(authorities) != 1:
+        raise ValueError('POST_FREEZE_EVIDENCE_SET_INVALID')
+    acceptance_item, acceptance_raw, acceptance = acceptances[0]
+    readiness_item, readiness_raw, readiness = readinesses[0]
+    authority_item, authority = authorities[0]
+    parents = {
+        tuple(item.get('parents') or [])
+        for item in (acceptance_item, readiness_item, authority_item)
+    }
+    modified = [
+        item.get('modifiedTime')
+        for item in (acceptance_item, readiness_item, authority_item)
+    ]
+    if (len(parents) != 1 or len(next(iter(parents), ())) != 1
+            or any(value is None for value in modified)
+            or not modified[0] < modified[1] < modified[2]):
+        raise ValueError('POST_FREEZE_EVIDENCE_STAGE_ORDER_INVALID')
+
+    candidate = {
+        'candidate_hash_set_sha256': candidate_hash,
+        'entry_count': len(plan['entries']),
+        'journal_sha256': journal_sha,
+        'journal_state': journal.get('state'),
+        'plan_sha256': plan_sha,
+    }
+    if (acceptance.get('schema_version') != 1 or acceptance.get('status') != 'PASS'
+            or acceptance.get('release_id') != plan['release_id']
+            or acceptance.get('main_sha') != code_commit
+            or acceptance.get('candidate') != candidate
+            or acceptance.get('golden', {}).get('schema_version') != 2
+            or acceptance.get('golden', {}).get('version') != 'v2'
+            or acceptance.get('global_consumer_closure', {}).get('status') != 'PASS'
+            or acceptance.get('global_consumer_closure', {}).get('manufactured_identity_relation') is not False
+            or set(acceptance.get('targets', {})) != {'ChatGPT', 'Gemini Notebook', 'WorkBuddy'}
+            or any(value.get('status') != 'PASS' for value in acceptance.get('targets', {}).values())):
+        raise ValueError('POST_FREEZE_ACCEPTANCE_BINDING_INVALID')
+
+    if (readiness.get('schema_version') != 1 or readiness.get('status') != 'PASS'
+            or readiness.get('release_id') != plan['release_id']
+            or readiness.get('main_sha') != code_commit
+            or readiness.get('candidate') != candidate
+            or readiness.get('consumer_acceptance', {}).get('evidence_sha256') != digest(acceptance_raw)
+            or any(readiness.get('consumer_acceptance', {}).get(name) != 'PASS'
+                   for name in ('ChatGPT', 'Gemini Notebook', 'WorkBuddy'))
+            or readiness.get('production_baseline') != baseline_status
+            or readiness.get('namespace_audit', {}).get('status') != 'PASS'
+            or readiness.get('namespace_audit', {}).get('violations') != 0
+            or readiness.get('production_mutation') != 0
+            or readiness.get('publish') != 'NOT_RUN'
+            or readiness.get('restore') != 'NOT_RUN'):
+        raise ValueError('POST_FREEZE_READINESS_BINDING_INVALID')
+    invariants = readiness.get('identity_invariants', {})
+    if (invariants.get('identity_semantic_delta') != 'ZERO'
+            or any(invariants.get(key) != 0 for key in (
+                'canonical_business_fact_delta', 'identity_authority_change',
+                'identity_registry_mutation', 'machine_final_uid_decisions',
+                'master_mutation', 'new_identity_decisions', 'new_not_same_decisions',
+                'new_same_decisions', 'player_uid_mutation'))):
+        raise ValueError('POST_FREEZE_READINESS_IDENTITY_INVALID')
+
+    required_authority = {
+        'schema_version': 'cba-kb.production-go.v1',
+        'classification': 'V181_PRODUCTION_GO',
+        'status': 'APPROVED',
+        'approved_by': 'HUMAN',
+        'release_id': plan['release_id'],
+        'main_sha': code_commit,
+        'release_readiness_file_id': readiness_item['id'],
+        'release_readiness_sha256': digest(readiness_raw),
+        'candidate_entry_count': str(len(plan['entries'])),
+        'candidate_hash_set_sha256': candidate_hash,
+        'plan_sha256': plan_sha,
+        'journal_sha256': journal_sha,
+        'journal_state': journal.get('state'),
+        'production_baseline_state': baseline_status['state'],
+        'production_baseline_release_id': baseline_status['current_release_id'],
+        'production_baseline_release_status_sha256': baseline_status['release_status_sha256'],
+        'publish_authorized': 'true',
+        'pre_publish_canary_required': 'true',
+        'fail_closed_on_binding_drift': 'true',
+        'restore_authorized': 'false',
+        'direct_manual_drive_copy_authorized': 'false',
+        'official_controlled_publish_only': 'true',
+        'authority_payload_sha256': production_go_payload,
+    }
+    if (authority_item['id'] != production_go_id
+            or any(authority.get(key) != value for key, value in required_authority.items())):
+        raise ValueError('POST_FREEZE_AUTHORITY_BINDING_INVALID')
+    return {
+        'status': 'PASS',
+        'frozen_protected_evidence': 'INTACT',
+        'post_freeze_release_evidence': 'VALID',
+        'acceptance_id': acceptance_item['id'],
+        'readiness_id': readiness_item['id'],
+        'authority_id': authority_item['id'],
+    }
+
+
 def validate_closure(drive, root, plan, *, candidate, relocated=False, final=False):
     import copy
     import csv
@@ -1033,8 +1231,16 @@ def validate_closure(drive, root, plan, *, candidate, relocated=False, final=Fal
         if entry.get('publish_parent')
         and _under([entry['publish_parent']], zones['evidence'], zones.get('folders', {}))
     )
-    if evidence_ids != {item['id'] for item in protected.values() if item['kind'] == 'evidence'}:
+    frozen_evidence_ids = {
+        item['id'] for item in protected.values() if item['kind'] == 'evidence'
+    }
+    if not frozen_evidence_ids <= evidence_ids:
         raise ValueError('EVIDENCE_BASELINE_COVERAGE')
+    extra_evidence = [
+        item for item in items if item['id'] in evidence_ids - frozen_evidence_ids
+    ]
+    if extra_evidence:
+        validate_post_freeze_release_evidence(drive, root, plan, extra_evidence)
     return {'status': 'PASS', 'release_id': plan['release_id']}
 
 

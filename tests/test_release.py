@@ -279,7 +279,7 @@ def test_new_object_moves_and_restores(tmp_path):
     restore(d,r,True);assert d.meta('a')['parents']==['sandbox']
 
 
-def closure_setup(tmp_path):
+def closure_setup(tmp_path, release_id='v1.5.4-test'):
     """A real byte-level control transaction using only a credential-free fake."""
     import csv
     import io
@@ -318,13 +318,15 @@ def closure_setup(tmp_path):
         d.add(fid, data)
         d.files[fid]['parents'] = [parent]
     reg = registry()
-    meta = target_metadata('v1.5.4-test', SHA, reg)
+    reg['registry_release_id'] = release_id
+    meta = target_metadata(release_id, SHA, reg)
     manifest_rows = [
         {'uid': 'facts/events.jsonl', 'drive_file_id': 'event-file', 'content_hash': digest(source)},
         {'uid': 'facts/old_events.jsonl', 'drive_file_id': 'compat-file', 'content_hash': digest(compat)},
     ]
+    version_role = 'current_version_doc' if release_id == 'v1.8.1-1' else 'version'
     docs = {'readme': 'docs/readme', 'index': 'docs/index',
-            'version': 'docs/version', 'context_card': 'ai/context'}
+            version_role: 'docs/version', 'context_card': 'ai/context'}
     content = {
         'control/registry': yaml.safe_dump(reg).encode(),
         **{key: render_current_state(meta).encode() for key in docs.values()},
@@ -380,7 +382,7 @@ def closure_setup(tmp_path):
         ],
     }
     root = tmp_path / 'closure-release'
-    prepare(d, root, 'v1.5.4-test', entries, 'archive', 'status', closure=request)
+    prepare(d, root, release_id, entries, 'archive', 'status', closure=request)
     return d, root
 
 
@@ -621,6 +623,174 @@ def test_incomplete_evidence_inventory_cannot_pass_closure(tmp_path):
     with pytest.raises(ValueError, match='EVIDENCE_BASELINE_COVERAGE'):
         publish(d, r, True)
     assert not d.calls
+
+
+def _add_v181_post_freeze_evidence(drive, root, mutate=None):
+    plan = read(root / 'plan.json')
+    journal = read(root / 'journal.json')
+    candidate = {
+        'candidate_hash_set_sha256': release_module._candidate_hash_set(plan),
+        'entry_count': len(plan['entries']),
+        'journal_sha256': digest((root / 'journal.json').read_bytes()),
+        'journal_state': journal['state'],
+        'plan_sha256': digest((root / 'plan.json').read_bytes()),
+    }
+    acceptance = {
+        'schema_version': 1,
+        'classification': 'V181_CONSUMER_ACCEPTANCE_PASS',
+        'status': 'PASS',
+        'release_id': plan['release_id'],
+        'main_sha': plan['closure']['code_commit'],
+        'candidate': candidate,
+        'golden': {'schema_version': 2, 'version': 'v2'},
+        'global_consumer_closure': {
+            'status': 'PASS', 'manufactured_identity_relation': False,
+        },
+        'targets': {
+            name: {'status': 'PASS'}
+            for name in ('ChatGPT', 'Gemini Notebook', 'WorkBuddy')
+        },
+    }
+    acceptance_raw = json.dumps(acceptance, sort_keys=True).encode()
+    readiness = {
+        'schema_version': 1,
+        'classification': 'V181_RELEASE_READINESS_PASS',
+        'status': 'PASS',
+        'release_id': plan['release_id'],
+        'main_sha': plan['closure']['code_commit'],
+        'candidate': candidate,
+        'consumer_acceptance': {
+            'ChatGPT': 'PASS', 'Gemini Notebook': 'PASS', 'WorkBuddy': 'PASS',
+            'evidence_sha256': digest(acceptance_raw),
+        },
+        'production_baseline': {
+            'state': 'COMPLETE',
+            'current_release_id': plan['previous_release_id'],
+            'release_status_sha256': plan['status_before_hash'],
+        },
+        'namespace_audit': {'status': 'PASS', 'violations': 0},
+        'identity_invariants': {
+            'identity_semantic_delta': 'ZERO',
+            **{key: 0 for key in (
+                'canonical_business_fact_delta', 'identity_authority_change',
+                'identity_registry_mutation', 'machine_final_uid_decisions',
+                'master_mutation', 'new_identity_decisions', 'new_not_same_decisions',
+                'new_same_decisions', 'player_uid_mutation',
+            )},
+        },
+        'production_mutation': 0,
+        'publish': 'NOT_RUN',
+        'restore': 'NOT_RUN',
+    }
+    readiness_raw = json.dumps(readiness, sort_keys=True).encode()
+    authority = {
+        'schema_version': 'cba-kb.production-go.v1',
+        'classification': 'V181_PRODUCTION_GO',
+        'status': 'APPROVED',
+        'approved_by': 'HUMAN',
+        'release_id': plan['release_id'],
+        'main_sha': plan['closure']['code_commit'],
+        'release_readiness_file_id': 'post-readiness',
+        'release_readiness_sha256': digest(readiness_raw),
+        'candidate_entry_count': str(len(plan['entries'])),
+        'candidate_hash_set_sha256': candidate['candidate_hash_set_sha256'],
+        'plan_sha256': candidate['plan_sha256'],
+        'journal_sha256': candidate['journal_sha256'],
+        'journal_state': candidate['journal_state'],
+        'production_baseline_state': 'COMPLETE',
+        'production_baseline_release_id': plan['previous_release_id'],
+        'production_baseline_release_status_sha256': plan['status_before_hash'],
+        'publish_authorized': 'true',
+        'pre_publish_canary_required': 'true',
+        'fail_closed_on_binding_drift': 'true',
+        'restore_authorized': 'false',
+        'direct_manual_drive_copy_authorized': 'false',
+        'official_controlled_publish_only': 'true',
+        'authority_payload_sha256': '014f37695af833d0d3d6796406a200253684a03b44e33a50b636f6fb5b72363c',
+    }
+    values = {'acceptance': acceptance, 'readiness': readiness, 'authority': authority}
+    if mutate:
+        mutate(values)
+        acceptance_raw = json.dumps(acceptance, sort_keys=True).encode()
+        readiness_raw = json.dumps(readiness, sort_keys=True).encode()
+    authority_raw = ('\n'.join(f'{key}: {value}' for key, value in authority.items()) + '\n').encode()
+    for index, (file_id, raw) in enumerate((
+        ('post-acceptance', acceptance_raw),
+        ('post-readiness', readiness_raw),
+        ('1H25ty3673TbSBTPs4S_lliPmZgRecxzhXD8i2lrl_CM', authority_raw),
+    )):
+        mime = 'text/plain' if file_id == '1H25ty3673TbSBTPs4S_lliPmZgRecxzhXD8i2lrl_CM' else 'application/json'
+        drive.add(file_id, raw, mime)
+        drive.files[file_id]['parents'] = ['evidence-folder']
+        drive.files[file_id]['modifiedTime'] = f'2026-09-25T16:08:{13 + index * 3:02d}.000Z'
+    return plan, candidate
+
+
+def test_bound_post_freeze_release_evidence_passes_without_candidate_mutation(tmp_path):
+    d, r = closure_setup(tmp_path, 'v1.8.1-1')
+    plan, candidate = _add_v181_post_freeze_evidence(d, r)
+    before = [(entry['id'], entry['after_hash']) for entry in plan['entries']]
+    assert release_module.validate_closure(d, r, plan, candidate=True)['status'] == 'PASS'
+    assert [(entry['id'], entry['after_hash']) for entry in read(r / 'plan.json')['entries']] == before
+    assert release_module._candidate_hash_set(read(r / 'plan.json')) == candidate['candidate_hash_set_sha256']
+
+
+@pytest.mark.parametrize(('mutate', 'error'), [
+    (lambda value: value['acceptance'].__setitem__('release_id', 'v1.8.0-1'), 'ACCEPTANCE_BINDING'),
+    (lambda value: value['acceptance']['candidate'].__setitem__('candidate_hash_set_sha256', '0' * 64), 'ACCEPTANCE_BINDING'),
+    (lambda value: value['acceptance'].__setitem__('main_sha', '0' * 40), 'ACCEPTANCE_BINDING'),
+    (lambda value: value['readiness']['consumer_acceptance'].__setitem__('evidence_sha256', '0' * 64), 'READINESS_BINDING'),
+    (lambda value: value['authority'].__setitem__('release_readiness_sha256', '0' * 64), 'AUTHORITY_BINDING'),
+    (lambda value: value['authority'].__setitem__('publish_authorized', 'false'), 'AUTHORITY_BINDING'),
+    (lambda value: value['authority'].__setitem__('release_id', 'v1.8.0-1'), 'AUTHORITY_BINDING'),
+    (lambda value: value['authority'].__setitem__('main_sha', '0' * 40), 'AUTHORITY_BINDING'),
+    (lambda value: value['authority'].__setitem__('candidate_hash_set_sha256', '0' * 64), 'AUTHORITY_BINDING'),
+    (lambda value: value['authority'].__setitem__('authority_payload_sha256', '0' * 64), 'AUTHORITY_BINDING'),
+])
+def test_post_freeze_release_evidence_binding_mismatch_fails_closed(tmp_path, mutate, error):
+    d, r = closure_setup(tmp_path, 'v1.8.1-1')
+    plan, _ = _add_v181_post_freeze_evidence(d, r, mutate)
+    with pytest.raises(ValueError, match=error):
+        release_module.validate_closure(d, r, plan, candidate=True)
+
+
+def test_unknown_post_freeze_evidence_still_fails_closed(tmp_path):
+    d, r = closure_setup(tmp_path, 'v1.8.1-1')
+    plan, _ = _add_v181_post_freeze_evidence(d, r)
+    d.add('unexpected-post-freeze', b'{}', 'application/json')
+    d.files['unexpected-post-freeze']['parents'] = ['evidence-folder']
+    with pytest.raises(ValueError, match='POST_FREEZE_EVIDENCE_SET_INVALID'):
+        release_module.validate_closure(d, r, plan, candidate=True)
+
+
+def test_post_freeze_release_evidence_stage_order_fails_closed(tmp_path):
+    d, r = closure_setup(tmp_path, 'v1.8.1-1')
+    plan, _ = _add_v181_post_freeze_evidence(d, r)
+    d.files['post-readiness']['modifiedTime'] = '2026-09-25T16:08:10.000Z'
+    with pytest.raises(ValueError, match='STAGE_ORDER'):
+        release_module.validate_closure(d, r, plan, candidate=True)
+
+
+@pytest.mark.parametrize('change', ['modified', 'missing'])
+def test_post_freeze_support_does_not_weaken_frozen_evidence(tmp_path, change):
+    d, r = closure_setup(tmp_path, 'v1.8.1-1')
+    plan, _ = _add_v181_post_freeze_evidence(d, r)
+    if change == 'modified':
+        d.files['evidence']['data'] = b'replaced frozen evidence'
+    else:
+        del d.files['evidence']
+    with pytest.raises((ValueError, KeyError)):
+        release_module.validate_closure(d, r, plan, candidate=True)
+
+
+def test_native_authority_text_is_read_from_full_document():
+    document = {'tabs': [{
+        'tabProperties': {'tabId': 'tab'},
+        'documentTab': {'body': {'content': [{
+            'paragraph': {'elements': [{'textRun': {'content': 'status: APPROVED\n'}}]},
+        }] }},
+    }]}
+    assert release_module._native_evidence_text(document) == b'status: APPROVED\n'
 
 
 def test_security_preflight_uses_logical_path_for_candidate(tmp_path):
