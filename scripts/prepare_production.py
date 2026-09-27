@@ -456,11 +456,11 @@ def validate_release_state(drive, instance, projection, allocation):
     state = status.get("state")
     readable_state = state == "COMPLETE"
     if (
-        projection.get("release_id") == "v1.6.1-1"
-        and state == "ROLLED_BACK"
+        state == "ROLLED_BACK"
     ):
         readable_state = (
-            status.get("rolled_back_release_id") == "v1.6.1-1"
+            (projection.get("release_id") == "v1.6.1-1" and status.get("rolled_back_release_id") == "v1.6.1-1")
+            or (projection.get("release_id") == "v1.8.1-3" and status.get("rolled_back_release_id") == "v1.8.1-2")
         )
     if (
         not readable_state
