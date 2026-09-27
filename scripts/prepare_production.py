@@ -46,6 +46,9 @@ RELEASE_SPECS = {
     "v1.8.1-1": {
         "product_baseline_sha": "9cd5dab298012eadaf8345f3f9d2709a2b5c2288",
     },
+    "v1.8.1-2": {
+        "product_baseline_sha": "b98a4daec0a2d7849d9f4f43306a073f9eaeb53c",
+    },
 }
 FOLDER = "application/vnd.google-apps.folder"
 NATIVE_DOCUMENT = "application/vnd.google-apps.document"
@@ -611,7 +614,7 @@ def _candidate_inputs(drive, engine_root, projection, allocation, output):
     registry = None
     registry_bytes = None
     manifest_previous = None
-    if projection["release_id"] in {"v1.6.1-1", "v1.8.1-1"}:
+    if projection["release_id"] in {"v1.6.1-1", "v1.8.1-1", "v1.8.1-2"}:
         if REGISTRY_KEY not in item_by_key or MANIFEST_KEY not in item_by_key:
             raise ProjectionError("CLOSURE_CONTROL_TARGET_MISSING")
         registry_previous, _ = snapshot(
@@ -848,7 +851,7 @@ def _content_preserving_candidate(logical_key, previous, projection, allocation,
         migration = (
             Path(engine_root) / "docs/MASTER_MIGRATION_NOTE.md"
         ).read_text()
-        return (
+        body_text = (
             f"# {title}\n\n"
             f"当前发布：{release_id}\n\n"
             f"代码提交：{engine_sha}\n\n"
@@ -858,7 +861,11 @@ def _content_preserving_candidate(logical_key, previous, projection, allocation,
             f"## Current target mapping\n\n{links}\n\n"
             f"## Operations\n\n{operations}\n\n"
             f"## Migration\n\n{migration}\n"
-        ).encode()
+        )
+        if metadata is not None:
+            from cba_kb.current_state import render_current_state
+            body_text = render_current_state(metadata) + body_text
+        return body_text.encode()
     preserved = _managed_body(previous)
     if metadata is not None:
         preserved = replace_current_block(preserved, metadata)
@@ -936,6 +943,8 @@ def _build_closure_contract(*, drive, instance, projection, allocation,
         "context_card": CONTEXT_CARD_KEY,
         "current_version_doc": "CURRENT_VERSION_DOC",
     }
+    if projection.get("release_id") in {"v1.8.1-2"}:
+        document_keys["technical_manual"] = "entry/context"
     required = {REGISTRY_KEY, MANIFEST_KEY, *document_keys.values()}
     if not required <= set(by_key):
         raise ProjectionError("CLOSURE_CONTROL_TARGET_MISSING")
@@ -1055,7 +1064,7 @@ def freeze_plan(
     dependencies = load_production_dependencies(drive, policy)
     outbox = output / "outbox"
     closure = None
-    if release_id in {"v1.6.1-1", "v1.8.1-1"}:
+    if release_id in {"v1.6.1-1", "v1.8.1-1", "v1.8.1-2"}:
         closure = _build_closure_contract(
             drive=drive,
             instance=instance,

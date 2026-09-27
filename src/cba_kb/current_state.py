@@ -21,6 +21,9 @@ LEGACY_DOCUMENT_SURFACES = frozenset({
 V161_DOCUMENT_SURFACES = frozenset({
     'readme', 'index', 'context_card', 'current_version_doc',
 })
+V181_DOCUMENT_SURFACES = frozenset({
+    'readme', 'index', 'context_card', 'current_version_doc', 'technical_manual',
+})
 CURRENT_DOCUMENT_SURFACES = V161_DOCUMENT_SURFACES
 TRANSITIONAL = {'PUBLISHING', 'VERIFYING', 'FAILED', 'ROLLING_BACK'}
 NON_CURRENT = {'candidate', 'before', 'rollback', 'staging', 'prechange', 'historical', 'historical-only'}
@@ -169,7 +172,10 @@ def control_document_identities(status, registry, documents):
         and 'current_version_doc' not in documents
         and 'version' in documents
     )
-    required = LEGACY_DOCUMENT_SURFACES if is_legacy else CURRENT_DOCUMENT_SURFACES
+    if release_id in {'v1.8.1-2'} or 'technical_manual' in documents:
+        required = V181_DOCUMENT_SURFACES
+    else:
+        required = LEGACY_DOCUMENT_SURFACES if is_legacy else CURRENT_DOCUMENT_SURFACES
     if not required <= set(documents):
         raise ValueError('CURRENT_DOCUMENT_MISSING')
     identities = {'release_status': metadata}
@@ -181,7 +187,8 @@ def control_document_identities(status, registry, documents):
 
 
 
-def validate_current_state(status, registry, manifest, documents, counts=None, blockers=None):
+def validate_current_state(status, registry, manifest, documents, counts=None, blockers=None,
+                           consumer_manifest=None, identity_projection=None):
     if status.get('state') not in {'COMPLETE', 'ROLLED_BACK'}:
         raise ValueError('CURRENT_RELEASE_NOT_READABLE')
     commit = status.get('code_commit') or status.get('published_code_commit')
@@ -194,13 +201,28 @@ def validate_current_state(status, registry, manifest, documents, counts=None, b
         and 'current_version_doc' not in documents
         and 'version' in documents
     )
-    required = LEGACY_DOCUMENT_SURFACES if is_legacy else CURRENT_DOCUMENT_SURFACES
+    if release_id in {'v1.8.1-2'} or 'technical_manual' in documents:
+        required = V181_DOCUMENT_SURFACES
+    else:
+        required = LEGACY_DOCUMENT_SURFACES if is_legacy else CURRENT_DOCUMENT_SURFACES
     if not required <= set(documents):
         raise ValueError('CURRENT_DOCUMENT_MISSING')
     for text in documents.values():
         if read_current_block(text) != metadata:
             raise ValueError('CURRENT_STATE_DRIFT')
     validate_context_card(documents['context_card'], metadata, registry, manifest, counts, blockers)
+    if consumer_manifest is not None:
+        if (
+            consumer_manifest.get('release_id') != metadata['release_id']
+            or consumer_manifest.get('product_version') != 'v1.8.1'
+        ):
+            raise ValueError('CURRENT_STATE_DRIFT')
+    if identity_projection is not None:
+        if (
+            identity_projection.get('release_id') != metadata['release_id']
+            or identity_projection.get('product_version') != 'v1.8.1'
+        ):
+            raise ValueError('CURRENT_STATE_DRIFT')
     return {
         'status': 'PASS',
         'release_id': metadata['release_id'],
