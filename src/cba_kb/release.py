@@ -847,7 +847,7 @@ def verify_code_provenance(repo, product_candidate_sha, release_execution_sha=No
     trusted_main = 'refs/remotes/origin/main'
     def git(*args):
         return subprocess.check_output(['git', *args], cwd=repo, stderr=subprocess.DEVNULL, text=True).strip()
-    release_execution_sha = release_execution_sha or product_candidate_sha
+    release_execution_sha = release_execution_sha or git('rev-parse', 'HEAD')
     try:
         if (git('rev-parse', 'HEAD') != release_execution_sha
                 or git('status', '--porcelain', '--untracked-files=no')):
