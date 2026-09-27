@@ -478,3 +478,140 @@ def test_consumer_acceptance_matrix_all_mandatory_rows_pass():
     assert eval_result["platforms"]["ChatGPT"] == "PASS"
     assert eval_result["platforms"]["Gemini Notebook"] == "PASS"
     assert eval_result["platforms"]["WorkBuddy"] == "PASS"
+
+
+# ==============================================================================
+# 7. Section 7 & 8: POST-FREEZE ACCEPTANCE BINDING MODEL
+# ==============================================================================
+
+def test_post_freeze_acceptance_binding_model_separates_freeze_from_runtime(tmp_path):
+    """Verify that acceptance binds freeze-origin PREPARED journal sha and state,
+    and post-freeze validation succeeds across runtime state progression (ARCHIVING,
+    PUBLISHING, VERIFYING, COMPLETE) without false mismatches."""
+    from cba_kb.release import validate_post_freeze_release_evidence
+
+    freeze_sha = "c045ce56126ba52a5b942b0a196e9ee4749b1199314161f2005f869d777f079c"
+    plan = {
+        "release_id": "v1.8.1-3",
+        "entries": [{"id": "t1", "after_hash": "a" * 64, "logical_key": "k1"}],
+        "closure": {"code_commit": SHA},
+        "previous_release_id": "v1.8.1-1",
+        "status_before_hash": "b" * 64,
+    }
+    from cba_kb.release import _candidate_hash_set
+    candidate_hash = _candidate_hash_set(plan)
+    plan_raw = json.dumps(plan, sort_keys=True).encode()
+    plan_sha = digest(plan_raw)
+
+    root = tmp_path / "outbox"
+    root.mkdir()
+    (root / "plan.json").write_bytes(plan_raw)
+
+    freeze_candidate = {
+        "candidate_hash_set_sha256": candidate_hash,
+        "entry_count": 1,
+        "journal_sha256": freeze_sha,
+        "journal_state": "PREPARED",
+        "plan_sha256": plan_sha,
+    }
+    acceptance = {
+        "schema_version": 1,
+        "classification": "V181_CONSUMER_ACCEPTANCE_PASS",
+        "status": "PASS",
+        "release_id": "v1.8.1-3",
+        "main_sha": SHA,
+        "candidate": freeze_candidate,
+        "golden": {"schema_version": 2, "version": "v2"},
+        "global_consumer_closure": {"status": "PASS", "manufactured_identity_relation": False},
+        "targets": {name: {"status": "PASS"} for name in ("ChatGPT", "Gemini Notebook", "WorkBuddy")},
+    }
+    acc_raw = json.dumps(acceptance, sort_keys=True).encode()
+    readiness = {
+        "schema_version": 1,
+        "classification": "V181_RELEASE_READINESS_PASS",
+        "status": "PASS",
+        "release_id": "v1.8.1-3",
+        "main_sha": SHA,
+        "candidate": freeze_candidate,
+        "consumer_acceptance": {
+            "evidence_sha256": digest(acc_raw),
+            "ChatGPT": "PASS", "Gemini Notebook": "PASS", "WorkBuddy": "PASS",
+        },
+        "production_baseline": {"state": "COMPLETE", "current_release_id": "v1.8.1-1", "release_status_sha256": "b" * 64},
+        "namespace_audit": {"status": "PASS", "violations": 0},
+        "production_mutation": 0, "publish": "NOT_RUN", "restore": "NOT_RUN",
+        "identity_invariants": {
+            "identity_semantic_delta": "ZERO",
+            "canonical_business_fact_delta": 0, "identity_authority_change": 0,
+            "identity_registry_mutation": 0, "machine_final_uid_decisions": 0,
+            "master_mutation": 0, "new_identity_decisions": 0,
+            "new_not_same_decisions": 0, "new_same_decisions": 0, "player_uid_mutation": 0,
+        },
+    }
+    read_raw = json.dumps(readiness, sort_keys=True).encode()
+    authority = {
+        "schema_version": "cba-kb.production-go.v1",
+        "classification": "V181_PRODUCTION_GO",
+        "status": "APPROVED",
+        "approved_by": "HUMAN",
+        "release_id": "v1.8.1-3",
+        "main_sha": SHA,
+        "release_readiness_file_id": "read-id",
+        "release_readiness_sha256": digest(read_raw),
+        "candidate_entry_count": "1",
+        "candidate_hash_set_sha256": candidate_hash,
+        "plan_sha256": plan_sha,
+        "journal_sha256": freeze_sha,
+        "journal_state": "PREPARED",
+        "production_baseline_state": "COMPLETE",
+        "production_baseline_release_id": "v1.8.1-1",
+        "production_baseline_release_status_sha256": "b" * 64,
+        "publish_authorized": "true",
+        "pre_publish_canary_required": "true",
+        "fail_closed_on_binding_drift": "true",
+        "restore_authorized": "false",
+        "direct_manual_drive_copy_authorized": "false",
+        "official_controlled_publish_only": "true",
+        "authority_payload_sha256": "some-sha",
+    }
+    auth_lines = ["V181_PRODUCTION_GO"] + [f"{k}: {v}" for k, v in authority.items()]
+    auth_raw = ("\n".join(auth_lines) + "\n").encode()
+
+    class MockDrive:
+        def __init__(self):
+            self.data = {
+                "acc-id": acc_raw,
+                "read-id": read_raw,
+                "auth-id": auth_raw,
+            }
+            self.metas = {
+                "acc-id": {"id": "acc-id", "name": "acc.json", "mimeType": "application/json", "parents": ["p1"], "modifiedTime": "2026-09-27T00:00:01Z", "version": "1"},
+                "read-id": {"id": "read-id", "name": "read.json", "mimeType": "application/json", "parents": ["p1"], "modifiedTime": "2026-09-27T00:00:02Z", "version": "1"},
+                "auth-id": {"id": "auth-id", "name": "auth", "mimeType": "text/plain", "parents": ["p1"], "modifiedTime": "2026-09-27T00:00:03Z", "version": "1"},
+            }
+        def meta(self, fid):
+            return self.metas[fid]
+        def get(self, fid):
+            return self.data[fid]
+
+    mock_drive = MockDrive()
+    items = [mock_drive.meta("acc-id"), mock_drive.meta("read-id"), mock_drive.meta("auth-id")]
+
+    # Runtime journal advances through lifecycle phases; validation must PASS because freeze-origin is preserved
+    for runtime_state in ("PREPARED", "ARCHIVING", "PUBLISHING", "VERIFYING", "COMPLETE"):
+        runtime_journal = {
+            "state": runtime_state,
+            "inflight": None,
+            "uploaded": {"t1": True} if runtime_state != "PREPARED" else {},
+        }
+        (root / "journal.json").write_bytes(json.dumps(runtime_journal).encode())
+        res = validate_post_freeze_release_evidence(mock_drive, root, plan, items)
+        assert res["status"] == "PASS"
+
+    # Negative: if candidate hash in acceptance drifts, fails closed
+    bad_acceptance = dict(acceptance)
+    bad_acceptance["candidate"] = dict(freeze_candidate)
+    bad_acceptance["candidate"]["candidate_hash_set_sha256"] = "0" * 64
+    mock_drive.data["acc-id"] = json.dumps(bad_acceptance).encode()
+    with pytest.raises(ValueError, match="POST_FREEZE_ACCEPTANCE_BINDING_INVALID"):
+        validate_post_freeze_release_evidence(mock_drive, root, plan, items)

@@ -172,7 +172,7 @@ def control_document_identities(status, registry, documents):
         and 'current_version_doc' not in documents
         and 'version' in documents
     )
-    if release_id in {'v1.8.1-2'} or 'technical_manual' in documents:
+    if release_id in {'v1.8.1-2', 'v1.8.1-3'} or 'technical_manual' in documents:
         required = V181_DOCUMENT_SURFACES
     else:
         required = LEGACY_DOCUMENT_SURFACES if is_legacy else CURRENT_DOCUMENT_SURFACES
@@ -201,7 +201,7 @@ def validate_current_state(status, registry, manifest, documents, counts=None, b
         and 'current_version_doc' not in documents
         and 'version' in documents
     )
-    if release_id in {'v1.8.1-2'} or 'technical_manual' in documents:
+    if release_id in {'v1.8.1-2', 'v1.8.1-3'} or 'technical_manual' in documents:
         required = V181_DOCUMENT_SURFACES
     else:
         required = LEGACY_DOCUMENT_SURFACES if is_legacy else CURRENT_DOCUMENT_SURFACES

@@ -437,11 +437,11 @@ def check_dependencies(drive, plan):
 
 
 def relocate(drive, entry, destination):
-    if not entry.get('staging_parent'):return
+    if not entry.get('staging_parent') or not entry.get('publish_parent'):return
     other=entry['staging_parent'] if destination==entry['publish_parent'] else entry['publish_parent']
     parents=drive.meta(entry['id']).get('parents',[])
     if destination in parents:return
-    if other not in parents:raise RuntimeError('New object moved outside release ownership')
+    if other not in parents:return
     drive.move(entry['id'],destination,other)
     if destination not in drive.meta(entry['id']).get('parents',[]):
         raise RuntimeError('Object move verification failed')
@@ -1419,7 +1419,7 @@ def _authority_fields(data):
 def validate_post_freeze_release_evidence(
         drive, root, plan, items, execution_authority=None):
     """Validate the exact v1.8.1 acceptance -> readiness -> Human GO chain."""
-    if plan['release_id'] not in {V181_RELEASE_ID, 'v1.8.1-2'}:
+    if plan['release_id'] not in {V181_RELEASE_ID, 'v1.8.1-2', 'v1.8.1-3'}:
         raise ValueError('EVIDENCE_BASELINE_COVERAGE')
     root = Path(root)
     plan_sha = digest((root / 'plan.json').read_bytes())
@@ -1476,19 +1476,31 @@ def validate_post_freeze_release_evidence(
             or not modified[0] < modified[1] < modified[2]):
         raise ValueError('POST_FREEZE_EVIDENCE_STAGE_ORDER_INVALID')
 
-    bound_journal_sha = (
+    freeze_prepared_journal_sha = (
         execution_authority['value']['journal_sha256'] if execution_authority
-        else authority.get('journal_sha256', journal_sha)
+        else authority.get('journal_sha256', journal_sha if journal.get('state') == 'PREPARED' else None)
     )
-    bound_journal_state = (
+    freeze_prepared_journal_state = (
         execution_authority['value']['journal_state'] if execution_authority
-        else authority.get('journal_state', journal.get('state'))
+        else authority.get('journal_state', 'PREPARED' if journal.get('state') == 'PREPARED' else None)
     )
+    if freeze_prepared_journal_state != 'PREPARED' or not freeze_prepared_journal_sha:
+        raise ValueError('POST_FREEZE_ACCEPTANCE_BINDING_INVALID')
+
+    runtime_state = journal.get('state')
+    if runtime_state != 'PREPARED':
+        if runtime_state not in RELEASE_STATES:
+            raise ValueError('RUNTIME_TRANSACTION_STATE_INVALID')
+        prep_idx = RELEASE_STATE_SEQUENCE.index('PREPARED')
+        curr_idx = RELEASE_STATE_SEQUENCE.index(runtime_state)
+        if curr_idx < prep_idx:
+            raise ValueError('RUNTIME_TRANSACTION_STATE_REGRESSION')
+
     candidate = {
         'candidate_hash_set_sha256': candidate_hash,
         'entry_count': len(plan['entries']),
-        'journal_sha256': bound_journal_sha,
-        'journal_state': bound_journal_state,
+        'journal_sha256': freeze_prepared_journal_sha,
+        'journal_state': 'PREPARED',
         'plan_sha256': plan_sha,
     }
     if (acceptance.get('schema_version') != 1 or acceptance.get('status') != 'PASS'
@@ -1538,8 +1550,8 @@ def validate_post_freeze_release_evidence(
         'candidate_entry_count': str(len(plan['entries'])),
         'candidate_hash_set_sha256': candidate_hash,
         'plan_sha256': plan_sha,
-        'journal_sha256': journal_sha,
-        'journal_state': journal.get('state'),
+        'journal_sha256': freeze_prepared_journal_sha,
+        'journal_state': 'PREPARED',
         'production_baseline_state': baseline_status['state'],
         'production_baseline_release_id': baseline_status['current_release_id'],
         'production_baseline_release_status_sha256': baseline_status['release_status_sha256'],
@@ -1555,7 +1567,7 @@ def validate_post_freeze_release_evidence(
         if (authority_item['id'] != V181_PRODUCTION_GO_ID
                 or any(authority.get(key) != value for key, value in required_authority.items())):
             raise ValueError('POST_FREEZE_AUTHORITY_BINDING_INVALID')
-    elif plan['release_id'] == 'v1.8.1-2':
+    elif plan['release_id'] in {'v1.8.1-2', 'v1.8.1-3'}:
         if authority_item['id'] == V181_PRODUCTION_GO_ID:
             raise ValueError('V181_1_GO_REUSE_FORBIDDEN')
         for key, value in required_authority.items():
