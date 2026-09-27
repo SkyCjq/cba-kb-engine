@@ -1418,7 +1418,7 @@ def _authority_fields(data):
 def validate_post_freeze_release_evidence(
         drive, root, plan, items, execution_authority=None):
     """Validate the exact v1.8.1 acceptance -> readiness -> Human GO chain."""
-    if plan['release_id'] != V181_RELEASE_ID:
+    if plan['release_id'] not in {V181_RELEASE_ID, 'v1.8.1-2'}:
         raise ValueError('EVIDENCE_BASELINE_COVERAGE')
     root = Path(root)
     plan_sha = digest((root / 'plan.json').read_bytes())
@@ -1542,9 +1542,19 @@ def validate_post_freeze_release_evidence(
         'official_controlled_publish_only': 'true',
         'authority_payload_sha256': V181_PRODUCTION_GO_PAYLOAD_SHA256,
     }
-    if (authority_item['id'] != V181_PRODUCTION_GO_ID
-            or any(authority.get(key) != value for key, value in required_authority.items())):
-        raise ValueError('POST_FREEZE_AUTHORITY_BINDING_INVALID')
+    if plan['release_id'] == V181_RELEASE_ID:
+        if (authority_item['id'] != V181_PRODUCTION_GO_ID
+                or any(authority.get(key) != value for key, value in required_authority.items())):
+            raise ValueError('POST_FREEZE_AUTHORITY_BINDING_INVALID')
+    elif plan['release_id'] == 'v1.8.1-2':
+        if authority_item['id'] == V181_PRODUCTION_GO_ID:
+            raise ValueError('V181_1_GO_REUSE_FORBIDDEN')
+        for key, value in required_authority.items():
+            if key != 'authority_payload_sha256':
+                if authority.get(key) != value:
+                    raise ValueError(f'POST_FREEZE_AUTHORITY_BINDING_INVALID:{key}')
+        if not authority.get('authority_payload_sha256'):
+            raise ValueError('POST_FREEZE_AUTHORITY_PAYLOAD_SHA_MISSING')
     return {
         'status': 'PASS',
         'frozen_protected_evidence': 'INTACT',

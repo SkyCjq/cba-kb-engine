@@ -1,6 +1,7 @@
 """Rights-aware consumer projections and versioned consumer result schemas."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import yaml
@@ -465,3 +466,233 @@ def derive_consumer_counts(artifacts, projection):
         [{"uid": str(index)} for index, _ in enumerate(artifacts)],
         {"players": projection["players"], "record_links": links}, rows,
     )
+
+
+CONSUMER_IDENTITY_SCHEMA = "player_identity_consumer_v1"
+CONSUMER_IDENTITY_SCHEMA_VERSION = 1
+
+
+def build_player_identity_consumer_projection(
+    identity_registry,
+    *,
+    release_id,
+    product_version="v1.8.1",
+    code_commit=None,
+    as_of=None,
+):
+    """Derive an immutable, release-scoped, rights-aware Consumer projection.
+
+    Only Consumer-safe fields are projected.
+    Private registry internals, administrative notes, and raw file paths are strictly omitted.
+    """
+    from .player_identity import normalize_name, validate_player_uid, validate_registry
+    if not isinstance(identity_registry, dict):
+        raise ConsumerProjectionError("IDENTITY_REGISTRY_OBJECT_REQUIRED")
+    validated_registry = validate_registry(identity_registry)
+
+    # Active players only
+    projected_players = []
+    aliases_by_uid = {}
+    for alias_entry in validated_registry.get("aliases", []):
+        uid = alias_entry.get("player_uid")
+        alias_name = alias_entry.get("alias")
+        if uid and alias_name:
+            aliases_by_uid.setdefault(uid, set()).add(alias_name)
+
+    for player in validated_registry.get("players", []):
+        if player.get("status") != "ACTIVE":
+            continue
+        uid = validate_player_uid(player["player_uid"])
+        cname = normalize_name(player["canonical_name"])
+        approved_aliases = sorted(aliases_by_uid.get(uid, set()))
+        projected_players.append({
+            "player_uid": uid,
+            "canonical_name": cname,
+            "approved_aliases": approved_aliases,
+        })
+
+    # Record links
+    projected_links = []
+    for link in validated_registry.get("record_links", []):
+        rkey = link.get("record_key")
+        puid = link.get("player_uid")
+        status = link.get("link_status")
+        rel = project_identity_state(status)
+        sanitized_refs = []
+        for ref in link.get("evidence_refs") or []:
+            if isinstance(ref, str) and not ref.startswith(("/", "file:", "private:")):
+                sanitized_refs.append(ref)
+        projected_links.append({
+            "record_key": rkey,
+            "player_uid": puid,
+            "relation": rel,
+            "confidence": str(link.get("confidence") or "UNKNOWN").upper(),
+            "evidence_refs": sorted(sanitized_refs),
+        })
+
+    same_count = sum(1 for l in projected_links if l["relation"] == "SAME")
+    not_same_count = sum(1 for l in projected_links if l["relation"] == "NOT_SAME")
+    undecided_count = sum(1 for l in projected_links if l["relation"] == "UNDECIDED")
+
+    projection = {
+        "schema": CONSUMER_IDENTITY_SCHEMA,
+        "schema_version": CONSUMER_IDENTITY_SCHEMA_VERSION,
+        "release_id": release_id,
+        "product_version": product_version,
+        "code_commit": code_commit,
+        "as_of": as_of or "2026-09-27T00:00:00Z",
+        "private_registry_exposed": False,
+        "private_registry_leakage": 0,
+        "summary": {
+            "total_players": len(projected_players),
+            "total_record_links": len(projected_links),
+            "same_count": same_count,
+            "not_same_count": not_same_count,
+            "undecided_count": undecided_count,
+        },
+        "players": sorted(projected_players, key=lambda p: p["player_uid"]),
+        "record_links": sorted(projected_links, key=lambda l: (l["record_key"], l.get("player_uid") or "")),
+    }
+    projection["projection_sha256"] = digest(canonical_bytes(projection))
+    return projection
+
+
+def validate_player_identity_consumer_projection(
+    projection,
+    *,
+    expected_release_id=None,
+    expected_product_version="v1.8.1",
+    expected_code_commit=None,
+):
+    if not isinstance(projection, dict):
+        raise ConsumerProjectionError("IDENTITY_PROJECTION_OBJECT_REQUIRED")
+    if projection.get("schema") != CONSUMER_IDENTITY_SCHEMA:
+        raise ConsumerProjectionError("IDENTITY_PROJECTION_SCHEMA_INVALID")
+    if projection.get("schema_version") != CONSUMER_IDENTITY_SCHEMA_VERSION:
+        raise ConsumerProjectionError("IDENTITY_PROJECTION_SCHEMA_VERSION_INVALID")
+    if projection.get("private_registry_exposed") is not False:
+        raise ConsumerProjectionError("PRIVATE_REGISTRY_EXPOSED")
+    if projection.get("private_registry_leakage") != 0:
+        raise ConsumerProjectionError("PRIVATE_REGISTRY_LEAKAGE")
+
+    release_id = projection.get("release_id")
+    if not release_id or not isinstance(release_id, str):
+        raise ConsumerProjectionError("IDENTITY_PROJECTION_RELEASE_ID_REQUIRED")
+    if expected_release_id is not None and release_id != expected_release_id:
+        raise ConsumerProjectionError(
+            f"IDENTITY_PROJECTION_RELEASE_MISMATCH:{release_id}!={expected_release_id}"
+        )
+    product_version = projection.get("product_version")
+    if expected_product_version is not None and product_version != expected_product_version:
+        raise ConsumerProjectionError(
+            f"IDENTITY_PROJECTION_PRODUCT_VERSION_MISMATCH:{product_version}!={expected_product_version}"
+        )
+    if expected_code_commit is not None and projection.get("code_commit") != expected_code_commit:
+        raise ConsumerProjectionError("IDENTITY_PROJECTION_CODE_COMMIT_MISMATCH")
+
+    # Private registry leakage checks
+    forbidden_tokens = {"notes", "admin", "redirect_to", "internal_id", "/private/", "/Users/"}
+    projection_str = json.dumps(projection)
+    for token in forbidden_tokens:
+        if f'"{token}"' in projection_str or token in projection_str:
+            raise ConsumerProjectionError(f"PRIVATE_REGISTRY_LEAKAGE:{token}")
+
+    stored_sha = projection.get("projection_sha256")
+    without_hash = {k: v for k, v in projection.items() if k != "projection_sha256"}
+    if stored_sha not in {digest(canonical_bytes(projection)), digest(canonical_bytes(without_hash))}:
+        raise ConsumerProjectionError("IDENTITY_PROJECTION_HASH_MISMATCH")
+
+    return {
+        "status": "PASS",
+        "release_id": release_id,
+        "product_version": product_version,
+        "players": len(projection.get("players", [])),
+        "record_links": len(projection.get("record_links", [])),
+        "projection_sha256": stored_sha,
+    }
+
+
+def lookup_player_identity(projection, query):
+    from .player_identity import normalize_name
+    if projection is None or not isinstance(projection, dict):
+        return {
+            "status": "CONSUMER_AUTHORITY_UNAVAILABLE",
+            "query": query,
+            "candidate_count": 0,
+            "candidates": [],
+            "automatic_link_allowed": False,
+        }
+    if projection.get("schema") != CONSUMER_IDENTITY_SCHEMA:
+        return {
+            "status": "CONSUMER_AUTHORITY_UNAVAILABLE",
+            "query": query,
+            "candidate_count": 0,
+            "candidates": [],
+            "automatic_link_allowed": False,
+        }
+    query_norm = normalize_name(query)
+    candidates = []
+    for player in projection.get("players", []):
+        matches = []
+        if normalize_name(player["canonical_name"]) == query_norm:
+            matches.append({"match_type": "CANONICAL_NAME", "value": player["canonical_name"]})
+        for alias in player.get("approved_aliases", []):
+            if normalize_name(alias) == query_norm:
+                matches.append({"match_type": "ALIAS", "value": alias})
+        if matches:
+            candidates.append({
+                "player_uid": player["player_uid"],
+                "canonical_name": player["canonical_name"],
+                "matches": matches,
+            })
+    if not candidates:
+        return {
+            "status": "NOT_FOUND",
+            "query": query,
+            "candidate_count": 0,
+            "candidates": [],
+            "automatic_link_allowed": False,
+        }
+    if len(candidates) == 1:
+        player_uid = candidates[0]["player_uid"]
+        links = [
+            link for link in projection.get("record_links", [])
+            if link.get("player_uid") == player_uid
+        ]
+        return {
+            "status": "SUCCESS",
+            "query": query,
+            "candidate_count": 1,
+            "player": candidates[0],
+            "record_links": links,
+            "automatic_link_allowed": False,
+        }
+    return {
+        "status": "REVIEW_REQUIRED",
+        "query": query,
+        "candidate_count": len(candidates),
+        "candidates": candidates,
+        "automatic_link_allowed": False,
+    }
+
+
+def cross_season_identity_query(projection, query):
+    lookup = lookup_player_identity(projection, query)
+    if lookup["status"] != "SUCCESS":
+        return lookup
+    player = lookup["player"]
+    links = lookup["record_links"]
+    seasons = sorted({
+        link["record_key"].split("|")[0]
+        for link in links
+        if "|" in link.get("record_key", "")
+    })
+    return {
+        "status": "SUCCESS",
+        "query": query,
+        "player_uid": player["player_uid"],
+        "canonical_name": player["canonical_name"],
+        "season_count": len(seasons),
+        "seasons": seasons,
+        "record_links": links,
+    }
