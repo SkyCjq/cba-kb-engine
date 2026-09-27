@@ -892,10 +892,11 @@ def freeze_closure(drive, root, plan):
     document_keys = set(closure['documents'])
     legacy_documents = {'readme', 'index', 'context_card', 'version'}
     current_documents = {'readme', 'index', 'context_card', 'current_version_doc'}
-    expected_controls = 6
+    v181_documents = {'readme', 'index', 'context_card', 'current_version_doc', 'technical_manual'}
+    expected_controls = 7 if 'technical_manual' in closure['documents'] else 6
     if len(entries) != len(plan['entries']) or None in entries or len(controls) != expected_controls or not controls <= set(entries):
         raise ValueError('CLOSURE_CONTROL_COVERAGE')
-    if document_keys not in (legacy_documents, current_documents):
+    if document_keys not in (legacy_documents, current_documents, v181_documents):
         raise ValueError('CLOSURE_DOCUMENT_COVERAGE')
     protected = closure['protected']
     if not isinstance(protected, list) or not protected:
