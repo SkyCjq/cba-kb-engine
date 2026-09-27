@@ -1476,11 +1476,19 @@ def validate_post_freeze_release_evidence(
             or not modified[0] < modified[1] < modified[2]):
         raise ValueError('POST_FREEZE_EVIDENCE_STAGE_ORDER_INVALID')
 
+    bound_journal_sha = (
+        execution_authority['value']['journal_sha256'] if execution_authority
+        else authority.get('journal_sha256', journal_sha)
+    )
+    bound_journal_state = (
+        execution_authority['value']['journal_state'] if execution_authority
+        else authority.get('journal_state', journal.get('state'))
+    )
     candidate = {
         'candidate_hash_set_sha256': candidate_hash,
         'entry_count': len(plan['entries']),
-        'journal_sha256': journal_sha,
-        'journal_state': journal.get('state'),
+        'journal_sha256': bound_journal_sha,
+        'journal_state': bound_journal_state,
         'plan_sha256': plan_sha,
     }
     if (acceptance.get('schema_version') != 1 or acceptance.get('status') != 'PASS'
