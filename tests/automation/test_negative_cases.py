@@ -2,14 +2,25 @@ import pytest
 import yaml
 import copy
 from dataclasses import replace
+from pathlib import Path
 
 from automation.drive_io import GoogleDriveStore, MemoryDriveStore
 from automation.handoff import TransitionIntent, dispatch_allowed, transition_commit
 from automation.ledger import AppendOnlyLedger
-from automation.models import P2AError, canonical_json_bytes, sha256_bytes
+from automation.models import P2AError, canonical_json_bytes, load_yaml_bytes, sha256_bytes
 from automation.review_package import build_review_package
-from automation.verify import guarded_verify, verify_historical_source_result, verify_result_bytes, verify_task_bytes
+from automation.verify import (
+    FROZEN_GEN18_TASK_SHA256,
+    guarded_verify,
+    validate_task_document,
+    verify_historical_source_result,
+    verify_result_bytes,
+    verify_task_bytes,
+)
 from test_verify import descendant_case, external_control_plane_case, historical_source_case, human_merge_case, immutable_external_case, post_merge_case, retrospective_case
+
+
+REQ181_FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _strict_case(tmp_path, task_dict, store=None):
@@ -66,6 +77,54 @@ def test_malformed_schema_fails_closed(task_dict):
     task_dict.pop("canonical_binding")
     result = verify_task_bytes(yaml.safe_dump(task_dict).encode())
     assert result.classification == "TASK_SCHEMA_INVALID"
+
+
+def test_parsed_gen18_without_exact_raw_hash_context_fails_closed():
+    task = load_yaml_bytes((REQ181_FIXTURES / "req181_gen18_task.yaml").read_bytes())
+    with pytest.raises(P2AError) as caught:
+        validate_task_document(task)
+    assert caught.value.code == "TASK_SCHEMA_INVALID"
+
+
+def test_gen18_shape_on_any_other_task_hash_fails_closed():
+    task = load_yaml_bytes((REQ181_FIXTURES / "req181_gen18_task.yaml").read_bytes())
+    reserialized = yaml.safe_dump(task, sort_keys=False).encode()
+    assert sha256_bytes(reserialized) != FROZEN_GEN18_TASK_SHA256
+    assert verify_task_bytes(reserialized).classification == "TASK_SCHEMA_INVALID"
+
+
+def test_one_byte_gen18_mutation_fails_closed():
+    task_bytes = (REQ181_FIXTURES / "req181_gen18_task.yaml").read_bytes()
+    mutated = task_bytes.replace(b"ChatGPT-Web-Auditor", b"ChatGPT-Web-Auditoq", 1)
+    assert len(mutated) == len(task_bytes)
+    assert sha256_bytes(mutated) != FROZEN_GEN18_TASK_SHA256
+    assert verify_task_bytes(mutated).classification == "TASK_SCHEMA_INVALID"
+
+
+@pytest.mark.parametrize(
+    ("location", "field", "value"),
+    [
+        ("task", "req_id", "REQ-181-CONSUMER-CLOSURE-02"),
+        ("task", "canonical_generation", 19),
+        ("task", "task_id", "c5855e2d-f77c-43cc-9e9c-8ef0798583fd"),
+        ("transition_binding", "source_verification_mode", "UNAUTHORIZED_MODE"),
+    ],
+)
+def test_gen18_wrong_identity_or_mode_fails_closed(location, field, value):
+    task = load_yaml_bytes((REQ181_FIXTURES / "req181_gen18_task.yaml").read_bytes())
+    target = task if location == "task" else task[location]
+    target[field] = value
+    with pytest.raises(P2AError) as caught:
+        validate_task_document(task, raw_task_sha256=FROZEN_GEN18_TASK_SHA256)
+    assert caught.value.code == "TASK_SCHEMA_INVALID"
+
+
+def test_gen18_additional_unknown_transition_field_fails_closed():
+    task = load_yaml_bytes((REQ181_FIXTURES / "req181_gen18_task.yaml").read_bytes())
+    task["transition_binding"]["unexpected"] = True
+    with pytest.raises(P2AError) as caught:
+        validate_task_document(task, raw_task_sha256=FROZEN_GEN18_TASK_SHA256)
+    assert caught.value.code == "TASK_SCHEMA_INVALID"
 
 
 def test_result_wrong_hash_and_ci_mismatch_fail_closed(task_bytes, result_dict, github_inspector):

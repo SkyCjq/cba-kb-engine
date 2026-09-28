@@ -2,10 +2,14 @@ import copy
 from pathlib import Path
 import yaml
 
-from automation.models import canonical_json_bytes, sha256_bytes
+from automation.models import canonical_json_bytes, load_yaml_bytes, sha256_bytes
 from automation.drive_io import MemoryDriveStore
 from automation.review_package import build_review_package
 from automation.verify import verify_historical_source_result, verify_result_bytes, verify_task_bytes
+
+
+REQ181_FIXTURES = Path(__file__).parent / "fixtures"
+GEN18_SHA256 = "0afe2e29fa20a6e768a355a2eef84d563a8e8b7d4b64a94f42a6563aec9f24c5"
 
 
 def test_task_verify_accepts_frozen_schema(task_bytes, task_dict):
@@ -20,6 +24,22 @@ def test_task_verify_accepts_frozen_schema(task_bytes, task_dict):
         current_pointer_bytes=task_bytes,
     )
     assert result.ok
+    assert result.classification == "TASK_VERIFIED"
+
+
+def test_exact_immutable_gen18_accepts_only_with_its_raw_hash_context():
+    task_bytes = (REQ181_FIXTURES / "req181_gen18_task.yaml").read_bytes()
+    task = load_yaml_bytes(task_bytes)
+    result = verify_task_bytes(
+        task_bytes,
+        expected_task_sha256=GEN18_SHA256,
+        expected_generation=18,
+        expected_executor="CODEX",
+        expected_requirement_sha256=task["authority_binding"]["requirement_sha256"],
+        expected_policy_sha256=task["policy_bundle_sha256"],
+        expected_base_sha=task["expected_base_sha"],
+    )
+    assert sha256_bytes(task_bytes) == GEN18_SHA256
     assert result.classification == "TASK_VERIFIED"
 
 
@@ -737,6 +757,25 @@ def test_historical_human_merge_source_accepts_authorized_descendant_main(monkey
     verified = verify_historical_source_result(store, **kwargs)
     assert verified.classification == "HISTORICAL_SOURCE_RESULT_VERIFIED"
     assert verified.facts["historical_head_sha"] != main_ref["object"]["sha"]
+
+
+def test_gen18_compatibility_metadata_does_not_dispatch_historical_source_semantics(
+    monkeypatch, task_dict, result_dict,
+):
+    _, _, store, kwargs, *_ = historical_source_case(monkeypatch, task_dict, result_dict)
+    task_bytes = (REQ181_FIXTURES / "req181_gen18_task.yaml").read_bytes()
+    task = load_yaml_bytes(task_bytes)
+    store.records["historical-task"].content = task_bytes
+    for record in store.records.values():
+        record.folder_id = task["canonical_binding"]["canonical_history_folder_id"]
+    kwargs.update(
+        expected_task_sha256=sha256_bytes(task_bytes),
+        expected_requirement_sha256=task["authority_binding"]["requirement_sha256"],
+        expected_policy_sha256=task["policy_bundle_sha256"],
+        expected_repository=task["repository"],
+    )
+    verified = verify_historical_source_result(store, **kwargs)
+    assert verified.classification == "HISTORICAL_SOURCE_UNSUPPORTED"
 
 
 def test_current_human_merge_verification_still_requires_exact_live_main(monkeypatch, task_dict, result_dict):
