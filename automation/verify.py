@@ -46,6 +46,12 @@ TRANSITION_BINDING_FIELDS = {
     "source_result_required", "supersedes_task_id", "supersedes_task_sha256", "transition_from_gate",
     "transition_commit_required",
 }
+FROZEN_GEN18_TASK_SHA256 = "0afe2e29fa20a6e768a355a2eef84d563a8e8b7d4b64a94f42a6563aec9f24c5"
+FROZEN_GEN18_REQ_ID = "REQ-181-CONSUMER-CLOSURE-01"
+FROZEN_GEN18_GENERATION = 18
+FROZEN_GEN18_TASK_ID = "c5855e2d-f77c-43cc-9e9c-8ef0798583fc"
+FROZEN_GEN18_SOURCE_VERIFICATION_MODE = "HISTORICAL_SOURCE_RESULT_VERIFY"
+FROZEN_GEN18_TRANSITION_BINDING_FIELDS = TRANSITION_BINDING_FIELDS | {"source_verification_mode"}
 RESULT_FIELDS = {
     "schema_version", "req_id", "canonical_generation", "task_id", "status", "classification",
     "automation_version", "policy_bundle_sha256", "repository", "base_sha", "head_sha", "feature_branch",
@@ -62,7 +68,9 @@ def _list_of_strings(value: Any, field_name: str) -> list[str]:
     return value
 
 
-def validate_task_document(task: Mapping[str, Any]) -> None:
+def validate_task_document(task: Mapping[str, Any], *, raw_task_sha256: str | None = None) -> None:
+    if raw_task_sha256 is not None:
+        require_sha256(raw_task_sha256, field_name="raw_task_sha256", code="TASK_SCHEMA_INVALID")
     require_exact_keys(task, TASK_FIELDS, code="TASK_SCHEMA_INVALID", location="task")
     if task["schema_version"] != TASK_SCHEMA:
         raise P2AError("TASK_SCHEMA_INVALID", "Unexpected task schema", observed=task["schema_version"])
@@ -81,7 +89,16 @@ def validate_task_document(task: Mapping[str, Any]) -> None:
         raise P2AError("TASK_SCHEMA_INVALID", "Only same-file-ID canonical updates are supported")
     require_exact_keys(task["canonical_binding"], CANONICAL_BINDING_FIELDS, code="TASK_SCHEMA_INVALID", location="canonical_binding")
     require_exact_keys(task["authority_binding"], AUTHORITY_BINDING_FIELDS, code="TASK_SCHEMA_INVALID", location="authority_binding")
-    require_exact_keys(task["transition_binding"], TRANSITION_BINDING_FIELDS, code="TASK_SCHEMA_INVALID", location="transition_binding")
+    transition_binding_fields = TRANSITION_BINDING_FIELDS
+    if (raw_task_sha256 == FROZEN_GEN18_TASK_SHA256
+            and task["req_id"] == FROZEN_GEN18_REQ_ID
+            and task["canonical_generation"] == FROZEN_GEN18_GENERATION
+            and task["task_id"] == FROZEN_GEN18_TASK_ID
+            and task["transition_binding"].get("source_verification_mode")
+            == FROZEN_GEN18_SOURCE_VERIFICATION_MODE):
+        transition_binding_fields = FROZEN_GEN18_TRANSITION_BINDING_FIELDS
+    require_exact_keys(task["transition_binding"], transition_binding_fields,
+                       code="TASK_SCHEMA_INVALID", location="transition_binding")
     require_sha256(task["authority_binding"]["requirement_sha256"], field_name="authority_binding.requirement_sha256")
     require_uuid(task["authority_binding"]["predecessor_terminal_task_id"], field_name="authority_binding.predecessor_terminal_task_id")
     require_sha256(task["authority_binding"]["predecessor_terminal_task_sha256"], field_name="authority_binding.predecessor_terminal_task_sha256")
@@ -105,7 +122,7 @@ def verify_task_bytes(
     facts: dict[str, Any] = {"task_sha256": sha256_bytes(data), "task_bytes": len(data)}
     try:
         task = load_yaml_bytes(data)
-        validate_task_document(task)
+        validate_task_document(task, raw_task_sha256=facts["task_sha256"])
         checks = {
             "task_sha256": (facts["task_sha256"], expected_task_sha256, "STALE_TASK"),
             "canonical_generation": (task["canonical_generation"], expected_generation, "STALE_TASK"),
@@ -209,7 +226,7 @@ def _verify_human_predecessor(
     previous_task = load_yaml_bytes(source_task.content)
     previous_result = load_json_bytes(source_result.content)
     previous_package = load_json_bytes(source_package.content)
-    validate_task_document(previous_task)
+    validate_task_document(previous_task, raw_task_sha256=sha256_bytes(source_task.content))
     validate_result_document(previous_result)
     if (previous_task["task_id"] != task["authority_binding"]["predecessor_terminal_task_id"]
             or previous_task["canonical_generation"] != task["canonical_generation"] - 1
@@ -338,7 +355,7 @@ def verify_historical_source_result(
         task = load_yaml_bytes(task_file.content)
         result = load_json_bytes(result_file.content)
         package = load_json_bytes(package_file.content)
-        validate_task_document(task)
+        validate_task_document(task, raw_task_sha256=sha256_bytes(task_file.content))
         validate_result_document(result)
         history_folder = task["canonical_binding"]["canonical_history_folder_id"]
         if any(item.folder_id != history_folder for item in (task_file, result_file, package_file)):
@@ -569,7 +586,7 @@ def _read_descendant_package(
     descendant_task = load_yaml_bytes(task_file.content)
     descendant_result = load_json_bytes(result_file.content)
     package = load_json_bytes(package_file.content)
-    validate_task_document(descendant_task)
+    validate_task_document(descendant_task, raw_task_sha256=sha256_bytes(task_file.content))
     validate_result_document(descendant_result)
     control, verified = package.get("CONTROL") or {}, package.get("VERIFIED_MACHINE_FACTS") or {}
     if (package.get("review_package_version") != "cba-kb.p2a-review-package.v1"
@@ -1298,7 +1315,7 @@ def verify_result_bytes(
         result = load_json_bytes(result_data)
         task = load_yaml_bytes(task_data)
         validate_result_document(result)
-        validate_task_document(task)
+        validate_task_document(task, raw_task_sha256=sha256_bytes(task_data))
         bindings = {
             "req_id": task["req_id"], "canonical_generation": task["canonical_generation"], "task_id": task["task_id"],
             "automation_version": task["automation_version"], "policy_bundle_sha256": task["policy_bundle_sha256"],

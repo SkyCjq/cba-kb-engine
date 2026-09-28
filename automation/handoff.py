@@ -34,9 +34,9 @@ def transition_commit(
     *,
     fault_after: str | None = None,
 ) -> dict[str, Any]:
-    successor = load_yaml_bytes(intent.successor_bytes)
-    validate_task_document(successor)
     successor_sha = sha256_bytes(intent.successor_bytes)
+    successor = load_yaml_bytes(intent.successor_bytes)
+    validate_task_document(successor, raw_task_sha256=successor_sha)
     req_id = successor["req_id"]
     task_id = successor["task_id"]
     generation = successor["canonical_generation"]
@@ -55,7 +55,7 @@ def transition_commit(
     if stable_is_predecessor and predecessor_read.content != stable_before.content:
         raise P2AError("TRANSITION_BINDING_MISMATCH", "Stable predecessor differs from immutable predecessor read")
     predecessor = load_yaml_bytes(predecessor_read.content)
-    validate_task_document(predecessor)
+    validate_task_document(predecessor, raw_task_sha256=sha256_bytes(predecessor_read.content))
     source_result_read = store.read(intent.source_result_file_id)
     if sha256_bytes(source_result_read.content) != intent.source_result_sha256:
         raise P2AError("SOURCE_RESULT_HASH_MISMATCH", "Source result hash does not match transition authority")

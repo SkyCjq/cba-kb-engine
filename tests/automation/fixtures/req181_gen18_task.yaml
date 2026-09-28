@@ -1,0 +1,94 @@
+schema_version: cba-kb.p2a-task.v1
+req_id: REQ-181-CONSUMER-CLOSURE-01
+canonical_generation: 18
+task_id: c5855e2d-f77c-43cc-9e9c-8ef0798583fc
+task_type: CODEX_READ_ONLY_POST_MERGE_RECONCILIATION
+stage: V181_FINAL_DESCENDANT_POST_MERGE_RECONCILIATION
+issued_at_utc: '2026-09-25T12:05:00Z'
+issued_by: ChatGPT-Web-Auditor
+automation_version: 0.1.0
+policy_bundle_sha256: c628cc45e855090464eaaf1f4f8dae15636ddbc9451096654095759a3c2050b5
+repository: SkyCjq/cba-kb-engine
+expected_base_branch: main
+expected_base_sha: b30c66288fc1d44fd4dafc0a8ebcc286bcf41a9d
+feature_branch: main
+allowed_paths:
+- NO_REPOSITORY_FILE_CHANGES_READ_ONLY
+must_not_change:
+- repository working tree or commit contents
+- REQ-181 product implementation
+- MASTER and six-table canonical business facts
+- Private Identity Registry
+- Production Identity Registry
+- Production Drive artifacts
+- Production manifest
+- Production release_status
+allowed_actions:
+- historical source verification is required for immutable Gen17 predecessor
+- descendant-aware reconciliation mode is required
+- historical product PR 35 base 6a4609aaaeb395ee949acea765b15cd884c85278 reviewed head 5065d3f05b2db9e2eb15fff6a0e4d7655c0bfca0 merge commit 9cd5dab298012eadaf8345f3f9d2709a2b5c2288
+- historical reviewed CI run 36084058501
+- require retrospective proof SHA256 643f8571ce635419f650ad4d8e7371e032bbd27a37aea378a97fcdfaf83e282b authority SHA256 68a27795a80e7a78d1c993f9c43d713f3714e422e220ac019709cdbfb0c18299
+- external control-plane descendant task SHA256 68a27795a80e7a78d1c993f9c43d713f3714e422e220ac019709cdbfb0c18299 result SHA256 c4ccfa558d67391a6dbea2a52e03ccad0896bfa87ba985dddc638c7d4afda412 review SHA256 e45e8a6255d907245a5cea973164f95734e66b92a868c8a58b4c1d155100708e post-merge result SHA256 f49909b74f528c4d7c2c586cbb72ce1717ccc457849f45cb3b005398f34da52d post-merge review SHA256 45ca01d26dc7fa987a89ccd70406ef39db6deb50f238fc385b9657306a42f821
+- external control-plane descendant task SHA256 c4c8b08acf4344747bbc81ee96414263353a96b26f235e76e43fd99de2798938 result SHA256 16e726c1fc9ed6dd3042bab03924c0f160e727354094dfbcd0986021ceddcf57 review SHA256 155b705bab8fefbce1a52ec7c67984432ae5c14c7e29e3cfd1994d5e464d1c86 post-merge result SHA256 e1e729d12f7c7f9e5c8b383b7e6337d5445ccbdeb1ebad0a5072f3da17605912 post-merge review SHA256 9b22ea2da51b8cb4f94c592e2e56eb53ff76a1b01d58d2b47b5e24a28f4b90c2
+- external control-plane descendant task SHA256 77860680db4b0a36248dee3f5f7506afe3cd2df512d33c2eeb19d9527f7acb58 result SHA256 5d3c5a1886bf9aa53125a1406e77623d105ce7e653472d263610da5f1274c2a4 review SHA256 fccad2ecda1ccb3838c494914630384c9142531f40c83a18da4a1435b37fd851 post-merge result SHA256 9f7c9e771a0ef93a7b58266e31879412143d86e581c67d2e21e609ed212afa55 post-merge review SHA256 a1999318f7e197e84d895c3a8f262a33a883429c7e84eefbe7c17154a5b5f8a9
+- external control-plane descendant task SHA256 6a8a435ff99514d0a910abdd89b7d7419e9a94c31691020c5df5a0399974c557 result SHA256 f841cf954dcd1f88f078b28010fc8624eb790dfe6ba51c9f9f8162120c8b5712 review SHA256 d9d2faa2f0a26d339c92499b23dce7dc76e64be0678bef0ce622dd7bc97fdf82 post-merge result SHA256 31ef02df017441d624bfb6bfb42afe3311723b20476223ce09163007ef42fda8 post-merge review SHA256 543f11dc5fbdfd23b4d42c95581e8341cdc69d004e91f73a51597c2460703734
+- verify exact ordered first-parent chain from PR35 merge through PR37 PR38 PR39 PR40 PR41 PR42 PR43 to final main
+- use exact immutable P2A task result review-package evidence for PR37 PR38 and PR39
+- use exact retrospective proof for historical Gen13 BLOCKED without rewriting Gen13
+- use structured_stabilization_task mode for PR40 and PR41
+- use immutable_external_authority mode for PR42 and PR43
+- require live main exactly b30c66288fc1d44fd4dafc0a8ebcc286bcf41a9d
+- require Offline tests push run 36132430789 at exact final main with conclusion success
+- rerun focused automation verification tests and tracked secret guard
+- run full regression on exact final main
+- produce one truthful Generation 18 reconciliation result
+- verify it with make result-verify and require EXECUTION_RESULT_VERIFIED
+- create one Generation 18 review package in REQ-181 history
+- stop at WEB_FREEZE_CONSUMER_ACCEPTANCE
+forbidden_actions:
+- modify code tests workflow config dependencies or documentation
+- rewrite or replace Gen13 BLOCKED history
+- rewrite or replace Gen17 history
+- omit any first-parent descendant
+- accept any unbound descendant
+- add any new verifier mode or evidence schema exception
+- repair P2A verifier again
+- mutate REQ-181 product semantics
+- mutate MASTER or canonical facts
+- mutate any Identity Registry
+- mutate Production
+- publish or restore Production
+- create or merge any PR
+- declare Production GO RELEASE_READY or CLOSED
+- hand-edit P2A stable pointers history results or ledger
+focused_tests:
+- .venv/bin/python -m pytest -q tests/automation/test_verify.py tests/automation/test_negative_cases.py
+- .venv/bin/python scripts/check_secrets.py --tracked
+full_regression: CBA_KB_SOURCE_POLICY_JSON='{"excluded_drive_ids":[]}' .venv/bin/python -m pytest -q -rs --deselect tests/test_prepare_v1_5_2.py::test_v1_5_2_registry_proposal_is_complete
+max_internal_steps: 24
+max_internal_retries: 1
+max_runtime_minutes: 120
+next_executor: CODEX
+return_gate: WEB_FREEZE_CONSUMER_ACCEPTANCE
+canonical_binding:
+  canonical_req_root_folder_id: 1DPN6zv9hcNsb-GLsKogZ4gQxnHpqaNC4
+  canonical_current_folder_id: 17JTaOCgdpzsIngq2UVKgPdUzOgKwkTid
+  canonical_history_folder_id: 1HCHxoj-nVeDrv5faUF1ZDhrJ1n8KofAb
+  canonical_next_task_file_id: 12zXWAdS8xqAZTMa0UfYt4bTpRIKvAIRR
+  canonical_codex_result_file_id: 1fPMWEpSAagEdnKa6YNrYbBp1zoUuBdg9
+  canonical_update_mode: IN_PLACE_SAME_FILE_ID
+authority_binding:
+  requirement_revision: r2-20260924-antigravity-first-p2a-canary
+  requirement_sha256: b0eeb4dce691e2e7cce1d749ab7aef417756841f24c629c93dc4e22e3621a66c
+  predecessor_req_id: REQ-181-CONSUMER-CLOSURE-01
+  predecessor_terminal_generation: 17
+  predecessor_terminal_task_id: 6be2fb28-830b-49d0-8884-eeb99448cc42
+  predecessor_terminal_task_sha256: e77bc5447c37110dc91a5f3ae16e95c5595e735bae9c571d321b269a7c718491
+transition_binding:
+  source_result_required: true
+  source_verification_mode: HISTORICAL_SOURCE_RESULT_VERIFY
+  supersedes_task_id: 6be2fb28-830b-49d0-8884-eeb99448cc42
+  supersedes_task_sha256: e77bc5447c37110dc91a5f3ae16e95c5595e735bae9c571d321b269a7c718491
+  transition_from_gate: HUMAN_MERGE_RESULT_REVERIFY
+  transition_commit_required: true
