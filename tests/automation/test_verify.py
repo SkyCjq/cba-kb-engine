@@ -397,6 +397,158 @@ def test_descendant_mode_accepts_exact_p2a_process_chain(monkeypatch, task_dict,
     assert verified.classification == "EXECUTION_RESULT_VERIFIED"
 
 
+def mixed_descendant_case(monkeypatch, task_dict, result_dict):
+    from automation.verify import (
+        MIXED_DESCENDANT_MODE, MIXED_MANIFEST_SCHEMA, MIXED_RECOVERY_FINAL_MAIN,
+        MIXED_RECOVERY_HISTORICAL_BASE, MIXED_RECOVERY_MERGES, MIXED_RECOVERY_PRS,
+        MIXED_RECOVERY_PREDECESSOR_TASK_ID,
+    )
+
+    task = copy.deepcopy(task_dict)
+    task.update(
+        req_id="REQ-181-CONSUMER-CLOSURE-01", canonical_generation=19,
+        task_type="CODEX_READ_ONLY_POST_MERGE_RECONCILIATION",
+        expected_base_sha=MIXED_RECOVERY_FINAL_MAIN, feature_branch="main",
+        allowed_paths=["NO_REPOSITORY_FILE_CHANGES_RECONCILIATION_ONLY"],
+    )
+    task["authority_binding"].update(
+        predecessor_terminal_generation=18,
+        predecessor_terminal_task_id=MIXED_RECOVERY_PREDECESSOR_TASK_ID,
+        predecessor_terminal_task_sha256=GEN18_SHA256,
+    )
+    store = MemoryDriveStore()
+    entries = []
+    pr_facts, runs, parents, branch_paths, merge_paths = {}, {}, {}, {}, {}
+    previous = MIXED_RECOVERY_HISTORICAL_BASE
+    pr56_paths = sorted({
+        "automation/handoff.py", "automation/verify.py",
+        "tests/automation/fixtures/req181_gen17_result.json",
+        "tests/automation/fixtures/req181_gen17_task.yaml",
+        "tests/automation/fixtures/req181_gen18_task.yaml",
+        "tests/automation/test_negative_cases.py", "tests/automation/test_transition.py",
+        "tests/automation/test_verify.py",
+    })
+    for index, (number, merge) in enumerate(zip(MIXED_RECOVERY_PRS, MIXED_RECOVERY_MERGES)):
+        head = f"{index + 1:040x}"
+        changed = pr56_paths if number == 56 else [f"historical/pr{number}.txt"]
+        entry_type = ("historical_product_descendant" if number == 50 else
+                      "historical_p2a_compatibility_descendant" if number == 56 else
+                      "historical_release_descendant")
+        kinds = (["requirement", "implementation", "review", "merge"] if number == 50 else
+                 ["compatibility"] if number == 56 else ["release"])
+        evidence = []
+        for kind in kinds:
+            file_id = f"evidence-{number}-{kind}"
+            document = {"schema_version": "cba-kb.historical-evidence.v1",
+                        "req_id": task["req_id"], "pr_number": number, "kind": kind}
+            content = canonical_json_bytes(document)
+            store.seed(file_id, "history", file_id, content)
+            evidence.append({
+                "kind": kind, "file_id": file_id, "folder_id": "history",
+                "sha256": sha256_bytes(content), "schema_version": document["schema_version"],
+                "identity": {"req_id": task["req_id"], "pr_number": number, "kind": kind},
+            })
+        merged_at = f"2026-09-{10 + index:02d}T00:00:00Z"
+        entry = {
+            "type": entry_type, "pr_number": number, "previous_sha": previous,
+            "reviewed_head_sha": head, "actual_head_sha": head, "merge_sha": merge,
+            "merged_at": merged_at, "changed_files": list(changed),
+            "branch_commits": [{"sha": head, "changed_files": list(changed)}],
+            "pr_ci": {"run_id": 1000 + number, "workflow_name": "Offline tests",
+                      "event": "pull_request", "head_sha": head, "status": "completed", "conclusion": "success"},
+            "main_ci": {"run_id": 2000 + number, "workflow_name": "Offline tests",
+                        "event": "push", "head_sha": merge, "status": "completed", "conclusion": "success"},
+            "evidence": evidence, "production_authority": False,
+            "historical_production_context": "HISTORICAL_OBSERVED",
+        }
+        entries.append(entry)
+        pr_facts[number] = {"number": number, "state": "MERGED", "baseRefOid": previous,
+                            "headRefOid": head, "mergedAt": merged_at, "mergeCommit": {"oid": merge}}
+        runs[head] = [{"id": 1000 + number, "name": "Offline tests", "event": "pull_request",
+                       "head_sha": head, "status": "completed", "conclusion": "success"}]
+        runs[merge] = [{"id": 2000 + number, "name": "Offline tests", "event": "push",
+                        "head_sha": merge, "status": "completed", "conclusion": "success"}]
+        parents[merge] = f"{merge} {previous} {head}"
+        branch_paths[head] = list(changed)
+        merge_paths[(previous, merge)] = list(changed)
+        previous = merge
+    manifest = {
+        "schema_version": MIXED_MANIFEST_SCHEMA, "req_id": task["req_id"], "canonical_generation": 19,
+        "predecessor_generation": 18, "predecessor_task_id": MIXED_RECOVERY_PREDECESSOR_TASK_ID,
+        "predecessor_task_sha256": GEN18_SHA256,
+        "requirement_sha256": task["authority_binding"]["requirement_sha256"],
+        "policy_bundle_sha256": task["policy_bundle_sha256"], "repository": task["repository"],
+        "historical_base_sha": MIXED_RECOVERY_HISTORICAL_BASE,
+        "final_main_sha": MIXED_RECOVERY_FINAL_MAIN, "production_authority": False, "entries": entries,
+    }
+    manifest_bytes = canonical_json_bytes(manifest)
+    manifest_sha = sha256_bytes(manifest_bytes)
+    store.seed("mixed-manifest", "history", "mixed-manifest.json", manifest_bytes)
+    task["allowed_actions"] = [
+        f"require immutable mixed descendant manifest file ID mixed-manifest SHA256 {manifest_sha}",
+    ]
+    task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+    result = copy.deepcopy(result_dict)
+    result.update(
+        req_id=task["req_id"], canonical_generation=19, task_id=task["task_id"],
+        base_sha=MIXED_RECOVERY_FINAL_MAIN, head_sha=MIXED_RECOVERY_FINAL_MAIN,
+        feature_branch="main", changed_files=[], source_task_sha256=sha256_bytes(task_bytes),
+        pr={"number": 56, "url": "https://example.test/pr/56", "state": "MERGED"},
+        ci={"workflow_name": "Offline tests", "head_sha": MIXED_RECOVERY_FINAL_MAIN,
+            "conclusion": "success", "runs": [{"id": 2056}]},
+        machine_facts={"descendant_mode": MIXED_DESCENDANT_MODE,
+                       "manifest_file_id": "mixed-manifest", "manifest_sha256": manifest_sha},
+    )
+
+    class GitHub:
+        def collect(self, number, workflow, head):
+            return {"pr": pr_facts[56], "runs": runs[MIXED_RECOVERY_FINAL_MAIN]}
+
+        def _json(self, *args):
+            if args[:2] == ("pr", "view"):
+                return pr_facts[int(args[2])]
+            if "git/ref/heads/main" in args[1]:
+                return {"object": {"sha": MIXED_RECOVERY_FINAL_MAIN}}
+            head = args[1].split("head_sha=")[1].split("&")[0]
+            return {"workflow_runs": runs[head]}
+
+    class Git:
+        def __init__(self, root):
+            pass
+
+        def head_sha(self):
+            return MIXED_RECOVERY_FINAL_MAIN
+
+        def changed_files(self, base_sha):
+            return ()
+
+        def is_ancestor(self, ancestor, descendant):
+            return True
+
+        def _run(self, *args):
+            if args[:3] == ("rev-list", "--first-parent", "--reverse"):
+                return "\n".join(MIXED_RECOVERY_MERGES)
+            if args[:3] == ("rev-list", "--parents", "-n"):
+                return parents[args[-1]]
+            if args[:2] == ("rev-list", "--reverse"):
+                return args[-1].split("..")[-1]
+            if args[:2] == ("diff", "--name-only"):
+                return "\n".join(merge_paths[(args[2], args[3])])
+            if args[0] == "diff-tree":
+                return "\n".join(branch_paths[args[-1]])
+            raise AssertionError(args)
+
+    monkeypatch.setattr("automation.verify.GitInspector", Git)
+    return task, task_bytes, result, manifest, store, GitHub(), pr_facts, runs, Git
+
+
+def test_typed_mixed_descendant_mode_accepts_exact_recovery_corridor(monkeypatch, task_dict, result_dict):
+    _, task_bytes, result, _, store, github, *_ = mixed_descendant_case(monkeypatch, task_dict, result_dict)
+    verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
+                                   github_inspector=github, predecessor_store=store)
+    assert verified.classification == "EXECUTION_RESULT_VERIFIED"
+
+
 def retrospective_case(monkeypatch, task_dict, result_dict):
     task, _, result, store, github, *rest = descendant_case(monkeypatch, task_dict, result_dict)
     entry = result["machine_facts"]["descendants"][0]

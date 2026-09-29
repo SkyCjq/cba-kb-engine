@@ -17,7 +17,7 @@ from automation.verify import (
     verify_result_bytes,
     verify_task_bytes,
 )
-from test_verify import descendant_case, external_control_plane_case, historical_source_case, human_merge_case, immutable_external_case, post_merge_case, retrospective_case
+from test_verify import descendant_case, external_control_plane_case, historical_source_case, human_merge_case, immutable_external_case, mixed_descendant_case, post_merge_case, retrospective_case
 
 
 REQ181_FIXTURES = Path(__file__).parent / "fixtures"
@@ -335,6 +335,155 @@ def test_descendant_mode_rejects_unbound_or_drifted_evidence(
     verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
                                    github_inspector=github, predecessor_store=store)
     assert verified.classification == classification
+
+
+@pytest.mark.parametrize("mutation", [
+    "unknown_mode", "unknown_type", "req_drift", "generation_drift", "predecessor_drift",
+    "historical_base_drift", "final_main_drift", "missing_commit", "duplicate_commit",
+    "reordered_commit", "extra_commit", "wrong_pr", "wrong_reviewed_head", "wrong_actual_head",
+    "wrong_merge_time", "wrong_pr_ci", "wrong_main_ci", "missing_evidence", "wrong_evidence_hash",
+    "wrong_evidence_schema", "wrong_evidence_identity", "unknown_evidence_kind", "manifest_unbound", "manifest_unknown_field",
+    "unexpected_final_diff", "introduced_then_reverted", "pr50_mislabeled", "pr50_missing_authority",
+    "pr56_missing_handoff", "pr56_extra_file", "production_authority", "live_production_context",
+    "requirement_drift", "policy_drift", "repository_drift", "outside_corridor",
+])
+def test_typed_mixed_descendant_mode_fails_closed(
+    monkeypatch, task_dict, result_dict, mutation,
+):
+    task, task_bytes, result, manifest, store, github, prs, runs, git_type = mixed_descendant_case(
+        monkeypatch, task_dict, result_dict,
+    )
+
+    def refreeze_manifest():
+        nonlocal task_bytes
+        content = canonical_json_bytes(manifest)
+        digest = sha256_bytes(content)
+        store.records["mixed-manifest"].content = content
+        task["allowed_actions"] = [
+            f"require immutable mixed descendant manifest file ID mixed-manifest SHA256 {digest}",
+        ]
+        result["machine_facts"]["manifest_sha256"] = digest
+        task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+        result["source_task_sha256"] = sha256_bytes(task_bytes)
+
+    entry = manifest["entries"][0]
+    if mutation == "unknown_mode":
+        result["machine_facts"]["descendant_mode"] = "UNKNOWN_MIXED_MODE"
+    elif mutation == "unknown_type":
+        entry["type"] = "unknown_descendant"
+        refreeze_manifest()
+    elif mutation == "req_drift":
+        task["req_id"] = result["req_id"] = "REQ-OTHER"
+        task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+        result["source_task_sha256"] = sha256_bytes(task_bytes)
+    elif mutation == "generation_drift":
+        task["canonical_generation"] = result["canonical_generation"] = 20
+        task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+        result["source_task_sha256"] = sha256_bytes(task_bytes)
+    elif mutation == "predecessor_drift":
+        task["authority_binding"]["predecessor_terminal_task_id"] = "00000000-0000-4000-8000-000000000000"
+        task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+        result["source_task_sha256"] = sha256_bytes(task_bytes)
+    elif mutation in {"historical_base_drift", "final_main_drift", "requirement_drift", "policy_drift", "repository_drift"}:
+        key = {"historical_base_drift": "historical_base_sha", "final_main_drift": "final_main_sha",
+               "requirement_drift": "requirement_sha256", "policy_drift": "policy_bundle_sha256",
+               "repository_drift": "repository"}[mutation]
+        manifest[key] = "0" * (64 if "sha256" in key else 40) if key != "repository" else "Other/repo"
+        refreeze_manifest()
+    elif mutation == "missing_commit":
+        manifest["entries"].pop()
+        refreeze_manifest()
+    elif mutation == "duplicate_commit":
+        manifest["entries"][1] = copy.deepcopy(manifest["entries"][0])
+        refreeze_manifest()
+    elif mutation == "reordered_commit":
+        manifest["entries"][0], manifest["entries"][1] = manifest["entries"][1], manifest["entries"][0]
+        refreeze_manifest()
+    elif mutation == "extra_commit":
+        manifest["entries"].append(copy.deepcopy(manifest["entries"][-1]))
+        refreeze_manifest()
+    elif mutation == "wrong_pr":
+        entry["pr_number"] = 999
+        refreeze_manifest()
+    elif mutation == "wrong_reviewed_head":
+        entry["reviewed_head_sha"] = "a" * 40
+        refreeze_manifest()
+    elif mutation == "wrong_actual_head":
+        prs[44]["headRefOid"] = "a" * 40
+    elif mutation == "wrong_merge_time":
+        prs[44]["mergedAt"] = "2026-01-01T00:00:00Z"
+    elif mutation == "wrong_pr_ci":
+        entry["pr_ci"]["event"] = "push"
+        refreeze_manifest()
+    elif mutation == "wrong_main_ci":
+        entry["main_ci"]["status"] = "failure"
+        refreeze_manifest()
+    elif mutation == "missing_evidence":
+        del store.records[entry["evidence"][0]["file_id"]]
+    elif mutation == "wrong_evidence_hash":
+        entry["evidence"][0]["sha256"] = "0" * 64
+        refreeze_manifest()
+    elif mutation == "wrong_evidence_schema":
+        entry["evidence"][0]["schema_version"] = "unknown.v1"
+        refreeze_manifest()
+    elif mutation == "wrong_evidence_identity":
+        entry["evidence"][0]["identity"]["pr_number"] = 999
+        refreeze_manifest()
+    elif mutation == "unknown_evidence_kind":
+        entry["evidence"][0]["kind"] = "unknown_class"
+        entry["evidence"][0]["identity"]["kind"] = "unknown_class"
+        refreeze_manifest()
+    elif mutation == "manifest_unbound":
+        result["machine_facts"]["manifest_sha256"] = "0" * 64
+    elif mutation == "manifest_unknown_field":
+        manifest["unexpected"] = True
+        refreeze_manifest()
+    elif mutation == "unexpected_final_diff":
+        class DirtyFinalGit(git_type):
+            def changed_files(self, base_sha):
+                return ("unexpected.txt",)
+        monkeypatch.setattr("automation.verify.GitInspector", DirtyFinalGit)
+    elif mutation == "introduced_then_reverted":
+        entry["branch_commits"][0]["changed_files"].append("forbidden-then-reverted.txt")
+        entry["branch_commits"][0]["changed_files"].sort()
+        head = entry["actual_head_sha"]
+        class RevertedPathGit(git_type):
+            def _run(self, *args):
+                if args[0] == "diff-tree" and args[-1] == head:
+                    return "\n".join(entry["branch_commits"][0]["changed_files"])
+                return super()._run(*args)
+        monkeypatch.setattr("automation.verify.GitInspector", RevertedPathGit)
+        refreeze_manifest()
+    elif mutation == "pr50_mislabeled":
+        manifest["entries"][6]["type"] = "historical_release_descendant"
+        refreeze_manifest()
+    elif mutation == "pr50_missing_authority":
+        manifest["entries"][6]["evidence"] = manifest["entries"][6]["evidence"][:1]
+        refreeze_manifest()
+    elif mutation in {"pr56_missing_handoff", "pr56_extra_file"}:
+        target = manifest["entries"][-1]
+        if mutation == "pr56_missing_handoff":
+            target["changed_files"].remove("automation/handoff.py")
+        else:
+            target["changed_files"].append("unexpected.txt")
+            target["changed_files"].sort()
+        refreeze_manifest()
+    elif mutation == "production_authority":
+        manifest["production_authority"] = True
+        refreeze_manifest()
+    elif mutation == "live_production_context":
+        entry["historical_production_context"] = "LIVE_PUBLISH"
+        refreeze_manifest()
+    elif mutation == "outside_corridor":
+        task["expected_base_sha"] = result["base_sha"] = result["head_sha"] = "0" * 40
+        result["ci"]["head_sha"] = "0" * 40
+        task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+        result["source_task_sha256"] = sha256_bytes(task_bytes)
+
+    verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
+                                   github_inspector=github, predecessor_store=store)
+    assert not verified.ok
+    assert verified.classification != "EXECUTION_RESULT_VERIFIED"
 
 
 @pytest.mark.parametrize(("mutation", "classification"), [

@@ -166,6 +166,49 @@ def validate_result_document(result: Mapping[str, Any]) -> None:
 POST_MERGE_TASK_TYPE = "CODEX_READ_ONLY_POST_MERGE_RECONCILIATION"
 HUMAN_MERGE_TASK_TYPE = "HUMAN_MERGE_EXECUTION"
 DESCENDANT_MODE = "EXACT_P2A_PROCESS_CHAIN"
+MIXED_DESCENDANT_MODE = "EXACT_TYPED_MIXED_DESCENDANT_CHAIN_V1"
+MIXED_MANIFEST_SCHEMA = "cba-kb.p2a-mixed-descendant-manifest.v1"
+MIXED_RECOVERY_REQ_ID = "REQ-181-CONSUMER-CLOSURE-01"
+MIXED_RECOVERY_GENERATION = 19
+MIXED_RECOVERY_PREDECESSOR_GENERATION = 18
+MIXED_RECOVERY_PREDECESSOR_TASK_ID = "c5855e2d-f77c-43cc-9e9c-8ef0798583fc"
+MIXED_RECOVERY_PREDECESSOR_TASK_SHA256 = FROZEN_GEN18_TASK_SHA256
+MIXED_RECOVERY_HISTORICAL_BASE = "b30c66288fc1d44fd4dafc0a8ebcc286bcf41a9d"
+MIXED_RECOVERY_FINAL_MAIN = "c3a48b856e1e236a1ab73c31773cfe28bd3f02a9"
+MIXED_RECOVERY_PRS = (44, 45, 46, 47, 48, 49, 50, 51, 52, 54, 55, 56)
+MIXED_RECOVERY_MERGES = (
+    "d2714a485436ee9b949bb3222622bf056853b471",
+    "b4b4e12b68e20afd49d27b94788af5617d041b17",
+    "a082508a3171230b37e4b462d71a53d8502fe839",
+    "eb102d56c70643b540af5cc30e22c5db99b5d156",
+    "9ec554761b0b648dca95bdfa6c5464e06139a1b4",
+    "b98a4daec0a2d7849d9f4f43306a073f9eaeb53c",
+    "a714a25f6a7afcef5abf0a8efe114c04e04e8e30",
+    "4f61cfe6224d6099b00a724ddeb69ebbc186f74b",
+    "b8304f94276b6fca3bc49c945700d3a152194a63",
+    "6289c1781a7aab4fa318ceb5dac01c3e9475a95d",
+    "f836709c2f7612cebc5ddce72fc1cb19ca64e656",
+    "c3a48b856e1e236a1ab73c31773cfe28bd3f02a9",
+)
+MIXED_ENTRY_TYPES = {
+    "historical_release_descendant", "historical_product_descendant",
+    "historical_p2a_compatibility_descendant",
+}
+MIXED_MANIFEST_FIELDS = {
+    "schema_version", "req_id", "canonical_generation", "predecessor_generation",
+    "predecessor_task_id", "predecessor_task_sha256", "requirement_sha256",
+    "policy_bundle_sha256", "repository", "historical_base_sha", "final_main_sha",
+    "production_authority", "entries",
+}
+MIXED_ENTRY_FIELDS = {
+    "type", "pr_number", "previous_sha", "reviewed_head_sha", "actual_head_sha",
+    "merge_sha", "merged_at", "changed_files", "branch_commits", "pr_ci", "main_ci",
+    "evidence", "production_authority", "historical_production_context",
+}
+MIXED_BRANCH_COMMIT_FIELDS = {"sha", "changed_files"}
+MIXED_CI_FIELDS = {"run_id", "workflow_name", "event", "head_sha", "status", "conclusion"}
+MIXED_EVIDENCE_FIELDS = {"kind", "file_id", "folder_id", "sha256", "schema_version", "identity"}
+MIXED_EVIDENCE_KINDS = {"release", "requirement", "implementation", "review", "merge", "compatibility", "ci"}
 PROCESS_DESCENDANT_PATHS = {
     ".github/workflows/offline-tests.yml", "automation/verify.py",
     "tests/automation/test_negative_cases.py", "tests/automation/test_verify.py",
@@ -1142,6 +1185,217 @@ def _verify_external_control_plane_descendant(
             raise P2AError("EXTERNAL_DESCENDANT_SCOPE_VIOLATION", "External branch contains forbidden file mutation")
 
 
+def _mixed_frozen_manifest(task: Mapping[str, Any]) -> tuple[str, str]:
+    """Use the non-circular authority boundary: the eventual task freezes manifest ID+bytes hash."""
+    matches = [m.groups() for action in task["allowed_actions"] if (m := re.fullmatch(
+        r"require immutable mixed descendant manifest file ID ([A-Za-z0-9_-]+) SHA256 ([0-9a-f]{64})",
+        action,
+    ))]
+    if len(matches) != 1:
+        raise P2AError(
+            "MIXED_DESCENDANT_AUTHORITY_MISSING",
+            "Gen19 task must freeze exactly one immutable mixed-descendant manifest file ID and SHA256",
+        )
+    return matches[0]
+
+
+def _verify_mixed_ci(
+    github_inspector: Any, task: Mapping[str, Any], claim: Mapping[str, Any], *, expected_event: str,
+) -> None:
+    require_exact_keys(claim, MIXED_CI_FIELDS, code="MIXED_DESCENDANT_CI_MISMATCH", location="mixed CI")
+    if (not isinstance(claim["run_id"], int)
+            or claim["workflow_name"] != "Offline tests"
+            or claim["event"] != expected_event
+            or claim["status"] != "completed"
+            or claim["conclusion"] != "success"):
+        raise P2AError("MIXED_DESCENDANT_CI_MISMATCH", "Mixed descendant CI claim is not exact successful Offline tests")
+    require_git_sha(claim["head_sha"], field_name="mixed_ci.head_sha", code="MIXED_DESCENDANT_CI_MISMATCH")
+    runs = github_inspector._json(
+        "api", f"repos/{task['repository']}/actions/runs?head_sha={claim['head_sha']}&per_page=100",
+    ).get("workflow_runs", [])
+    expected = {key: claim[key] for key in MIXED_CI_FIELDS}
+    source_keys = {"run_id": "id", "workflow_name": "name"}
+    if not any({key: run.get(source_keys.get(key, key)) for key in MIXED_CI_FIELDS} == expected for run in runs):
+        raise P2AError("MIXED_DESCENDANT_CI_MISMATCH", "Mixed descendant CI differs from GitHub Code Truth")
+
+
+def _verify_mixed_evidence(
+    store: Any, refs: Any, *, req_id: str, pr_number: int,
+) -> set[str]:
+    if not isinstance(refs, list) or not refs or not all(isinstance(ref, dict) for ref in refs):
+        raise P2AError("MIXED_DESCENDANT_EVIDENCE_MISSING", "Every mixed descendant entry requires immutable evidence")
+    seen: set[tuple[str, str]] = set()
+    kinds: set[str] = set()
+    for ref in refs:
+        require_exact_keys(ref, MIXED_EVIDENCE_FIELDS, code="MIXED_DESCENDANT_EVIDENCE_MISMATCH", location="mixed evidence")
+        if (ref["kind"] not in MIXED_EVIDENCE_KINDS
+                or not isinstance(ref["file_id"], str) or not ref["file_id"]
+                or not isinstance(ref["folder_id"], str) or not ref["folder_id"]
+                or not isinstance(ref["schema_version"], str) or not ref["schema_version"]
+                or not isinstance(ref["identity"], dict)
+                or ref["identity"].get("req_id") != req_id
+                or ref["identity"].get("pr_number") != pr_number
+                or ref["identity"].get("kind") != ref["kind"]
+                or (ref["kind"], ref["file_id"]) in seen):
+            raise P2AError("MIXED_DESCENDANT_EVIDENCE_MISMATCH", "Mixed descendant evidence reference is invalid or duplicated")
+        require_sha256(ref["sha256"], field_name="mixed_evidence.sha256", code="MIXED_DESCENDANT_EVIDENCE_MISMATCH")
+        evidence = store.read(ref["file_id"])
+        if evidence.folder_id != ref["folder_id"] or sha256_bytes(evidence.content) != ref["sha256"]:
+            raise P2AError("MIXED_DESCENDANT_EVIDENCE_MISMATCH", "Evidence bytes, file ID, folder, or SHA256 differ")
+        document = load_json_bytes(evidence.content, code="MIXED_DESCENDANT_EVIDENCE_MISMATCH")
+        if document.get("schema_version") != ref["schema_version"]:
+            raise P2AError("MIXED_DESCENDANT_EVIDENCE_MISMATCH", "Evidence schema version differs from manifest")
+        if any(document.get(key) != value for key, value in ref["identity"].items()):
+            raise P2AError("MIXED_DESCENDANT_EVIDENCE_MISMATCH", "Evidence identity differs from manifest")
+        seen.add((ref["kind"], ref["file_id"]))
+        kinds.add(ref["kind"])
+    return kinds
+
+
+def _verify_typed_mixed_descendants(
+    result: Mapping[str, Any], task: Mapping[str, Any], github_inspector: Any,
+    git_root: str | Path | None, github: Mapping[str, Any], store: Any,
+) -> None:
+    facts = result["machine_facts"]
+    if not isinstance(facts, dict) or facts.get("descendant_mode") != MIXED_DESCENDANT_MODE:
+        raise P2AError("MIXED_DESCENDANT_AUTHORITY_MISSING", "Exact typed mixed descendant mode is required")
+    corridor = (
+        task["req_id"] == MIXED_RECOVERY_REQ_ID
+        and task["canonical_generation"] == MIXED_RECOVERY_GENERATION
+        and task["authority_binding"]["predecessor_terminal_generation"] == MIXED_RECOVERY_PREDECESSOR_GENERATION
+        and task["authority_binding"]["predecessor_terminal_task_id"] == MIXED_RECOVERY_PREDECESSOR_TASK_ID
+        and task["authority_binding"]["predecessor_terminal_task_sha256"] == MIXED_RECOVERY_PREDECESSOR_TASK_SHA256
+        and task["expected_base_branch"] == "main" and task["feature_branch"] == "main"
+        and task["expected_base_sha"] == MIXED_RECOVERY_FINAL_MAIN
+        and result["base_sha"] == MIXED_RECOVERY_FINAL_MAIN
+        and result["head_sha"] == MIXED_RECOVERY_FINAL_MAIN
+    )
+    if not corridor:
+        raise P2AError("MIXED_DESCENDANT_CORRIDOR_MISMATCH", "Mixed descendant mode is unavailable outside the exact REQ-181 Gen19 recovery corridor")
+    manifest_file_id, manifest_sha256 = _mixed_frozen_manifest(task)
+    if facts.get("manifest_file_id") != manifest_file_id or facts.get("manifest_sha256") != manifest_sha256:
+        raise P2AError("MIXED_DESCENDANT_MANIFEST_UNBOUND", "Result does not bind the task-frozen manifest file ID and SHA256")
+    manifest_file = store.read(manifest_file_id)
+    if (manifest_file.folder_id != task["canonical_binding"]["canonical_history_folder_id"]
+            or sha256_bytes(manifest_file.content) != manifest_sha256):
+        raise P2AError("MIXED_DESCENDANT_MANIFEST_MISMATCH", "Manifest bytes, folder, or SHA256 differ from frozen authority")
+    manifest = load_json_bytes(manifest_file.content, code="MIXED_DESCENDANT_MANIFEST_INVALID")
+    require_exact_keys(manifest, MIXED_MANIFEST_FIELDS, code="MIXED_DESCENDANT_MANIFEST_INVALID", location="mixed manifest")
+    expected_manifest = {
+        "schema_version": MIXED_MANIFEST_SCHEMA,
+        "req_id": MIXED_RECOVERY_REQ_ID,
+        "canonical_generation": MIXED_RECOVERY_GENERATION,
+        "predecessor_generation": MIXED_RECOVERY_PREDECESSOR_GENERATION,
+        "predecessor_task_id": MIXED_RECOVERY_PREDECESSOR_TASK_ID,
+        "predecessor_task_sha256": MIXED_RECOVERY_PREDECESSOR_TASK_SHA256,
+        "requirement_sha256": task["authority_binding"]["requirement_sha256"],
+        "policy_bundle_sha256": task["policy_bundle_sha256"],
+        "repository": task["repository"],
+        "historical_base_sha": MIXED_RECOVERY_HISTORICAL_BASE,
+        "final_main_sha": MIXED_RECOVERY_FINAL_MAIN,
+        "production_authority": False,
+    }
+    if any(manifest.get(key) != value for key, value in expected_manifest.items()):
+        raise P2AError("MIXED_DESCENDANT_MANIFEST_MISMATCH", "Manifest recovery, repository, Requirement, policy, or authority binding drifted")
+    entries = manifest["entries"]
+    if (not isinstance(entries, list) or len(entries) != len(MIXED_RECOVERY_PRS)
+            or not all(isinstance(entry, dict) for entry in entries)
+            or tuple(entry.get("pr_number") for entry in entries) != MIXED_RECOVERY_PRS
+            or tuple(entry.get("merge_sha") for entry in entries) != MIXED_RECOVERY_MERGES):
+        raise P2AError("MIXED_DESCENDANT_CHAIN_MISMATCH", "Manifest must contain the exact ordered 12-entry recovery chain")
+    if git_root is None:
+        raise P2AError("GIT_FACTS_UNAVAILABLE", "Typed mixed descendant reconciliation requires exact-main Git history")
+    git = GitInspector(git_root)
+    commits = tuple(git._run(
+        "rev-list", "--first-parent", "--reverse",
+        f"{MIXED_RECOVERY_HISTORICAL_BASE}..{MIXED_RECOVERY_FINAL_MAIN}",
+    ).splitlines())
+    if commits != MIXED_RECOVERY_MERGES:
+        raise P2AError("MIXED_DESCENDANT_CHAIN_MISMATCH", "Git first-parent history differs from the exact recovery corridor")
+    main_ref = github_inspector._json("api", f"repos/{task['repository']}/git/ref/heads/main")
+    if (main_ref.get("object") or {}).get("sha") != MIXED_RECOVERY_FINAL_MAIN:
+        raise P2AError("FINAL_MAIN_MISMATCH", "Live main advanced beyond the frozen recovery corridor")
+    claimed_main = {run.get("id") for run in result["ci"].get("runs", [])}
+    verified_main = {run.get("id") for run in github["runs"] if run.get("name") == "Offline tests"
+                     and run.get("event") == "push" and run.get("head_sha") == MIXED_RECOVERY_FINAL_MAIN
+                     and run.get("status") == "completed" and run.get("conclusion") == "success"}
+    if not claimed_main or not claimed_main.issubset(verified_main):
+        raise P2AError("MIXED_DESCENDANT_CI_MISMATCH", "Final main lacks exact successful hosted push CI")
+    previous = MIXED_RECOVERY_HISTORICAL_BASE
+    for entry, expected_pr, expected_merge in zip(entries, MIXED_RECOVERY_PRS, MIXED_RECOVERY_MERGES):
+        require_exact_keys(entry, MIXED_ENTRY_FIELDS, code="MIXED_DESCENDANT_MANIFEST_INVALID", location="mixed entry")
+        expected_type = ("historical_product_descendant" if expected_pr == 50 else
+                         "historical_p2a_compatibility_descendant" if expected_pr == 56 else
+                         "historical_release_descendant")
+        if (entry["type"] not in MIXED_ENTRY_TYPES or entry["type"] != expected_type
+                or entry["pr_number"] != expected_pr or entry["previous_sha"] != previous
+                or entry["merge_sha"] != expected_merge or entry["production_authority"] is not False
+                or entry["historical_production_context"] not in {None, "HISTORICAL_OBSERVED"}):
+            raise P2AError("MIXED_DESCENDANT_ENTRY_MISMATCH", "Mixed descendant type, order, or authority differs from the exact corridor")
+        for key in ("previous_sha", "reviewed_head_sha", "actual_head_sha", "merge_sha"):
+            require_git_sha(entry[key], field_name=f"mixed_entry.{key}", code="MIXED_DESCENDANT_ENTRY_MISMATCH")
+        if not isinstance(entry["merged_at"], str) or not entry["merged_at"]:
+            raise P2AError("MIXED_DESCENDANT_ENTRY_MISMATCH", "Merged timestamp is required")
+        changed_files = entry["changed_files"]
+        if (not isinstance(changed_files, list) or not changed_files
+                or not all(isinstance(path, str) and path for path in changed_files)
+                or changed_files != sorted(set(changed_files))):
+            raise P2AError("MIXED_DESCENDANT_SCOPE_VIOLATION", "Entry changed_files must be a sorted exact non-empty set")
+        if expected_pr == 56 and changed_files != sorted({
+            "automation/handoff.py", "automation/verify.py",
+            "tests/automation/fixtures/req181_gen17_result.json",
+            "tests/automation/fixtures/req181_gen17_task.yaml",
+            "tests/automation/fixtures/req181_gen18_task.yaml",
+            "tests/automation/test_negative_cases.py", "tests/automation/test_transition.py",
+            "tests/automation/test_verify.py",
+        }):
+            raise P2AError("MIXED_DESCENDANT_SCOPE_VIOLATION", "PR56 compatibility entry changed set is not exact")
+        parents = git._run("rev-list", "--parents", "-n", "1", expected_merge).split()
+        if parents != [expected_merge, previous, entry["actual_head_sha"]]:
+            raise P2AError("GIT_ANCESTRY_MISMATCH", "Mixed descendant merge parents do not form the exact chain")
+        if (not git.is_ancestor(previous, entry["actual_head_sha"])
+                or not git.is_ancestor(entry["reviewed_head_sha"], entry["actual_head_sha"])):
+            raise P2AError("GIT_ANCESTRY_MISMATCH", "Mixed descendant reviewed head is not in the exact branch ancestry")
+        if sorted(git._run("diff", "--name-only", previous, expected_merge).splitlines()) != changed_files:
+            raise P2AError("MIXED_DESCENDANT_SCOPE_VIOLATION", "Manifest changed_files differ from Git truth")
+        branch_commits = entry["branch_commits"]
+        if not isinstance(branch_commits, list) or not branch_commits or not all(isinstance(item, dict) for item in branch_commits):
+            raise P2AError("MIXED_DESCENDANT_BRANCH_MISMATCH", "Exact per-branch-commit evidence is required")
+        observed_branch = git._run("rev-list", "--reverse", f"{previous}..{entry['actual_head_sha']}").splitlines()
+        if [item.get("sha") for item in branch_commits] != observed_branch or observed_branch[-1] != entry["actual_head_sha"]:
+            raise P2AError("MIXED_DESCENDANT_BRANCH_MISMATCH", "Branch commit sequence differs from Git truth")
+        for item in branch_commits:
+            require_exact_keys(item, MIXED_BRANCH_COMMIT_FIELDS, code="MIXED_DESCENDANT_BRANCH_MISMATCH", location="mixed branch commit")
+            require_git_sha(item["sha"], field_name="mixed_branch.sha", code="MIXED_DESCENDANT_BRANCH_MISMATCH")
+            paths = item["changed_files"]
+            observed_paths = sorted(git._run("diff-tree", "--no-commit-id", "--name-only", "-r", item["sha"]).splitlines())
+            if (not isinstance(paths, list) or paths != sorted(set(paths)) or paths != observed_paths
+                    or not set(paths).issubset(changed_files)):
+                raise P2AError("MIXED_DESCENDANT_SCOPE_VIOLATION", "Branch commit introduced an unbound or reverted path")
+        observed_pr = github_inspector._json(
+            "pr", "view", str(expected_pr), "--repo", task["repository"],
+            "--json", "number,state,baseRefOid,headRefOid,mergedAt,mergeCommit",
+        )
+        if (observed_pr.get("number") != expected_pr or observed_pr.get("state") != "MERGED"
+                or observed_pr.get("baseRefOid") != previous
+                or observed_pr.get("headRefOid") != entry["actual_head_sha"]
+                or observed_pr.get("mergedAt") != entry["merged_at"]
+                or (observed_pr.get("mergeCommit") or {}).get("oid") != expected_merge):
+            raise P2AError("MIXED_DESCENDANT_PR_MISMATCH", "Mixed descendant PR facts differ from GitHub Code Truth")
+        if entry["pr_ci"].get("head_sha") != entry["reviewed_head_sha"] or entry["main_ci"].get("head_sha") != expected_merge:
+            raise P2AError("MIXED_DESCENDANT_CI_MISMATCH", "CI heads do not bind reviewed head and merge SHA")
+        _verify_mixed_ci(github_inspector, task, entry["pr_ci"], expected_event="pull_request")
+        _verify_mixed_ci(github_inspector, task, entry["main_ci"], expected_event="push")
+        evidence_kinds = _verify_mixed_evidence(
+            store, entry["evidence"], req_id=MIXED_RECOVERY_REQ_ID, pr_number=expected_pr,
+        )
+        if expected_pr == 50 and not {"requirement", "implementation", "review", "merge"}.issubset(evidence_kinds):
+            raise P2AError("MIXED_DESCENDANT_PRODUCT_AUTHORITY_MISSING", "PR50 lacks exact product authority and evidence binding")
+        if expected_pr == 56 and "compatibility" not in evidence_kinds:
+            raise P2AError("MIXED_DESCENDANT_COMPATIBILITY_EVIDENCE_MISSING", "PR56 lacks exact compatibility evidence binding")
+        previous = expected_merge
+
+
 def _verify_post_merge_descendants(
     result: Mapping[str, Any], task: Mapping[str, Any], github_inspector: Any,
     git_root: str | Path | None, github: Mapping[str, Any], store: Any,
@@ -1348,7 +1602,11 @@ def verify_result_bytes(
                 raise P2AError("GITHUB_FACTS_UNAVAILABLE", "PASS result requires independent GitHub Code Truth")
             github = github_inspector.collect(result["pr"]["number"], result["ci"]["workflow_name"], result["head_sha"])
             if post_merge:
-                if isinstance(result["machine_facts"], dict) and result["machine_facts"].get("descendant_mode") == DESCENDANT_MODE:
+                descendant_mode = result["machine_facts"].get("descendant_mode") if isinstance(result["machine_facts"], dict) else None
+                if descendant_mode == MIXED_DESCENDANT_MODE:
+                    store = predecessor_store if predecessor_store is not None else _human_evidence_store(git_root)
+                    _verify_typed_mixed_descendants(result, task, github_inspector, git_root, github, store)
+                elif descendant_mode == DESCENDANT_MODE:
                     store = predecessor_store if predecessor_store is not None else _human_evidence_store(git_root)
                     _verify_post_merge_descendants(result, task, github_inspector, git_root, github, store)
                 else:
