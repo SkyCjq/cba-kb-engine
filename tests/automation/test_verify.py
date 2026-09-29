@@ -399,7 +399,7 @@ def test_descendant_mode_accepts_exact_p2a_process_chain(monkeypatch, task_dict,
 
 def mixed_descendant_case(monkeypatch, task_dict, result_dict):
     from automation.verify import (
-        MIXED_DESCENDANT_MODE, MIXED_MANIFEST_SCHEMA, MIXED_RECOVERY_FINAL_MAIN,
+        MIXED_AUTHORITY_REGISTRY_SCHEMA, MIXED_DESCENDANT_MODE, MIXED_MANIFEST_SCHEMA, MIXED_RECOVERY_FINAL_MAIN,
         MIXED_RECOVERY_HISTORICAL_BASE, MIXED_RECOVERY_MERGES, MIXED_RECOVERY_PRS,
         MIXED_RECOVERY_PREDECESSOR_TASK_ID,
     )
@@ -484,8 +484,29 @@ def mixed_descendant_case(monkeypatch, task_dict, result_dict):
     manifest_bytes = canonical_json_bytes(manifest)
     manifest_sha = sha256_bytes(manifest_bytes)
     store.seed("mixed-manifest", "history", "mixed-manifest.json", manifest_bytes)
+    authorities = [
+        {"pr_number": entry["pr_number"], **copy.deepcopy(reference)}
+        for entry in entries for reference in entry["evidence"]
+    ]
+    authority_registry = {
+        "schema_version": MIXED_AUTHORITY_REGISTRY_SCHEMA,
+        "req_id": task["req_id"], "canonical_generation": 19,
+        "predecessor_task_id": MIXED_RECOVERY_PREDECESSOR_TASK_ID,
+        "predecessor_task_sha256": GEN18_SHA256,
+        "requirement_sha256": task["authority_binding"]["requirement_sha256"],
+        "policy_bundle_sha256": task["policy_bundle_sha256"],
+        "repository": task["repository"], "production_authority": False,
+        "authorities": authorities,
+    }
+    authority_registry_bytes = canonical_json_bytes(authority_registry)
+    authority_registry_sha = sha256_bytes(authority_registry_bytes)
+    store.seed(
+        "mixed-authority-registry", "history", "mixed-authority-registry.json",
+        authority_registry_bytes,
+    )
     task["allowed_actions"] = [
         f"require immutable mixed descendant manifest file ID mixed-manifest SHA256 {manifest_sha}",
+        f"require immutable mixed evidence authority registry file ID mixed-authority-registry SHA256 {authority_registry_sha}",
     ]
     task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
     result = copy.deepcopy(result_dict)
@@ -497,7 +518,9 @@ def mixed_descendant_case(monkeypatch, task_dict, result_dict):
         ci={"workflow_name": "Offline tests", "head_sha": MIXED_RECOVERY_FINAL_MAIN,
             "conclusion": "success", "runs": [{"id": 2056}]},
         machine_facts={"descendant_mode": MIXED_DESCENDANT_MODE,
-                       "manifest_file_id": "mixed-manifest", "manifest_sha256": manifest_sha},
+                       "manifest_file_id": "mixed-manifest", "manifest_sha256": manifest_sha,
+                       "authority_registry_file_id": "mixed-authority-registry",
+                       "authority_registry_sha256": authority_registry_sha},
     )
 
     class GitHub:
@@ -539,11 +562,14 @@ def mixed_descendant_case(monkeypatch, task_dict, result_dict):
             raise AssertionError(args)
 
     monkeypatch.setattr("automation.verify.GitInspector", Git)
-    return task, task_bytes, result, manifest, store, GitHub(), pr_facts, runs, Git
+    return (
+        task, task_bytes, result, manifest, authority_registry, store,
+        GitHub(), pr_facts, runs, Git,
+    )
 
 
 def test_typed_mixed_descendant_mode_accepts_exact_recovery_corridor(monkeypatch, task_dict, result_dict):
-    _, task_bytes, result, _, store, github, *_ = mixed_descendant_case(monkeypatch, task_dict, result_dict)
+    _, task_bytes, result, _, _, store, github, *_ = mixed_descendant_case(monkeypatch, task_dict, result_dict)
     verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
                                    github_inspector=github, predecessor_store=store)
     assert verified.classification == "EXECUTION_RESULT_VERIFIED"

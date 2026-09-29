@@ -168,6 +168,7 @@ HUMAN_MERGE_TASK_TYPE = "HUMAN_MERGE_EXECUTION"
 DESCENDANT_MODE = "EXACT_P2A_PROCESS_CHAIN"
 MIXED_DESCENDANT_MODE = "EXACT_TYPED_MIXED_DESCENDANT_CHAIN_V1"
 MIXED_MANIFEST_SCHEMA = "cba-kb.p2a-mixed-descendant-manifest.v1"
+MIXED_AUTHORITY_REGISTRY_SCHEMA = "cba-kb.p2a-mixed-evidence-authority-registry.v1"
 MIXED_RECOVERY_REQ_ID = "REQ-181-CONSUMER-CLOSURE-01"
 MIXED_RECOVERY_GENERATION = 19
 MIXED_RECOVERY_PREDECESSOR_GENERATION = 18
@@ -209,6 +210,12 @@ MIXED_BRANCH_COMMIT_FIELDS = {"sha", "changed_files"}
 MIXED_CI_FIELDS = {"run_id", "workflow_name", "event", "head_sha", "status", "conclusion"}
 MIXED_EVIDENCE_FIELDS = {"kind", "file_id", "folder_id", "sha256", "schema_version", "identity"}
 MIXED_EVIDENCE_KINDS = {"release", "requirement", "implementation", "review", "merge", "compatibility", "ci"}
+MIXED_AUTHORITY_REGISTRY_FIELDS = {
+    "schema_version", "req_id", "canonical_generation", "predecessor_task_id",
+    "predecessor_task_sha256", "requirement_sha256", "policy_bundle_sha256",
+    "repository", "production_authority", "authorities",
+}
+MIXED_AUTHORITY_FIELDS = MIXED_EVIDENCE_FIELDS | {"pr_number"}
 PROCESS_DESCENDANT_PATHS = {
     ".github/workflows/offline-tests.yml", "automation/verify.py",
     "tests/automation/test_negative_cases.py", "tests/automation/test_verify.py",
@@ -1199,6 +1206,99 @@ def _mixed_frozen_manifest(task: Mapping[str, Any]) -> tuple[str, str]:
     return matches[0]
 
 
+def _mixed_frozen_authority_registry(task: Mapping[str, Any]) -> tuple[str, str]:
+    """Read the independent Web-frozen authority registry binding from the eventual task."""
+    matches = [m.groups() for action in task["allowed_actions"] if (m := re.fullmatch(
+        r"require immutable mixed evidence authority registry file ID ([A-Za-z0-9_-]+) SHA256 ([0-9a-f]{64})",
+        action,
+    ))]
+    if len(matches) != 1:
+        raise P2AError(
+            "MIXED_AUTHORITY_REGISTRY_BINDING_MISSING",
+            "Gen19 task must freeze exactly one immutable mixed-evidence authority registry file ID and SHA256",
+        )
+    return matches[0]
+
+
+def _verify_mixed_authority_registry(
+    task: Mapping[str, Any], facts: Mapping[str, Any], store: Any,
+) -> list[Mapping[str, Any]]:
+    registry_file_id, registry_sha256 = _mixed_frozen_authority_registry(task)
+    if (facts.get("authority_registry_file_id") != registry_file_id
+            or facts.get("authority_registry_sha256") != registry_sha256):
+        raise P2AError(
+            "MIXED_AUTHORITY_REGISTRY_UNBOUND",
+            "Result does not bind the task-frozen mixed-evidence authority registry",
+        )
+    registry_file = store.read(registry_file_id)
+    if (registry_file.folder_id != task["canonical_binding"]["canonical_history_folder_id"]
+            or sha256_bytes(registry_file.content) != registry_sha256):
+        raise P2AError(
+            "MIXED_AUTHORITY_REGISTRY_MISMATCH",
+            "Authority registry bytes, file ID, folder, or SHA256 differ from frozen authority",
+        )
+    registry = load_json_bytes(registry_file.content, code="MIXED_AUTHORITY_REGISTRY_INVALID")
+    require_exact_keys(
+        registry, MIXED_AUTHORITY_REGISTRY_FIELDS,
+        code="MIXED_AUTHORITY_REGISTRY_INVALID", location="mixed authority registry",
+    )
+    expected = {
+        "schema_version": MIXED_AUTHORITY_REGISTRY_SCHEMA,
+        "req_id": MIXED_RECOVERY_REQ_ID,
+        "canonical_generation": MIXED_RECOVERY_GENERATION,
+        "predecessor_task_id": MIXED_RECOVERY_PREDECESSOR_TASK_ID,
+        "predecessor_task_sha256": MIXED_RECOVERY_PREDECESSOR_TASK_SHA256,
+        "requirement_sha256": task["authority_binding"]["requirement_sha256"],
+        "policy_bundle_sha256": task["policy_bundle_sha256"],
+        "repository": task["repository"],
+        "production_authority": False,
+    }
+    if any(registry.get(key) != value for key, value in expected.items()):
+        raise P2AError(
+            "MIXED_AUTHORITY_REGISTRY_INVALID",
+            "Authority registry schema, recovery identity, policy, repository, or authority drifted",
+        )
+    authorities = registry["authorities"]
+    if (not isinstance(authorities, list) or not authorities
+            or not all(isinstance(authority, dict) for authority in authorities)):
+        raise P2AError("MIXED_AUTHORITY_REGISTRY_INVALID", "Authority registry requires exact evidence tuples")
+    seen: set[tuple[int, str, str]] = set()
+    for authority in authorities:
+        require_exact_keys(
+            authority, MIXED_AUTHORITY_FIELDS,
+            code="MIXED_AUTHORITY_REGISTRY_INVALID", location="mixed authority tuple",
+        )
+        pr_number = authority["pr_number"]
+        kind = authority["kind"]
+        file_id = authority["file_id"]
+        identity = authority["identity"]
+        if (not isinstance(pr_number, int) or pr_number not in MIXED_RECOVERY_PRS
+                or not isinstance(kind, str) or kind not in MIXED_EVIDENCE_KINDS
+                or not isinstance(file_id, str) or not file_id
+                or not isinstance(authority["folder_id"], str) or not authority["folder_id"]
+                or not isinstance(authority["schema_version"], str) or not authority["schema_version"]
+                or not isinstance(identity, dict)
+                or identity.get("req_id") != MIXED_RECOVERY_REQ_ID
+                or identity.get("pr_number") != pr_number
+                or identity.get("kind") != kind):
+            raise P2AError(
+                "MIXED_AUTHORITY_REGISTRY_INVALID",
+                "Authority registry contains an invalid or mismatched evidence tuple",
+            )
+        key = (pr_number, kind, file_id)
+        if key in seen:
+            raise P2AError(
+                "MIXED_AUTHORITY_REGISTRY_INVALID",
+                "Authority registry contains a duplicate evidence tuple",
+            )
+        require_sha256(
+            authority["sha256"], field_name="mixed_authority.sha256",
+            code="MIXED_AUTHORITY_REGISTRY_INVALID",
+        )
+        seen.add(key)
+    return authorities
+
+
 def _verify_mixed_ci(
     github_inspector: Any, task: Mapping[str, Any], claim: Mapping[str, Any], *, expected_event: str,
 ) -> None:
@@ -1220,7 +1320,7 @@ def _verify_mixed_ci(
 
 
 def _verify_mixed_evidence(
-    store: Any, refs: Any, *, req_id: str, pr_number: int,
+    store: Any, refs: Any, authorities: list[Mapping[str, Any]], *, req_id: str, pr_number: int,
 ) -> set[str]:
     if not isinstance(refs, list) or not refs or not all(isinstance(ref, dict) for ref in refs):
         raise P2AError("MIXED_DESCENDANT_EVIDENCE_MISSING", "Every mixed descendant entry requires immutable evidence")
@@ -1228,6 +1328,12 @@ def _verify_mixed_evidence(
     kinds: set[str] = set()
     for ref in refs:
         require_exact_keys(ref, MIXED_EVIDENCE_FIELDS, code="MIXED_DESCENDANT_EVIDENCE_MISMATCH", location="mixed evidence")
+        authority_claim = {"pr_number": pr_number, **ref}
+        if not any(authority_claim == authority for authority in authorities):
+            raise P2AError(
+                "MIXED_DESCENDANT_EVIDENCE_UNAUTHORIZED",
+                "Manifest evidence is not an exact tuple in the independently frozen authority registry",
+            )
         if (ref["kind"] not in MIXED_EVIDENCE_KINDS
                 or not isinstance(ref["file_id"], str) or not ref["file_id"]
                 or not isinstance(ref["folder_id"], str) or not ref["folder_id"]
@@ -1297,6 +1403,7 @@ def _verify_typed_mixed_descendants(
     }
     if any(manifest.get(key) != value for key, value in expected_manifest.items()):
         raise P2AError("MIXED_DESCENDANT_MANIFEST_MISMATCH", "Manifest recovery, repository, Requirement, policy, or authority binding drifted")
+    authorities = _verify_mixed_authority_registry(task, facts, store)
     entries = manifest["entries"]
     if (not isinstance(entries, list) or len(entries) != len(MIXED_RECOVERY_PRS)
             or not all(isinstance(entry, dict) for entry in entries)
@@ -1387,7 +1494,8 @@ def _verify_typed_mixed_descendants(
         _verify_mixed_ci(github_inspector, task, entry["pr_ci"], expected_event="pull_request")
         _verify_mixed_ci(github_inspector, task, entry["main_ci"], expected_event="push")
         evidence_kinds = _verify_mixed_evidence(
-            store, entry["evidence"], req_id=MIXED_RECOVERY_REQ_ID, pr_number=expected_pr,
+            store, entry["evidence"], authorities,
+            req_id=MIXED_RECOVERY_REQ_ID, pr_number=expected_pr,
         )
         if expected_pr == 50 and not {"requirement", "implementation", "review", "merge"}.issubset(evidence_kinds):
             raise P2AError("MIXED_DESCENDANT_PRODUCT_AUTHORITY_MISSING", "PR50 lacks exact product authority and evidence binding")

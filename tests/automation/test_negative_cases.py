@@ -346,25 +346,45 @@ def test_descendant_mode_rejects_unbound_or_drifted_evidence(
     "unexpected_final_diff", "introduced_then_reverted", "pr50_mislabeled", "pr50_missing_authority",
     "pr56_missing_handoff", "pr56_extra_file", "production_authority", "live_production_context",
     "requirement_drift", "policy_drift", "repository_drift", "outside_corridor",
+    "file_id_substitution", "wrong_folder_substitution", "structured_narrative_substitution",
+    "evidence_not_in_registry", "registry_file_id_mismatch", "registry_sha_mismatch",
+    "registry_wrong_folder", "unknown_registry_schema", "duplicate_registry_authority",
+    "registry_identity_mismatch", "manifest_registry_tuple_mismatch", "missing_registry_binding",
 ])
 def test_typed_mixed_descendant_mode_fails_closed(
     monkeypatch, task_dict, result_dict, mutation,
 ):
-    task, task_bytes, result, manifest, store, github, prs, runs, git_type = mixed_descendant_case(
+    task, task_bytes, result, manifest, registry, store, github, prs, runs, git_type = mixed_descendant_case(
         monkeypatch, task_dict, result_dict,
     )
 
-    def refreeze_manifest():
+    def refresh_task_bytes():
         nonlocal task_bytes
+        task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+        result["source_task_sha256"] = sha256_bytes(task_bytes)
+
+    def refresh_allowed_actions():
+        task["allowed_actions"] = [
+            "require immutable mixed descendant manifest file ID mixed-manifest "
+            f"SHA256 {result['machine_facts']['manifest_sha256']}",
+            "require immutable mixed evidence authority registry file ID mixed-authority-registry "
+            f"SHA256 {result['machine_facts']['authority_registry_sha256']}",
+        ]
+        refresh_task_bytes()
+
+    def refreeze_manifest():
         content = canonical_json_bytes(manifest)
         digest = sha256_bytes(content)
         store.records["mixed-manifest"].content = content
-        task["allowed_actions"] = [
-            f"require immutable mixed descendant manifest file ID mixed-manifest SHA256 {digest}",
-        ]
         result["machine_facts"]["manifest_sha256"] = digest
-        task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
-        result["source_task_sha256"] = sha256_bytes(task_bytes)
+        refresh_allowed_actions()
+
+    def refreeze_registry():
+        content = canonical_json_bytes(registry)
+        digest = sha256_bytes(content)
+        store.records["mixed-authority-registry"].content = content
+        result["machine_facts"]["authority_registry_sha256"] = digest
+        refresh_allowed_actions()
 
     entry = manifest["entries"][0]
     if mutation == "unknown_mode":
@@ -477,13 +497,60 @@ def test_typed_mixed_descendant_mode_fails_closed(
     elif mutation == "outside_corridor":
         task["expected_base_sha"] = result["base_sha"] = result["head_sha"] = "0" * 40
         result["ci"]["head_sha"] = "0" * 40
-        task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
-        result["source_task_sha256"] = sha256_bytes(task_bytes)
+        refresh_task_bytes()
+    elif mutation == "file_id_substitution":
+        reference = entry["evidence"][0]
+        content = store.records[reference["file_id"]].content
+        store.seed("substituted-evidence", reference["folder_id"], "substituted.json", content)
+        reference["file_id"] = "substituted-evidence"
+        refreeze_manifest()
+    elif mutation == "wrong_folder_substitution":
+        reference = entry["evidence"][0]
+        store.records[reference["file_id"]].folder_id = "wrong-folder"
+        reference["folder_id"] = "wrong-folder"
+        refreeze_manifest()
+    elif mutation == "structured_narrative_substitution":
+        reference = entry["evidence"][0]
+        document = {
+            "schema_version": "self-claimed.narrative.v1", "req_id": task["req_id"],
+            "pr_number": entry["pr_number"], "kind": reference["kind"],
+            "narrative": "not a recognized machine-authority artifact",
+        }
+        content = canonical_json_bytes(document)
+        record = store.records[reference["file_id"]]
+        record.content = content
+        reference["sha256"] = sha256_bytes(content)
+        reference["schema_version"] = document["schema_version"]
+        refreeze_manifest()
+    elif mutation == "evidence_not_in_registry":
+        registry["authorities"].pop(0)
+        refreeze_registry()
+    elif mutation == "registry_file_id_mismatch":
+        result["machine_facts"]["authority_registry_file_id"] = "different-registry"
+    elif mutation == "registry_sha_mismatch":
+        result["machine_facts"]["authority_registry_sha256"] = "0" * 64
+    elif mutation == "registry_wrong_folder":
+        store.records["mixed-authority-registry"].folder_id = "wrong-folder"
+    elif mutation == "unknown_registry_schema":
+        registry["schema_version"] = "unknown.registry.v1"
+        refreeze_registry()
+    elif mutation == "duplicate_registry_authority":
+        registry["authorities"].append(copy.deepcopy(registry["authorities"][0]))
+        refreeze_registry()
+    elif mutation == "registry_identity_mismatch":
+        registry["authorities"][0]["identity"]["pr_number"] = 999
+        refreeze_registry()
+    elif mutation == "manifest_registry_tuple_mismatch":
+        entry["evidence"][0]["schema_version"] = "manifest-only.schema.v1"
+        refreeze_manifest()
+    elif mutation == "missing_registry_binding":
+        task["allowed_actions"] = task["allowed_actions"][:1]
+        refresh_task_bytes()
 
     verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
                                    github_inspector=github, predecessor_store=store)
     assert not verified.ok
-    assert verified.classification != "EXECUTION_RESULT_VERIFIED"
+    assert verified.classification not in {"EXECUTION_RESULT_VERIFIED", "UNCLASSIFIED_EXCEPTION"}
 
 
 @pytest.mark.parametrize(("mutation", "classification"), [
