@@ -577,6 +577,34 @@ def validate_release_topology(nodes, *, release_id):
     }
 
 
+LEGAL_ROLLBACK_BASELINES = {
+    'v1.8.1-1': 'v1.8.1-2',
+    'v1.6.0-1': 'v1.6.1-1',
+}
+
+
+def validate_safe_baseline_status(status_doc, safe_baseline_release_id):
+    """Validate that status_doc represents an exact safe production baseline."""
+    if (not isinstance(status_doc, dict)
+            or not isinstance(safe_baseline_release_id, str)
+            or not safe_baseline_release_id
+            or status_doc.get('current_release_id') != safe_baseline_release_id
+            or status_doc.get('pending_release_id') is not None):
+        raise PreMutationAbort('RELEASE_INFRA_SAFE_BASELINE_INVALID')
+    state = status_doc.get('state')
+    if state == 'COMPLETE':
+        return True
+    if state == 'ROLLED_BACK':
+        rolled_back = status_doc.get('rolled_back_release_id')
+        if (not isinstance(rolled_back, str)
+                or not rolled_back
+                or rolled_back == safe_baseline_release_id
+                or LEGAL_ROLLBACK_BASELINES.get(safe_baseline_release_id) != rolled_back):
+            raise PreMutationAbort('RELEASE_INFRA_SAFE_BASELINE_INVALID')
+        return True
+    raise PreMutationAbort('RELEASE_INFRA_SAFE_BASELINE_INVALID')
+
+
 def validate_release_infra_compatibility(
         *, plan, plan_sha256, journal, current_runtime_journal_sha256,
         freeze_prepared_journal_sha256, topology, fingerprints,
@@ -587,11 +615,9 @@ def validate_release_infra_compatibility(
     if (not isinstance(plan, dict)
             or not re.fullmatch('[0-9a-f]{64}', plan_sha256 or '')
             or not re.fullmatch('[0-9a-f]{64}',
-                                current_runtime_journal_sha256 or '')
-            or not isinstance(status_doc, dict)
-            or status_doc.get('state') != 'COMPLETE'
-            or status_doc.get('current_release_id') != safe_baseline_release_id):
+                                current_runtime_journal_sha256 or '')):
         raise PreMutationAbort('RELEASE_INFRA_SAFE_BASELINE_INVALID')
+    validate_safe_baseline_status(status_doc, safe_baseline_release_id)
     if current_runtime_journal_sha256 != runtime_journal_sha256(journal):
         raise PreMutationAbort('RELEASE_INFRA_CURRENT_RUNTIME_JOURNAL_SHA_INVALID')
     if not re.fullmatch('[0-9a-f]{64}', expected_source_registry_sha256 or ''):
@@ -646,8 +672,13 @@ def validate_release_infra_compatibility(
             or set(platform_results)
             != {'ChatGPT', 'Gemini Notebook', 'WorkBuddy'}):
         raise PreMutationAbort('RELEASE_INFRA_CONSUMER_RESULTS_INVALID')
+    status_doc_for_acceptance = (
+        dict(status_doc, state='COMPLETE')
+        if status_doc.get('state') == 'ROLLED_BACK'
+        else status_doc
+    )
     acceptance_result = evaluate_consumer_closure_acceptance(
-        status_doc=status_doc,
+        status_doc=status_doc_for_acceptance,
         consumer_manifest=consumer_manifest,
         identity_projection=identity_projection,
         chatgpt_result=platform_results['ChatGPT'],
