@@ -417,6 +417,7 @@ def test_trusted_bundle_builder_real_path_and_qualification_fingerprints(tmp_pat
         instance=instance,
         drive=drive,
         evidence_root=evidence_root,
+        source_registry_sha256=projection["source_registry_sha256"],
     )
 
     # P6: Qualification fingerprint construction uses real metadata-shaped reads and explicitly distinguishes
@@ -433,6 +434,7 @@ def test_trusted_bundle_builder_real_path_and_qualification_fingerprints(tmp_pat
         instance=instance,
         drive=drive,
         evidence_root=evidence_root,
+        source_registry_sha256=projection["source_registry_sha256"],
     )
     assert result["status"] == "PASS"
     assert result["classification"] == "RELEASE_INFRA_COMPATIBILITY_PREFLIGHT_PASS"
@@ -483,6 +485,7 @@ def test_trusted_bundle_builder_v181_rollback_world(tmp_path):
         drive=drive,
         evidence_root=evidence_root,
         safe_baseline_release_id="v1.8.1-1",
+        source_registry_sha256=projection["source_registry_sha256"],
     )
     assert result["status"] == "PASS"
     assert result["safe_baseline_release_id"] == "v1.8.1-1"
@@ -525,6 +528,7 @@ def test_trusted_builder_source_authority_fail_closed(tmp_path, missing_kind):
         "enabled": True,
         "status_id": "status-drive-id",
         "safe_baseline_release_id": RELEASE_ID,
+        "expected_source_registry_sha256": projection["source_registry_sha256"],
         "targets": {"target-random": {"mime": "application/json"}},
     }
     instance = MockInstance(configs={"production.json": policy})
@@ -556,6 +560,7 @@ def test_trusted_builder_source_authority_fail_closed(tmp_path, missing_kind):
         with pytest.raises(PreMutationAbort, match="RELEASE_INFRA_IDENTITY_PROJECTION_MISSING"):
             build_release_infra_compatibility_bundle(**kwargs)
     elif missing_kind == "source_registry_sha":
+        policy.pop("expected_source_registry_sha256")
         (evidence_root / "source_registry_sha256.txt").unlink()
         with pytest.raises(PreMutationAbort, match="RELEASE_INFRA_SOURCE_REGISTRY_BINDING_MISSING"):
             build_release_infra_compatibility_bundle(**kwargs)
@@ -615,6 +620,7 @@ def test_compat_preflight_cli_option_a(tmp_path, monkeypatch):
         "compat-preflight",
         "--instance-root", str(instance_root),
         "--evidence-root", str(evidence_root),
+        "--source-registry-sha", projection["source_registry_sha256"],
         "--output", str(out_file),
     ])
 
@@ -627,7 +633,30 @@ def test_compat_preflight_cli_option_a(tmp_path, monkeypatch):
     assert saved["status"] == "PASS"
 
 
-def test_independent_source_registry_binding_forged_projection_fails(tmp_path):
+def test_c2_blocker_a_explicit_independent_expected_positive(tmp_path):
+    evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
+    status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
+    drive = MockDrive(
+        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
+        metas={
+            "status-drive-id": {"id": "status-drive-id", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["root-random"]},
+            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["current-random"]},
+        },
+    )
+    policy = {"enabled": True, "status_id": "status-drive-id", "safe_baseline_release_id": RELEASE_ID}
+    instance = MockInstance(configs={"production.json": policy})
+    x_sha = projection["source_registry_sha256"]
+
+    bundle = build_release_infra_compatibility_bundle(
+        instance=instance, drive=drive, evidence_root=evidence_root,
+        source_registry_sha256=x_sha,
+    )
+    assert bundle["expected_source_registry_sha256"] == x_sha
+    result = release_infra_compatibility_preflight(bundle)
+    assert result["status"] == "PASS"
+
+
+def test_c2_blocker_a_independent_expected_mismatch_forged_projection_manifest_fails(tmp_path):
     evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
     status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
     drive = MockDrive(
@@ -640,18 +669,94 @@ def test_independent_source_registry_binding_forged_projection_fails(tmp_path):
     policy = {"enabled": True, "status_id": "status-drive-id", "safe_baseline_release_id": RELEASE_ID}
     instance = MockInstance(configs={"production.json": policy})
 
-    # Forged source_registry_sha256.txt that does not match projection
-    (evidence_root / "source_registry_sha256.txt").write_text("e" * 64)
+    x_sha = "1" * 64
+    y_sha = "2" * 64
+    projection["source_registry_sha256"] = y_sha
+    surfaces = {
+        key: {"id": f"id-{key}", "name": key, "sha256": str(index) * 64,
+              "mime": "application/json", "authority": "control", "rights": "public"}
+        for index, key in enumerate((
+            "release_status", "readme", "index", "technical_manual",
+            "context_card", "current_version_doc",
+        ))
+    }
+    manifest = build_consumer_manifest(
+        release_id=RELEASE_ID,
+        product_version="v1.8.1",
+        code_commit=SHA,
+        surfaces=surfaces,
+        facts={"master": {
+            "id": "id-master", "name": "master", "sha256": "6" * 64,
+            "mime": "application/octet-stream", "authority": "canonical",
+            "rights": "public",
+        }},
+        identity_projection={
+            "id": "id-projection", "name": "identity", "sha256": projection["projection_sha256"],
+            "mime": "application/json", "authority": "derived", "rights": "public",
+            "source_registry_sha256": y_sha,
+        },
+    )
+    (evidence_root / "identity_projection.json").write_text(json.dumps(projection))
+    (evidence_root / "consumer_manifest.json").write_text(json.dumps(manifest))
+
     bundle = build_release_infra_compatibility_bundle(
         instance=instance, drive=drive, evidence_root=evidence_root,
+        source_registry_sha256=x_sha,
     )
-    assert bundle["expected_source_registry_sha256"] == "e" * 64
     from cba_kb.consumer_projection import ConsumerProjectionError
     with pytest.raises(ConsumerProjectionError, match="SOURCE_REGISTRY_BINDING_MISMATCH"):
         release_infra_compatibility_preflight(bundle)
 
 
-def test_independent_source_registry_binding_from_policy(tmp_path):
+def test_c2_blocker_a_local_source_registry_file_not_trusted_as_authority(tmp_path):
+    evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
+    status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
+    drive = MockDrive(
+        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
+        metas={
+            "status-drive-id": {"id": "status-drive-id", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["root-random"]},
+            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["current-random"]},
+        },
+    )
+    # Policy has no expected_source_registry_sha256
+    policy = {"enabled": True, "status_id": "status-drive-id", "safe_baseline_release_id": RELEASE_ID}
+    instance = MockInstance(configs={"production.json": policy})
+
+    y_sha = "2" * 64
+    projection["source_registry_sha256"] = y_sha
+    manifest["consumer_surfaces"]["identity"]["player_identity_projection"]["source_registry_sha256"] = y_sha
+    (evidence_root / "identity_projection.json").write_text(json.dumps(projection))
+    (evidence_root / "consumer_manifest.json").write_text(json.dumps(manifest))
+    (evidence_root / "source_registry_sha256.txt").write_text(y_sha)
+
+    # Local file exists with Y, projection has Y, manifest has Y, but NO explicit or policy independent authority
+    with pytest.raises(PreMutationAbort, match="RELEASE_INFRA_SOURCE_REGISTRY_BINDING_MISSING"):
+        build_release_infra_compatibility_bundle(
+            instance=instance, drive=drive, evidence_root=evidence_root,
+        )
+
+
+def test_c2_blocker_a_no_independent_authority_fails_closed(tmp_path):
+    evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
+    (evidence_root / "source_registry_sha256.txt").unlink()
+    status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
+    drive = MockDrive(
+        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
+        metas={
+            "status-drive-id": {"id": "status-drive-id", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["root-random"]},
+            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["current-random"]},
+        },
+    )
+    policy = {"enabled": True, "status_id": "status-drive-id", "safe_baseline_release_id": RELEASE_ID}
+    instance = MockInstance(configs={"production.json": policy})
+
+    with pytest.raises(PreMutationAbort, match="RELEASE_INFRA_SOURCE_REGISTRY_BINDING_MISSING"):
+        build_release_infra_compatibility_bundle(
+            instance=instance, drive=drive, evidence_root=evidence_root,
+        )
+
+
+def test_c2_blocker_a_independent_source_registry_binding_from_policy(tmp_path):
     evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
     (evidence_root / "source_registry_sha256.txt").unlink()
     status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
@@ -675,6 +780,179 @@ def test_independent_source_registry_binding_from_policy(tmp_path):
     assert bundle["expected_source_registry_sha256"] == projection["source_registry_sha256"]
     result = release_infra_compatibility_preflight(bundle)
     assert result["status"] == "PASS"
+
+
+def test_blocker_b_semantic_target_role_current_target_positive(tmp_path):
+    evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
+    status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
+    drive = MockDrive(
+        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
+        metas={
+            "status-drive-id": {"id": "status-drive-id", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["root-random"]},
+            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["current-random"]},
+        },
+    )
+    policy = {
+        "enabled": True, "status_id": "status-drive-id", "safe_baseline_release_id": RELEASE_ID,
+        "expected_source_registry_sha256": projection["source_registry_sha256"],
+    }
+    instance = MockInstance(configs={"production.json": policy})
+    bundle = build_release_infra_compatibility_bundle(
+        instance=instance, drive=drive, evidence_root=evidence_root,
+    )
+    target_node = next(n for n in bundle["topology"] if n["id"] == "target-random")
+    assert target_node["role"] == "CURRENT_TARGET"
+    assert target_node["parents"] == ["current-random"]
+    result = release_infra_compatibility_preflight(bundle)
+    assert result["status"] == "PASS"
+
+
+def test_blocker_b_semantic_target_role_staging_target_positive(tmp_path):
+    evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
+    status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
+    top = topology(release_id=RELEASE_ID)
+    target_node = next(n for n in top if n["id"] == "target-random")
+    target_node["role"] = "STAGING_TARGET"
+    target_node["parents"] = ["staging-random"]
+    (evidence_root / "topology.json").write_text(json.dumps(top))
+
+    drive = MockDrive(
+        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
+        metas={
+            "status-drive-id": {"id": "status-drive-id", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["root-random"]},
+            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["staging-random"]},
+        },
+    )
+    policy = {
+        "enabled": True, "status_id": "status-drive-id", "safe_baseline_release_id": RELEASE_ID,
+        "expected_source_registry_sha256": projection["source_registry_sha256"],
+    }
+    instance = MockInstance(configs={"production.json": policy})
+    bundle = build_release_infra_compatibility_bundle(
+        instance=instance, drive=drive, evidence_root=evidence_root,
+    )
+    bundled_target = next(n for n in bundle["topology"] if n["id"] == "target-random")
+    assert bundled_target["role"] == "STAGING_TARGET"
+    assert bundled_target["parents"] == ["staging-random"]
+    result = release_infra_compatibility_preflight(bundle)
+    assert result["status"] == "PASS"
+
+
+def test_blocker_b_semantic_target_role_container_only_fails_closed(tmp_path):
+    evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
+    status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
+    container_only = [
+        {"id": "root-random", "role": "ROOT", "parents": []},
+        {"id": "current-random", "role": "CURRENT_ZONE", "parents": ["root-random"]},
+        {"id": "staging-random", "role": "STAGING_ZONE", "parents": ["root-random"]},
+        {"id": "history-random", "role": "HISTORY_ZONE", "parents": ["root-random"]},
+        {"id": "evidence-random", "role": "EVIDENCE_ZONE", "parents": ["root-random"]},
+    ]
+    (evidence_root / "topology.json").write_text(json.dumps(container_only))
+
+    drive = MockDrive(
+        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
+        metas={
+            "status-drive-id": {"id": "status-drive-id", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["root-random"]},
+            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["current-random"]},
+        },
+    )
+    policy = {
+        "enabled": True, "status_id": "status-drive-id", "safe_baseline_release_id": RELEASE_ID,
+        "expected_source_registry_sha256": projection["source_registry_sha256"],
+    }
+    instance = MockInstance(configs={"production.json": policy})
+    with pytest.raises(PreMutationAbort, match="RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING"):
+        build_release_infra_compatibility_bundle(
+            instance=instance, drive=drive, evidence_root=evidence_root,
+        )
+
+
+def test_blocker_b_semantic_target_role_missing_target_fails_even_if_drive_parent_current(tmp_path):
+    evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
+    status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
+    # Topology missing target-random entirely
+    top = [n for n in topology(release_id=RELEASE_ID) if n["id"] != "target-random"]
+    (evidence_root / "topology.json").write_text(json.dumps(top))
+
+    # Drive says target-random parent is current-random (CURRENT_ZONE)
+    drive = MockDrive(
+        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
+        metas={
+            "status-drive-id": {"id": "status-drive-id", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["root-random"]},
+            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["current-random"]},
+        },
+    )
+    policy = {
+        "enabled": True, "status_id": "status-drive-id", "safe_baseline_release_id": RELEASE_ID,
+        "expected_source_registry_sha256": projection["source_registry_sha256"],
+    }
+    instance = MockInstance(configs={"production.json": policy})
+    # Must fail closed: fresh parent in CURRENT_ZONE does NOT invent CURRENT_TARGET role
+    with pytest.raises(PreMutationAbort, match="RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING"):
+        build_release_infra_compatibility_bundle(
+            instance=instance, drive=drive, evidence_root=evidence_root,
+        )
+
+
+def test_blocker_b_semantic_target_role_current_target_in_history_zone_fails(tmp_path):
+    evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
+    status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
+    # Authoritative topology has target-random as CURRENT_TARGET
+    top = topology(release_id=RELEASE_ID)
+    (evidence_root / "topology.json").write_text(json.dumps(top))
+
+    # Fresh Drive observation says target parent is history-random
+    drive = MockDrive(
+        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
+        metas={
+            "status-drive-id": {"id": "status-drive-id", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["root-random"]},
+            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["history-random"]},
+        },
+    )
+    policy = {
+        "enabled": True, "status_id": "status-drive-id", "safe_baseline_release_id": RELEASE_ID,
+        "expected_source_registry_sha256": projection["source_registry_sha256"],
+    }
+    instance = MockInstance(configs={"production.json": policy})
+    bundle = build_release_infra_compatibility_bundle(
+        instance=instance, drive=drive, evidence_root=evidence_root,
+    )
+    # Role remains CURRENT_TARGET, only parent is updated to history-random
+    bundled_target = next(n for n in bundle["topology"] if n["id"] == "target-random")
+    assert bundled_target["role"] == "CURRENT_TARGET"
+    assert bundled_target["parents"] == ["history-random"]
+    with pytest.raises(ReleaseContractError, match="RELEASE_TOPOLOGY_ANCESTOR_INVALID"):
+        release_infra_compatibility_preflight(bundle)
+
+
+def test_blocker_b_fresh_parent_observation_changes_only_parent_never_role(tmp_path):
+    evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
+    top = topology(release_id=RELEASE_ID)
+    (evidence_root / "topology.json").write_text(json.dumps(top))
+    status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
+    # Fresh Drive observation has parents = ["staging-random"]
+    drive = MockDrive(
+        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
+        metas={
+            "status-drive-id": {"id": "status-drive-id", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["root-random"]},
+            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["staging-random"]},
+        },
+    )
+    policy = {
+        "enabled": True, "status_id": "status-drive-id", "safe_baseline_release_id": RELEASE_ID,
+        "expected_source_registry_sha256": projection["source_registry_sha256"],
+    }
+    instance = MockInstance(configs={"production.json": policy})
+    bundle = build_release_infra_compatibility_bundle(
+        instance=instance, drive=drive, evidence_root=evidence_root,
+    )
+    bundled_target = next(n for n in bundle["topology"] if n["id"] == "target-random")
+    # Semantic role must still be CURRENT_TARGET from authoritative topology, NOT STAGING_TARGET
+    assert bundled_target["role"] == "CURRENT_TARGET"
+    assert bundled_target["parents"] == ["staging-random"]
+    with pytest.raises(ReleaseContractError, match="RELEASE_TOPOLOGY_ANCESTOR_INVALID"):
+        release_infra_compatibility_preflight(bundle)
 
 
 @pytest.mark.parametrize("scenario", [
@@ -741,6 +1019,7 @@ def test_bundle_builder_fresh_reads_target_parents_ignoring_local_topology_json(
 
     bundle = build_release_infra_compatibility_bundle(
         instance=instance, drive=drive, evidence_root=evidence_root,
+        source_registry_sha256=projection["source_registry_sha256"],
     )
     target_in_bundle = next(n for n in bundle["topology"] if n["id"] == "target-random")
     assert target_in_bundle["parents"] == ["current-random"]
@@ -756,6 +1035,7 @@ def test_bundle_builder_fresh_reads_target_parents_ignoring_local_topology_json(
     )
     bundle_bad = build_release_infra_compatibility_bundle(
         instance=instance, drive=drive_bad, evidence_root=evidence_root,
+        source_registry_sha256=projection["source_registry_sha256"],
     )
     with pytest.raises(ReleaseContractError, match="RELEASE_TOPOLOGY_ANCESTOR_INVALID"):
         release_infra_compatibility_preflight(bundle_bad)
@@ -856,6 +1136,7 @@ def test_rollback_acceptance_normalization_reporting(tmp_path):
     bundle_rb = build_release_infra_compatibility_bundle(
         instance=instance, drive=drive, evidence_root=evidence_root,
         safe_baseline_release_id="v1.8.1-1",
+        source_registry_sha256=projection["source_registry_sha256"],
     )
     before_status_doc = dict(bundle_rb["status_doc"])
     res_rb = release_infra_compatibility_preflight(bundle_rb)

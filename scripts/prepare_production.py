@@ -279,11 +279,8 @@ def build_release_infra_compatibility_bundle(
         raise PreMutationAbort("RELEASE_INFRA_IDENTITY_PROJECTION_MISSING")
 
     # Independent source registry binding
-    if source_registry_sha256 is None:
-        if evidence_root is not None and (evidence_root / "source_registry_sha256.txt").is_file():
-            source_registry_sha256 = (evidence_root / "source_registry_sha256.txt").read_text(encoding="utf-8").strip()
-        elif isinstance(policy, dict):
-            source_registry_sha256 = policy.get("expected_source_registry_sha256") or policy.get("source_registry_sha256")
+    if source_registry_sha256 is None and isinstance(policy, dict):
+        source_registry_sha256 = policy.get("expected_source_registry_sha256") or policy.get("source_registry_sha256")
     if (
         not source_registry_sha256
         or not isinstance(source_registry_sha256, str)
@@ -366,6 +363,8 @@ def build_release_infra_compatibility_bundle(
                 observed_parents_by_target[obs["id"]] = obs.get("parents")
 
     for tid in target_ids:
+        if tid not in by_id or by_id[tid].get("role") not in {"CURRENT_TARGET", "STAGING_TARGET"}:
+            raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
         if tid in observed_parents_by_target:
             fresh_parents = observed_parents_by_target[tid]
         else:
@@ -375,16 +374,7 @@ def build_release_infra_compatibility_bundle(
             fresh_parents = meta.get("parents")
         if not isinstance(fresh_parents, list):
             raise PreMutationAbort("RELEASE_INFRA_FINGERPRINT_INVALID")
-        if tid in by_id:
-            by_id[tid]["parents"] = list(fresh_parents)
-        else:
-            new_node = {
-                "id": tid,
-                "role": "CURRENT_TARGET",
-                "parents": list(fresh_parents),
-            }
-            topology.append(new_node)
-            by_id[tid] = new_node
+        by_id[tid]["parents"] = list(fresh_parents)
 
     return {
         "plan": plan,
@@ -1596,7 +1586,7 @@ def main(argv=None):
     parser.add_argument("--engine-sha")
     parser.add_argument("--evidence-root", type=Path)
     parser.add_argument("--safe-baseline-release-id")
-    parser.add_argument("--source-registry-sha")
+    parser.add_argument("--source-registry-sha", "--source-registry-sha256", dest="source_registry_sha")
     parser.add_argument("--topology", type=Path)
     parser.add_argument("--consumer-manifest", type=Path)
     parser.add_argument("--identity-projection", type=Path)
