@@ -9,6 +9,7 @@ from cba_kb.release import (
     PreMutationAbort,
     ReleaseContractError,
     freeze_fingerprint,
+    runtime_journal_sha256,
     validate_freeze_fingerprint_compatibility,
     validate_release_topology,
 )
@@ -77,7 +78,8 @@ def preflight_bundle():
                      "after_hash": "a" * 64}],
     }
     plan_sha = digest(json.dumps(plan, sort_keys=True).encode())
-    prepared_sha = "c045ce56126ba52a5b942b0a196e9ee4749b1199314161f2005f869d777f079c"
+    journal = {"state": "PREPARED", "uploaded": {}, "inflight": None}
+    prepared_sha = runtime_journal_sha256(journal)
     observed = {
         "id": "target-random", "mimeType": "application/json",
         "version": "2", "modifiedTime": "2026-09-29T00:00:01Z",
@@ -88,7 +90,7 @@ def preflight_bundle():
     return {
         "plan": plan,
         "plan_sha256": plan_sha,
-        "journal": {"state": "PREPARED", "uploaded": {}, "inflight": None},
+        "journal": journal,
         "current_runtime_journal_sha256": prepared_sha,
         "freeze_prepared_journal_sha256": prepared_sha,
         "topology": topology(),
@@ -98,6 +100,7 @@ def preflight_bundle():
         "safe_baseline_release_id": RELEASE_ID,
         "consumer_manifest": manifest,
         "identity_projection": projection,
+        "expected_source_registry_sha256": projection["source_registry_sha256"],
         "platform_results": {"ChatGPT": "PASS", "Gemini Notebook": "PASS", "WorkBuddy": "PASS"},
     }
 
@@ -158,3 +161,61 @@ def test_compatibility_preflight_fails_before_mutation_on_contradiction():
         release_infra_compatibility_preflight(bundle)
     assert bundle == expected
     assert before["status_doc"] == bundle["status_doc"]
+
+
+def test_compatibility_preflight_requires_independent_source_binding():
+    bundle = preflight_bundle()
+    bundle.pop("expected_source_registry_sha256")
+    with pytest.raises(
+        PreMutationAbort, match="SOURCE_REGISTRY_BINDING_INVALID",
+    ):
+        release_infra_compatibility_preflight(bundle)
+
+
+def test_compatibility_preflight_rejects_unbound_advanced_runtime_sha():
+    from cba_kb.release import _runtime_lineage_event, _runtime_transaction_binding
+
+    bundle = preflight_bundle()
+    transaction = _runtime_transaction_binding(
+        bundle["plan"], bundle["plan_sha256"],
+    )
+    lineage = []
+    previous_sha = bundle["freeze_prepared_journal_sha256"]
+    previous_state = "PREPARED"
+    for state in (
+        "ARCHIVING", "ARCHIVE_COMPLETE", "PUBLISHING", "VERIFYING", "COMPLETE",
+    ):
+        event = _runtime_lineage_event(
+            len(lineage) + 1, previous_sha, previous_state, state, transaction,
+        )
+        lineage.append(event)
+        bundle["journal"] = {
+            "state": state,
+            "freeze_prepared_journal_sha256": bundle[
+                "freeze_prepared_journal_sha256"
+            ],
+            "runtime_transaction": transaction,
+            "runtime_lineage": list(lineage),
+        }
+        bundle["current_runtime_journal_sha256"] = runtime_journal_sha256(
+            bundle["journal"]
+        )
+        assert bundle["current_runtime_journal_sha256"] != bundle[
+            "freeze_prepared_journal_sha256"
+        ]
+        assert release_infra_compatibility_preflight(bundle)["status"] == "PASS"
+        previous_sha, previous_state = event["event_sha256"], state
+
+    bundle["current_runtime_journal_sha256"] = "0" * 64
+    with pytest.raises(
+        PreMutationAbort, match="CURRENT_RUNTIME_JOURNAL_SHA_INVALID",
+    ):
+        release_infra_compatibility_preflight(bundle)
+
+    stale_sha = runtime_journal_sha256(bundle["journal"])
+    bundle["journal"]["inflight"] = "drift"
+    bundle["current_runtime_journal_sha256"] = stale_sha
+    with pytest.raises(
+        PreMutationAbort, match="CURRENT_RUNTIME_JOURNAL_SHA_INVALID",
+    ):
+        release_infra_compatibility_preflight(bundle)

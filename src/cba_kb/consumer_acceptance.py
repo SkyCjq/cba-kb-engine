@@ -448,6 +448,7 @@ def evaluate_consumer_closure_acceptance(
     chatgpt_result=None,
     gemini_result=None,
     workbuddy_result=None,
+    expected_source_registry_sha256=None,
 ):
     """Evaluate the complete Consumer Acceptance Matrix for Consumer Closure DoD."""
     from .consumer_projection import (
@@ -465,14 +466,14 @@ def evaluate_consumer_closure_acceptance(
         .get("identity", {}).get("player_identity_projection", {})
     )
     try:
+        if identity_entry.get("source_registry_sha256") != expected_source_registry_sha256:
+            raise ValueError("INDEPENDENT_SOURCE_REGISTRY_BINDING_MISMATCH")
         projection_validation = validate_player_identity_consumer_projection(
             identity_projection,
             expected_release_id=rel_status,
             expected_product_version=(consumer_manifest or {}).get("product_version"),
             expected_code_commit=(consumer_manifest or {}).get("code_commit"),
-            expected_source_registry_sha256=identity_entry.get(
-                "source_registry_sha256"
-            ),
+            expected_source_registry_sha256=expected_source_registry_sha256,
         )
     except Exception:
         projection_validation = None

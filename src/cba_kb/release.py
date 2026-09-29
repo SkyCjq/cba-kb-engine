@@ -97,6 +97,15 @@ def _runtime_transaction_binding(plan, plan_sha256):
     }
 
 
+def runtime_journal_sha256(journal):
+    """Hash a runtime journal using the exact serialization used by save()."""
+    if not isinstance(journal, dict):
+        raise ReleaseContractError('RUNTIME_JOURNAL_INVALID')
+    return digest(json.dumps(
+        journal, ensure_ascii=False, indent=2, sort_keys=True,
+    ).encode())
+
+
 def _runtime_lineage_event(sequence, previous_sha256, current, target,
                            transaction):
     payload = {
@@ -572,7 +581,8 @@ def validate_release_infra_compatibility(
         *, plan, plan_sha256, journal, current_runtime_journal_sha256,
         freeze_prepared_journal_sha256, topology, fingerprints,
         status_doc, safe_baseline_release_id, consumer_manifest,
-        identity_projection, platform_results):
+        identity_projection, platform_results,
+        expected_source_registry_sha256=None):
     """Run the real release contracts as a side-effect-free qualification gate."""
     if (not isinstance(plan, dict)
             or not re.fullmatch('[0-9a-f]{64}', plan_sha256 or '')
@@ -582,6 +592,10 @@ def validate_release_infra_compatibility(
             or status_doc.get('state') != 'COMPLETE'
             or status_doc.get('current_release_id') != safe_baseline_release_id):
         raise PreMutationAbort('RELEASE_INFRA_SAFE_BASELINE_INVALID')
+    if current_runtime_journal_sha256 != runtime_journal_sha256(journal):
+        raise PreMutationAbort('RELEASE_INFRA_CURRENT_RUNTIME_JOURNAL_SHA_INVALID')
+    if not re.fullmatch('[0-9a-f]{64}', expected_source_registry_sha256 or ''):
+        raise PreMutationAbort('RELEASE_INFRA_SOURCE_REGISTRY_BINDING_INVALID')
     topology_result = validate_release_topology(
         topology, release_id=plan['release_id'],
     )
@@ -615,9 +629,6 @@ def validate_release_infra_compatibility(
     from .consumer_manifest import validate_consumer_manifest
     from .consumer_projection import validate_player_identity_consumer_projection
     from .consumer_acceptance import evaluate_consumer_closure_acceptance
-    identity_entry = consumer_manifest.get('consumer_surfaces', {}).get(
-        'identity', {},
-    ).get('player_identity_projection', {})
     manifest_result = validate_consumer_manifest(
         consumer_manifest,
         expected_release_id=status_doc['current_release_id'],
@@ -629,9 +640,7 @@ def validate_release_infra_compatibility(
         expected_release_id=status_doc['current_release_id'],
         expected_product_version=consumer_manifest.get('product_version'),
         expected_code_commit=consumer_manifest.get('code_commit'),
-        expected_source_registry_sha256=identity_entry.get(
-            'source_registry_sha256'
-        ),
+        expected_source_registry_sha256=expected_source_registry_sha256,
     )
     if (not isinstance(platform_results, dict)
             or set(platform_results)
@@ -644,6 +653,7 @@ def validate_release_infra_compatibility(
         chatgpt_result=platform_results['ChatGPT'],
         gemini_result=platform_results['Gemini Notebook'],
         workbuddy_result=platform_results['WorkBuddy'],
+        expected_source_registry_sha256=expected_source_registry_sha256,
     )
     if acceptance_result['status'] != 'PASS':
         raise PreMutationAbort('RELEASE_INFRA_CONSUMER_ACCEPTANCE_INVALID')

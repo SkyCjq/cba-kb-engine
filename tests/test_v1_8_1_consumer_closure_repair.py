@@ -127,6 +127,7 @@ def test_reproduce_original_consumer_failure_before_repair():
         status_doc=status,
         consumer_manifest=None,
         identity_projection=None,
+        expected_source_registry_sha256=None,
     )
     assert acceptance_result["status"] == "FAIL"
     assert acceptance_result["matrix"]["IDENTITY_HAPPY_PATH"] == "FAIL"
@@ -194,6 +195,7 @@ def test_repaired_consumer_closure_succeeds():
     acceptance = evaluate_consumer_closure_acceptance(
         status_doc=status, consumer_manifest=manifest_data, identity_projection=proj,
         chatgpt_result="PASS", gemini_result="PASS", workbuddy_result="PASS",
+        expected_source_registry_sha256=proj["source_registry_sha256"],
     )
     assert acceptance["status"] == "PASS"
 
@@ -483,8 +485,60 @@ def test_consumer_acceptance_matrix_all_mandatory_rows_pass():
         chatgpt_result="PASS",
         gemini_result="PASS",
         workbuddy_result="PASS",
+        expected_source_registry_sha256=proj["source_registry_sha256"],
     )
     assert eval_result["status"] == "PASS"
+
+    missing_binding = evaluate_consumer_closure_acceptance(
+        status_doc=status,
+        consumer_manifest=manifest_data,
+        identity_projection=proj,
+        chatgpt_result="PASS",
+        gemini_result="PASS",
+        workbuddy_result="PASS",
+    )
+    assert missing_binding["status"] == "FAIL"
+
+    mismatched_binding = evaluate_consumer_closure_acceptance(
+        status_doc=status,
+        consumer_manifest=manifest_data,
+        identity_projection=proj,
+        chatgpt_result="PASS",
+        gemini_result="PASS",
+        workbuddy_result="PASS",
+        expected_source_registry_sha256="f" * 64,
+    )
+    assert mismatched_binding["status"] == "FAIL"
+
+    # Projection and Manifest can be rewritten into a self-consistent pair,
+    # but neither controls the independently supplied source-registry binding.
+    forged_projection = json.loads(json.dumps(proj))
+    forged_manifest = json.loads(json.dumps(manifest_data))
+    forged_source_sha = "f" * 64
+    forged_projection["source_registry_sha256"] = forged_source_sha
+    forged_projection["projection_sha256"] = digest(canonical_bytes({
+        key: value for key, value in forged_projection.items()
+        if key != "projection_sha256"
+    }))
+    forged_identity_entry = forged_manifest["consumer_surfaces"]["identity"][
+        "player_identity_projection"
+    ]
+    forged_identity_entry["source_registry_sha256"] = forged_source_sha
+    forged_identity_entry["sha256"] = forged_projection["projection_sha256"]
+    forged_manifest["manifest_sha256"] = digest(canonical_bytes({
+        key: value for key, value in forged_manifest.items()
+        if key != "manifest_sha256"
+    }))
+    forged_result = evaluate_consumer_closure_acceptance(
+        status_doc=status,
+        consumer_manifest=forged_manifest,
+        identity_projection=forged_projection,
+        chatgpt_result="PASS",
+        gemini_result="PASS",
+        workbuddy_result="PASS",
+        expected_source_registry_sha256=proj["source_registry_sha256"],
+    )
+    assert forged_result["status"] == "FAIL"
     matrix = eval_result["matrix"]
     required_rows = [
         "IDENTITY_SEMANTIC_SAFETY",
@@ -526,6 +580,7 @@ def test_consumer_acceptance_matrix_all_mandatory_rows_pass():
             consumer_manifest=manifest_data,
             identity_projection=proj,
             **platform_values,
+            expected_source_registry_sha256=proj["source_registry_sha256"],
         )
         assert failed["status"] == "FAIL"
 
@@ -552,6 +607,7 @@ def test_consumer_acceptance_matrix_all_mandatory_rows_pass():
         chatgpt_result="PASS",
         gemini_result="PASS",
         workbuddy_result="PASS",
+        expected_source_registry_sha256=proj["source_registry_sha256"],
     )
     assert rejected["status"] == "FAIL"
     assert rejected["matrix"]["IDENTITY_SEMANTIC_SAFETY"] == "FAIL"
@@ -561,22 +617,42 @@ def test_consumer_acceptance_matrix_all_mandatory_rows_pass():
 # 7. Section 7 & 8: POST-FREEZE ACCEPTANCE BINDING MODEL
 # ==============================================================================
 
-def test_post_freeze_acceptance_binding_model_separates_freeze_from_runtime(tmp_path):
-    """Verify that acceptance binds freeze-origin PREPARED journal sha and state,
-    and post-freeze validation succeeds across runtime state progression (ARCHIVING,
-    PUBLISHING, VERIFYING, COMPLETE) without false mismatches."""
+def test_exact_v181_2_failure_regression_and_corrected_lineage(tmp_path):
+    """Reproduce the frozen v1.8.1-2 failure facts, then prove the repair.
+
+    The original runtime journal bytes are unavailable.  Exact historical
+    hashes remain immutable inputs; a clearly synthetic legal lineage proves
+    that only the erroneous PREPARED=current SHA equality is removed.
+    """
     from cba_kb.release import (
         _runtime_lineage_event,
         _runtime_transaction_binding,
         validate_post_freeze_release_evidence,
     )
 
-    freeze_sha = "c045ce56126ba52a5b942b0a196e9ee4749b1199314161f2005f869d777f079c"
+    historical = {
+        "release_id": "v1.8.1-2",
+        "safe_current_release_id": "v1.8.1-1",
+        "failure_state": "VERIFYING",
+        "failure_classification": "POST_FREEZE_ACCEPTANCE_BINDING_INVALID",
+        "prepared_sha256": "c045ce56126ba52a5b942b0a196e9ee4749b1199314161f2005f869d777f079c",
+        "failed_runtime_sha256": "6e2be9f8a03c637c834503501f67a3cff0c3781babbba6af253f724b9ba70164",
+        "target_verification_exact_hash_mime_passed": 279,
+        "target_verification_total": 279,
+    }
+    assert historical["failure_state"] == "VERIFYING"
+    assert historical["target_verification_exact_hash_mime_passed"] == 279
+    assert historical["target_verification_total"] == 279
+    with pytest.raises(ValueError, match="POST_FREEZE_ACCEPTANCE_BINDING_INVALID"):
+        if historical["failed_runtime_sha256"] != historical["prepared_sha256"]:
+            raise ValueError(historical["failure_classification"])
+
+    freeze_sha = historical["prepared_sha256"]
     plan = {
-        "release_id": "v1.8.1-3",
+        "release_id": historical["release_id"],
         "entries": [{"id": "t1", "after_hash": "a" * 64, "logical_key": "k1"}],
         "closure": {"code_commit": SHA},
-        "previous_release_id": "v1.8.1-1",
+        "previous_release_id": historical["safe_current_release_id"],
         "status_before_hash": "b" * 64,
     }
     from cba_kb.release import _candidate_hash_set
@@ -599,7 +675,7 @@ def test_post_freeze_acceptance_binding_model_separates_freeze_from_runtime(tmp_
         "schema_version": 1,
         "classification": "V181_CONSUMER_ACCEPTANCE_PASS",
         "status": "PASS",
-        "release_id": "v1.8.1-3",
+        "release_id": historical["release_id"],
         "main_sha": SHA,
         "candidate": freeze_candidate,
         "golden": {"schema_version": 2, "version": "v2"},
@@ -611,14 +687,14 @@ def test_post_freeze_acceptance_binding_model_separates_freeze_from_runtime(tmp_
         "schema_version": 1,
         "classification": "V181_RELEASE_READINESS_PASS",
         "status": "PASS",
-        "release_id": "v1.8.1-3",
+        "release_id": historical["release_id"],
         "main_sha": SHA,
         "candidate": freeze_candidate,
         "consumer_acceptance": {
             "evidence_sha256": digest(acc_raw),
             "ChatGPT": "PASS", "Gemini Notebook": "PASS", "WorkBuddy": "PASS",
         },
-        "production_baseline": {"state": "COMPLETE", "current_release_id": "v1.8.1-1", "release_status_sha256": "b" * 64},
+        "production_baseline": {"state": "COMPLETE", "current_release_id": historical["safe_current_release_id"], "release_status_sha256": "b" * 64},
         "namespace_audit": {"status": "PASS", "violations": 0},
         "production_mutation": 0, "publish": "NOT_RUN", "restore": "NOT_RUN",
         "identity_invariants": {
@@ -635,7 +711,7 @@ def test_post_freeze_acceptance_binding_model_separates_freeze_from_runtime(tmp_
         "classification": "V181_PRODUCTION_GO",
         "status": "APPROVED",
         "approved_by": "HUMAN",
-        "release_id": "v1.8.1-3",
+        "release_id": historical["release_id"],
         "main_sha": SHA,
         "release_readiness_file_id": "read-id",
         "release_readiness_sha256": digest(read_raw),
@@ -645,7 +721,7 @@ def test_post_freeze_acceptance_binding_model_separates_freeze_from_runtime(tmp_
         "journal_sha256": freeze_sha,
         "journal_state": "PREPARED",
         "production_baseline_state": "COMPLETE",
-        "production_baseline_release_id": "v1.8.1-1",
+        "production_baseline_release_id": historical["safe_current_release_id"],
         "production_baseline_release_status_sha256": "b" * 64,
         "publish_authorized": "true",
         "pre_publish_canary_required": "true",
