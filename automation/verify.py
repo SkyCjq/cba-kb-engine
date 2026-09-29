@@ -1443,6 +1443,11 @@ def _verify_mixed_tail(
             raise P2AError("MIXED_TAIL_ENTRY_MISMATCH", "Tail entry identity, order, or authority is invalid")
         for key in ("previous_sha", "reviewed_head_sha", "actual_head_sha", "merge_sha"):
             require_git_sha(entry[key], field_name=f"mixed_tail.{key}", code="MIXED_TAIL_ENTRY_MISMATCH")
+        if entry["reviewed_head_sha"] != entry["actual_head_sha"]:
+            raise P2AError(
+                "MIXED_TAIL_REVIEWED_HEAD_MISMATCH",
+                "Tail reviewed head must equal the exact merged PR head",
+            )
         changed_files = entry["changed_files"]
         if (not isinstance(changed_files, list) or not changed_files
                 or changed_files != sorted(set(changed_files))

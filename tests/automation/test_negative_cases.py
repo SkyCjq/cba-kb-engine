@@ -571,8 +571,8 @@ def test_typed_mixed_descendant_mode_fails_closed(
     ("merge_order_mismatch", "MIXED_TAIL_CHAIN_MISMATCH"),
     ("wrong_parents", "MIXED_TAIL_CHAIN_MISMATCH"),
     ("wrong_pr_facts", "MIXED_TAIL_PR_MISMATCH"),
-    ("wrong_reviewed_head", "MIXED_TAIL_CI_MISMATCH"),
-    ("wrong_actual_head", "MIXED_TAIL_CHAIN_MISMATCH"),
+    ("wrong_reviewed_head", "MIXED_TAIL_REVIEWED_HEAD_MISMATCH"),
+    ("wrong_actual_head", "MIXED_TAIL_REVIEWED_HEAD_MISMATCH"),
     ("unexpected_file", "MIXED_TAIL_SCOPE_VIOLATION"),
     ("introduced_then_reverted", "MIXED_TAIL_SCOPE_VIOLATION"),
     ("wrong_pr_ci", "MIXED_DESCENDANT_CI_MISMATCH"),
@@ -671,6 +671,53 @@ def test_typed_mixed_descendant_tail_fails_closed(
         github_inspector=github, predecessor_store=store,
     )
     assert verified.classification == classification
+
+
+def test_tail_rejects_stale_reviewed_head_with_allowed_followup_commit(
+    monkeypatch, task_dict, result_dict,
+):
+    (
+        task, task_bytes, result, _, _, tail, store, github, prs, runs, _,
+        parents, branch_paths, _, git_type,
+    ) = mixed_descendant_case(monkeypatch, task_dict, result_dict)
+    entry = tail["entries"][0]
+    reviewed_head = entry["reviewed_head_sha"]
+    actual_head = "b" * 40
+
+    entry["actual_head_sha"] = actual_head
+    entry["branch_commits"].append({
+        "sha": actual_head,
+        "changed_files": ["automation/verify.py"],
+    })
+    prs[entry["pr_number"]]["headRefOid"] = actual_head
+    parents[entry["merge_sha"]] = f"{entry['merge_sha']} {entry['previous_sha']} {actual_head}"
+    branch_paths[actual_head] = ["automation/verify.py"]
+    assert entry["pr_ci"]["head_sha"] == reviewed_head
+    assert actual_head not in runs
+
+    content = canonical_json_bytes(tail)
+    digest = sha256_bytes(content)
+    store.records["mixed-tail"].content = content
+    result["machine_facts"]["tail_manifest_sha256"] = digest
+    task["allowed_actions"][-1] = (
+        "require immutable post-chain control-plane tail manifest file ID mixed-tail "
+        f"SHA256 {digest}"
+    )
+    task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+    result["source_task_sha256"] = sha256_bytes(task_bytes)
+
+    class StaleReviewedHeadGit(git_type):
+        def _run(self, *args):
+            if args[:2] == ("rev-list", "--reverse") and args[-1].endswith(f"..{actual_head}"):
+                return f"{reviewed_head}\n{actual_head}"
+            return super()._run(*args)
+
+    monkeypatch.setattr("automation.verify.GitInspector", StaleReviewedHeadGit)
+    verified = verify_result_bytes(
+        canonical_json_bytes(result), task_bytes, git_root="exact-main",
+        github_inspector=github, predecessor_store=store,
+    )
+    assert verified.classification == "MIXED_TAIL_REVIEWED_HEAD_MISMATCH"
 
 
 @pytest.mark.parametrize(("mutation", "classification"), [
