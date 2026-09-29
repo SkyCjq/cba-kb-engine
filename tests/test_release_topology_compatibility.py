@@ -380,6 +380,7 @@ def _setup_evidence_root(tmp_path, release_id=RELEASE_ID, current_release_id=REL
     (evidence_root / "identity_projection.json").write_text(json.dumps(projection))
     (evidence_root / "platform_results.json").write_text(json.dumps(platform_results))
     (evidence_root / "topology.json").write_text(json.dumps(topology(release_id=release_id)))
+    (evidence_root / "source_registry_sha256.txt").write_text(projection["source_registry_sha256"])
     return evidence_root, plan, journal, manifest, projection, platform_results
 
 
@@ -555,9 +556,7 @@ def test_trusted_builder_source_authority_fail_closed(tmp_path, missing_kind):
         with pytest.raises(PreMutationAbort, match="RELEASE_INFRA_IDENTITY_PROJECTION_MISSING"):
             build_release_infra_compatibility_bundle(**kwargs)
     elif missing_kind == "source_registry_sha":
-        proj = json.loads((evidence_root / "identity_projection.json").read_text())
-        proj.pop("source_registry_sha256")
-        (evidence_root / "identity_projection.json").write_text(json.dumps(proj))
+        (evidence_root / "source_registry_sha256.txt").unlink()
         with pytest.raises(PreMutationAbort, match="RELEASE_INFRA_SOURCE_REGISTRY_BINDING_MISSING"):
             build_release_infra_compatibility_bundle(**kwargs)
     elif missing_kind == "platform_evidence":
@@ -626,4 +625,243 @@ def test_compat_preflight_cli_option_a(tmp_path, monkeypatch):
     assert out_file.is_file()
     saved = json.loads(out_file.read_text())
     assert saved["status"] == "PASS"
+
+
+def test_independent_source_registry_binding_forged_projection_fails(tmp_path):
+    evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
+    status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
+    drive = MockDrive(
+        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
+        metas={
+            "status-drive-id": {"id": "status-drive-id", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["root-random"]},
+            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["current-random"]},
+        },
+    )
+    policy = {"enabled": True, "status_id": "status-drive-id", "safe_baseline_release_id": RELEASE_ID}
+    instance = MockInstance(configs={"production.json": policy})
+
+    # Forged source_registry_sha256.txt that does not match projection
+    (evidence_root / "source_registry_sha256.txt").write_text("e" * 64)
+    bundle = build_release_infra_compatibility_bundle(
+        instance=instance, drive=drive, evidence_root=evidence_root,
+    )
+    assert bundle["expected_source_registry_sha256"] == "e" * 64
+    from cba_kb.consumer_projection import ConsumerProjectionError
+    with pytest.raises(ConsumerProjectionError, match="SOURCE_REGISTRY_BINDING_MISMATCH"):
+        release_infra_compatibility_preflight(bundle)
+
+
+def test_independent_source_registry_binding_from_policy(tmp_path):
+    evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
+    (evidence_root / "source_registry_sha256.txt").unlink()
+    status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
+    drive = MockDrive(
+        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
+        metas={
+            "status-drive-id": {"id": "status-drive-id", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["root-random"]},
+            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["current-random"]},
+        },
+    )
+    policy = {
+        "enabled": True,
+        "status_id": "status-drive-id",
+        "safe_baseline_release_id": RELEASE_ID,
+        "expected_source_registry_sha256": projection["source_registry_sha256"],
+    }
+    instance = MockInstance(configs={"production.json": policy})
+    bundle = build_release_infra_compatibility_bundle(
+        instance=instance, drive=drive, evidence_root=evidence_root,
+    )
+    assert bundle["expected_source_registry_sha256"] == projection["source_registry_sha256"]
+    result = release_infra_compatibility_preflight(bundle)
+    assert result["status"] == "PASS"
+
+
+@pytest.mark.parametrize("scenario", [
+    "container_only",
+    "missing_target",
+    "unexpected_target",
+    "duplicate_in_topology",
+    "duplicate_in_plan",
+    "wrong_role",
+    "wrong_ancestor",
+])
+def test_topology_planned_targets_coverage_diagnostics(scenario):
+    base_nodes = topology()
+    release_id = RELEASE_ID
+    if scenario == "container_only":
+        nodes = [n for n in base_nodes if n["role"] not in {"CURRENT_TARGET", "STAGING_TARGET", "ROLLBACK_SNAPSHOT", "RECOVERY_CHECKPOINT"}]
+        with pytest.raises(ReleaseContractError, match="RELEASE_TOPOLOGY_CONTAINER_ONLY_FORBIDDEN"):
+            validate_release_topology(nodes, release_id=release_id, planned_target_ids=["target-random"])
+    elif scenario == "missing_target":
+        with pytest.raises(ReleaseContractError, match="RELEASE_TOPOLOGY_TARGET_MISSING"):
+            validate_release_topology(base_nodes, release_id=release_id, planned_target_ids=["target-random", "target-other"])
+    elif scenario == "unexpected_target":
+        with pytest.raises(ReleaseContractError, match="RELEASE_TOPOLOGY_TARGET_UNEXPECTED"):
+            validate_release_topology(base_nodes, release_id=release_id, planned_target_ids=[])
+    elif scenario == "duplicate_in_topology":
+        dup_nodes = list(base_nodes) + [{"id": "target-random", "role": "CURRENT_TARGET", "parents": ["current-random"]}]
+        with pytest.raises(ReleaseContractError, match="RELEASE_TOPOLOGY_TARGET_DUPLICATE"):
+            validate_release_topology(dup_nodes, release_id=release_id, planned_target_ids=["target-random"])
+    elif scenario == "duplicate_in_plan":
+        with pytest.raises(ReleaseContractError, match="RELEASE_TOPOLOGY_TARGET_DUPLICATE"):
+            validate_release_topology(base_nodes, release_id=release_id, planned_target_ids=["target-random", "target-random"])
+    elif scenario == "wrong_role":
+        nodes = [dict(n) for n in base_nodes if n["role"] not in {"ROLLBACK_SNAPSHOT", "RECOVERY_CHECKPOINT"}]
+        t = next(n for n in nodes if n["id"] == "target-random")
+        t["role"] = "CURRENT_ZONE"
+        t["parents"] = ["root-random"]
+        with pytest.raises(ReleaseContractError, match="RELEASE_TOPOLOGY_ROLE_INVALID"):
+            validate_release_topology(nodes, release_id=release_id, planned_target_ids=["target-random"])
+    elif scenario == "wrong_ancestor":
+        nodes = [dict(n) for n in base_nodes]
+        t = next(n for n in nodes if n["id"] == "target-random")
+        t["parents"] = ["history-random"]
+        with pytest.raises(ReleaseContractError, match="RELEASE_TOPOLOGY_ANCESTOR_INVALID"):
+            validate_release_topology(nodes, release_id=release_id, planned_target_ids=["target-random"])
+
+
+def test_bundle_builder_fresh_reads_target_parents_ignoring_local_topology_json(tmp_path):
+    evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
+    status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
+    spoofed_topology = topology()
+    target_node = next(n for n in spoofed_topology if n["id"] == "target-random")
+    target_node["parents"] = ["staging-random"]
+    (evidence_root / "topology.json").write_text(json.dumps(spoofed_topology))
+
+    drive = MockDrive(
+        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
+        metas={
+            "status-drive-id": {"id": "status-drive-id", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["root-random"]},
+            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["current-random"]},
+        },
+    )
+    policy = {"enabled": True, "status_id": "status-drive-id", "safe_baseline_release_id": RELEASE_ID}
+    instance = MockInstance(configs={"production.json": policy})
+
+    bundle = build_release_infra_compatibility_bundle(
+        instance=instance, drive=drive, evidence_root=evidence_root,
+    )
+    target_in_bundle = next(n for n in bundle["topology"] if n["id"] == "target-random")
+    assert target_in_bundle["parents"] == ["current-random"]
+    res = release_infra_compatibility_preflight(bundle)
+    assert res["status"] == "PASS"
+
+    drive_bad = MockDrive(
+        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
+        metas={
+            "status-drive-id": {"id": "status-drive-id", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["root-random"]},
+            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["history-random"]},
+        },
+    )
+    bundle_bad = build_release_infra_compatibility_bundle(
+        instance=instance, drive=drive_bad, evidence_root=evidence_root,
+    )
+    with pytest.raises(ReleaseContractError, match="RELEASE_TOPOLOGY_ANCESTOR_INVALID"):
+        release_infra_compatibility_preflight(bundle_bad)
+
+
+class SequentialMockDrive:
+    def __init__(self, metas_sequence, files=None):
+        self.metas_sequence = {k: list(v) for k, v in metas_sequence.items()}
+        self.files = files or {}
+        self.puts = []
+
+    def get(self, file_id):
+        item = self.files[file_id]
+        return item if isinstance(item, bytes) else item.encode("utf-8")
+
+    def meta(self, file_id):
+        if file_id in self.metas_sequence and self.metas_sequence[file_id]:
+            return dict(self.metas_sequence[file_id].pop(0))
+        return {
+            "id": file_id, "version": "1", "modifiedTime": "2026-09-29T00:00:00Z",
+            "mimeType": "application/json", "parents": ["current-random"],
+        }
+
+
+def test_qualification_fingerprint_two_read_sequential_stability_and_drift():
+    target_id = "target-random"
+    read1 = {"id": target_id, "version": "1", "modifiedTime": "2026-09-29T00:00:00Z", "mimeType": "application/json", "parents": ["current-random"]}
+    read2_identical = dict(read1)
+    read2_drift_version = dict(read1, version="2", modifiedTime="2026-09-29T00:00:01Z")
+    read2_drift_parent = dict(read1, parents=["staging-random"])
+    read2_mismatch_mime = dict(read1, mimeType="application/octet-stream")
+
+    # Case 1: Identical sequential reads -> UNCHANGED
+    drive_stable = SequentialMockDrive({target_id: [read1, read2_identical]})
+    fps = build_live_qualification_fingerprints(drive_stable, [target_id])
+    assert len(fps) == 1
+    assert fps[0]["frozen"]["qualification_snapshot_label"] == "LIVE QUALIFICATION SNAPSHOT"
+    assert fps[0]["frozen"]["is_candidate_freeze_authority"] is False
+    check = validate_freeze_fingerprint_compatibility(fps[0]["frozen"], fps[0]["observed"])
+    assert check["observed_environment_state"] == "UNCHANGED"
+
+    # Case 2: Mutable drift -> CHANGED. PASS without require_environmental_stability, FAIL with it.
+    drive_drift = SequentialMockDrive({target_id: [read1, read2_drift_version]})
+    fps_drift = build_live_qualification_fingerprints(drive_drift, [target_id])
+    check_drift = validate_freeze_fingerprint_compatibility(fps_drift[0]["frozen"], fps_drift[0]["observed"])
+    assert check_drift["observed_environment_state"] == "CHANGED"
+
+    bundle = preflight_bundle()
+    bundle["fingerprints"] = fps_drift
+    res = release_infra_compatibility_preflight(bundle)
+    assert res["status"] == "PASS"
+
+    bundle["require_environmental_stability"] = True
+    with pytest.raises(PreMutationAbort, match="RELEASE_INFRA_ENVIRONMENT_DRIFT"):
+        release_infra_compatibility_preflight(bundle)
+
+    # Case 3: Parent drift -> CHANGED
+    drive_parent = SequentialMockDrive({target_id: [read1, read2_drift_parent]})
+    fps_parent = build_live_qualification_fingerprints(drive_parent, [target_id])
+    check_parent = validate_freeze_fingerprint_compatibility(fps_parent[0]["frozen"], fps_parent[0]["observed"])
+    assert check_parent["observed_environment_state"] == "CHANGED"
+
+    # Case 4: Immutable mismatch -> IDENTITY_MISMATCH
+    drive_bad_id = SequentialMockDrive({target_id: [read1, read2_mismatch_mime]})
+    fps_bad = build_live_qualification_fingerprints(drive_bad_id, [target_id])
+    with pytest.raises(ReleaseContractError, match="FREEZE_FINGERPRINT_IDENTITY_MISMATCH"):
+        validate_freeze_fingerprint_compatibility(fps_bad[0]["frozen"], fps_bad[0]["observed"])
+
+
+def test_rollback_acceptance_normalization_reporting(tmp_path):
+    bundle = preflight_bundle()
+    res_complete = release_infra_compatibility_preflight(bundle)
+    assert res_complete["safe_baseline_live_state"] == "COMPLETE"
+    assert res_complete["acceptance_status_normalization"] == "NONE"
+
+    evidence_root, plan, journal, manifest, projection, _ = _setup_evidence_root(
+        tmp_path, release_id="v1.8.1-3", current_release_id="v1.8.1-1",
+    )
+    status_doc = {
+        "state": "ROLLED_BACK",
+        "current_release_id": "v1.8.1-1",
+        "rolled_back_release_id": "v1.8.1-2",
+        "code_commit": SHA,
+    }
+    drive = MockDrive(
+        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
+        metas={
+            "status-drive-id": {"id": "status-drive-id", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["root-random"]},
+            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["current-random"]},
+        },
+    )
+    policy = {
+        "enabled": True, "status_id": "status-drive-id",
+        "safe_baseline_release_id": "v1.8.1-1",
+        "targets": {"target-random": {"mime": "application/json"}},
+    }
+    instance = MockInstance(configs={"production.json": policy})
+    bundle_rb = build_release_infra_compatibility_bundle(
+        instance=instance, drive=drive, evidence_root=evidence_root,
+        safe_baseline_release_id="v1.8.1-1",
+    )
+    before_status_doc = dict(bundle_rb["status_doc"])
+    res_rb = release_infra_compatibility_preflight(bundle_rb)
+    assert res_rb["safe_baseline_live_state"] == "ROLLED_BACK"
+    assert res_rb["acceptance_status_normalization"] == (
+        "ROLLED_BACK_SAFE_BASELINE_AS_COMPLETE_FOR_BASELINE_ACCEPTANCE_ONLY"
+    )
+    assert bundle_rb["status_doc"] == before_status_doc
 

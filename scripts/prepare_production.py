@@ -61,18 +61,24 @@ RELEASE_SPECS = {
 
 
 def build_live_qualification_fingerprints(drive, target_ids):
-    """Construct qualification fingerprints labeled LIVE QUALIFICATION SNAPSHOT from fresh Drive metadata."""
+    """Construct qualification fingerprints labeled LIVE QUALIFICATION SNAPSHOT from sequential fresh Drive metadata reads."""
     if not isinstance(target_ids, (list, set, tuple)) or not target_ids:
         raise PreMutationAbort("RELEASE_INFRA_FINGERPRINTS_REQUIRED")
     fingerprints = []
     for target_id in target_ids:
-        observed = drive.meta(target_id)
-        if not isinstance(observed, dict):
+        read1 = drive.meta(target_id)
+        if not isinstance(read1, dict):
             raise PreMutationAbort("RELEASE_INFRA_FINGERPRINT_INVALID")
-        frozen = freeze_fingerprint(observed)
+        frozen = freeze_fingerprint(read1)
         frozen["qualification_snapshot_label"] = "LIVE QUALIFICATION SNAPSHOT"
         frozen["qualification_authority"] = "LIVE QUALIFICATION SNAPSHOT"
         frozen["is_candidate_freeze_authority"] = False
+
+        read2 = drive.meta(target_id)
+        if not isinstance(read2, dict):
+            raise PreMutationAbort("RELEASE_INFRA_FINGERPRINT_INVALID")
+        observed = read2
+
         fingerprints.append({
             "frozen": frozen,
             "observed": observed,
@@ -147,6 +153,7 @@ def build_release_infra_compatibility_bundle(
     topology=None,
     topology_path=None,
     fingerprints=None,
+    require_environmental_stability=False,
 ):
     """Construct a truthful real compatibility qualification bundle from authorized sources."""
     if engine_root is None:
@@ -273,7 +280,10 @@ def build_release_infra_compatibility_bundle(
 
     # Independent source registry binding
     if source_registry_sha256 is None:
-        source_registry_sha256 = identity_projection.get("source_registry_sha256")
+        if evidence_root is not None and (evidence_root / "source_registry_sha256.txt").is_file():
+            source_registry_sha256 = (evidence_root / "source_registry_sha256.txt").read_text(encoding="utf-8").strip()
+        elif isinstance(policy, dict):
+            source_registry_sha256 = policy.get("expected_source_registry_sha256") or policy.get("source_registry_sha256")
     if (
         not source_registry_sha256
         or not isinstance(source_registry_sha256, str)
@@ -329,17 +339,52 @@ def build_release_infra_compatibility_bundle(
     if not isinstance(topology, list) or not topology:
         raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
 
+    # Target IDs
+    target_ids = [
+        e["id"] for e in plan.get("entries", [])
+        if isinstance(e, dict) and e.get("id")
+    ]
+    if not target_ids and "targets" in policy and isinstance(policy["targets"], dict):
+        target_ids = list(policy["targets"].keys())
+
     # Fingerprints
     if fingerprints is None:
-        target_ids = [
-            e["id"] for e in plan.get("entries", [])
-            if isinstance(e, dict) and e.get("id")
-        ]
-        if not target_ids and "targets" in policy and isinstance(policy["targets"], dict):
-            target_ids = list(policy["targets"].keys())
         fingerprints = build_live_qualification_fingerprints(drive, target_ids)
     if not isinstance(fingerprints, list) or not fingerprints:
         raise PreMutationAbort("RELEASE_INFRA_FINGERPRINTS_REQUIRED")
+
+    # Fresh parent requirement: in build_release_infra_compatibility_bundle,
+    # target node parents in topology must be fresh-read from drive.meta(target_id),
+    # never trusting local topology JSON.
+    topology = [dict(node) for node in topology]
+    by_id = {node["id"]: node for node in topology if isinstance(node, dict) and "id" in node}
+    observed_parents_by_target = {}
+    for pair in fingerprints:
+        if isinstance(pair, dict) and isinstance(pair.get("observed"), dict):
+            obs = pair["observed"]
+            if obs.get("id"):
+                observed_parents_by_target[obs["id"]] = obs.get("parents")
+
+    for tid in target_ids:
+        if tid in observed_parents_by_target:
+            fresh_parents = observed_parents_by_target[tid]
+        else:
+            meta = drive.meta(tid)
+            if not isinstance(meta, dict):
+                raise PreMutationAbort("RELEASE_INFRA_FINGERPRINT_INVALID")
+            fresh_parents = meta.get("parents")
+        if not isinstance(fresh_parents, list):
+            raise PreMutationAbort("RELEASE_INFRA_FINGERPRINT_INVALID")
+        if tid in by_id:
+            by_id[tid]["parents"] = list(fresh_parents)
+        else:
+            new_node = {
+                "id": tid,
+                "role": "CURRENT_TARGET",
+                "parents": list(fresh_parents),
+            }
+            topology.append(new_node)
+            by_id[tid] = new_node
 
     return {
         "plan": plan,
@@ -355,6 +400,7 @@ def build_release_infra_compatibility_bundle(
         "identity_projection": identity_projection,
         "expected_source_registry_sha256": source_registry_sha256,
         "platform_results": platform_results,
+        "require_environmental_stability": require_environmental_stability,
     }
 
 
@@ -1555,6 +1601,7 @@ def main(argv=None):
     parser.add_argument("--consumer-manifest", type=Path)
     parser.add_argument("--identity-projection", type=Path)
     parser.add_argument("--platform-results", type=Path)
+    parser.add_argument("--require-environmental-stability", action="store_true")
     args = parser.parse_args(argv)
     if args.step != "compat-preflight":
         _require_release(args.release)
@@ -1575,6 +1622,7 @@ def main(argv=None):
             consumer_manifest_path=args.consumer_manifest,
             identity_projection_path=args.identity_projection,
             platform_results_path=args.platform_results,
+            require_environmental_stability=args.require_environmental_stability,
         )
         if args.output:
             output = _private_output(instance, args.output)

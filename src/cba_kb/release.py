@@ -515,7 +515,7 @@ TOPOLOGY_LEAF_PARENT_ROLES = {
 }
 
 
-def validate_release_topology(nodes, *, release_id):
+def validate_release_topology(nodes, *, release_id, planned_target_ids=None):
     """Validate semantic roles and ancestors without observed-ID whitelists."""
     if not isinstance(nodes, list) or not nodes:
         raise ReleaseContractError('RELEASE_TOPOLOGY_REQUIRED')
@@ -526,8 +526,11 @@ def validate_release_topology(nodes, *, release_id):
                 or not isinstance(node.get('role'), str)
                 or not isinstance(node.get('parents'), list)
                 or any(not isinstance(parent, str) or not parent
-                       for parent in node['parents'])
-                or node['id'] in by_id):
+                       for parent in node['parents'])):
+            raise ReleaseContractError('RELEASE_TOPOLOGY_NODE_INVALID')
+        if node['id'] in by_id:
+            if node['role'] in {'CURRENT_TARGET', 'STAGING_TARGET'}:
+                raise ReleaseContractError('RELEASE_TOPOLOGY_TARGET_DUPLICATE')
             raise ReleaseContractError('RELEASE_TOPOLOGY_NODE_INVALID')
         by_id[node['id']] = node
     roots = [node for node in nodes if node['role'] == 'ROOT']
@@ -569,6 +572,29 @@ def validate_release_topology(nodes, *, release_id):
                 raise ReleaseContractError(
                     'RELEASE_TOPOLOGY_SUPERSEDED_GOVERNANCE_INVALID'
                 )
+
+    if planned_target_ids is not None:
+        if not isinstance(planned_target_ids, (list, tuple, set)):
+            raise ReleaseContractError('RELEASE_TOPOLOGY_TARGET_INVALID')
+        if len(planned_target_ids) != len(set(planned_target_ids)):
+            raise ReleaseContractError('RELEASE_TOPOLOGY_TARGET_DUPLICATE')
+        for pid in planned_target_ids:
+            if pid in by_id and by_id[pid]['role'] not in {'CURRENT_TARGET', 'STAGING_TARGET'}:
+                raise ReleaseContractError('RELEASE_TOPOLOGY_ROLE_INVALID')
+        target_nodes = [
+            node for node in nodes
+            if node['role'] in {'CURRENT_TARGET', 'STAGING_TARGET'}
+        ]
+        if planned_target_ids and not target_nodes:
+            raise ReleaseContractError('RELEASE_TOPOLOGY_CONTAINER_ONLY_FORBIDDEN')
+        target_ids = {node['id'] for node in target_nodes}
+        missing = set(planned_target_ids) - target_ids
+        if missing:
+            raise ReleaseContractError('RELEASE_TOPOLOGY_TARGET_MISSING')
+        unexpected = target_ids - set(planned_target_ids)
+        if unexpected:
+            raise ReleaseContractError('RELEASE_TOPOLOGY_TARGET_UNEXPECTED')
+
     return {
         'status': 'PASS',
         'release_id': release_id,
@@ -610,7 +636,8 @@ def validate_release_infra_compatibility(
         freeze_prepared_journal_sha256, topology, fingerprints,
         status_doc, safe_baseline_release_id, consumer_manifest,
         identity_projection, platform_results,
-        expected_source_registry_sha256=None):
+        expected_source_registry_sha256=None,
+        require_environmental_stability=False):
     """Run the real release contracts as a side-effect-free qualification gate."""
     if (not isinstance(plan, dict)
             or not re.fullmatch('[0-9a-f]{64}', plan_sha256 or '')
@@ -622,8 +649,12 @@ def validate_release_infra_compatibility(
         raise PreMutationAbort('RELEASE_INFRA_CURRENT_RUNTIME_JOURNAL_SHA_INVALID')
     if not re.fullmatch('[0-9a-f]{64}', expected_source_registry_sha256 or ''):
         raise PreMutationAbort('RELEASE_INFRA_SOURCE_REGISTRY_BINDING_INVALID')
+    planned_target_ids = [
+        e['id'] for e in plan.get('entries', [])
+        if isinstance(e, dict) and e.get('id')
+    ]
     topology_result = validate_release_topology(
-        topology, release_id=plan['release_id'],
+        topology, release_id=plan['release_id'], planned_target_ids=planned_target_ids,
     )
     fingerprint_results = []
     if not isinstance(fingerprints, list) or not fingerprints:
@@ -631,9 +662,12 @@ def validate_release_infra_compatibility(
     for pair in fingerprints:
         if not isinstance(pair, dict) or set(pair) != {'frozen', 'observed'}:
             raise PreMutationAbort('RELEASE_INFRA_FINGERPRINT_INVALID')
-        fingerprint_results.append(validate_freeze_fingerprint_compatibility(
+        fp_res = validate_freeze_fingerprint_compatibility(
             pair['frozen'], pair['observed'],
-        ))
+        )
+        if require_environmental_stability and fp_res.get('observed_environment_state') != 'UNCHANGED':
+            raise PreMutationAbort('RELEASE_INFRA_ENVIRONMENT_DRIFT')
+        fingerprint_results.append(fp_res)
     if journal.get('state') == 'PREPARED':
         if current_runtime_journal_sha256 != freeze_prepared_journal_sha256:
             raise PreMutationAbort('RELEASE_INFRA_RUNTIME_LINEAGE_INVALID')
@@ -672,9 +706,15 @@ def validate_release_infra_compatibility(
             or set(platform_results)
             != {'ChatGPT', 'Gemini Notebook', 'WorkBuddy'}):
         raise PreMutationAbort('RELEASE_INFRA_CONSUMER_RESULTS_INVALID')
+    safe_baseline_live_state = status_doc.get('state')
+    acceptance_status_normalization = (
+        'ROLLED_BACK_SAFE_BASELINE_AS_COMPLETE_FOR_BASELINE_ACCEPTANCE_ONLY'
+        if safe_baseline_live_state == 'ROLLED_BACK'
+        else 'NONE'
+    )
     status_doc_for_acceptance = (
         dict(status_doc, state='COMPLETE')
-        if status_doc.get('state') == 'ROLLED_BACK'
+        if safe_baseline_live_state == 'ROLLED_BACK'
         else status_doc
     )
     acceptance_result = evaluate_consumer_closure_acceptance(
@@ -692,6 +732,8 @@ def validate_release_infra_compatibility(
         'classification': 'RELEASE_INFRA_COMPATIBILITY_PREFLIGHT_PASS',
         'status': 'PASS',
         'safe_baseline_release_id': safe_baseline_release_id,
+        'safe_baseline_live_state': safe_baseline_live_state,
+        'acceptance_status_normalization': acceptance_status_normalization,
         'topology': topology_result,
         'fingerprints': fingerprint_results,
         'runtime_lineage': lineage_result,
