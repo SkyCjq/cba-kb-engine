@@ -169,13 +169,14 @@ DESCENDANT_MODE = "EXACT_P2A_PROCESS_CHAIN"
 MIXED_DESCENDANT_MODE = "EXACT_TYPED_MIXED_DESCENDANT_CHAIN_V1"
 MIXED_MANIFEST_SCHEMA = "cba-kb.p2a-mixed-descendant-manifest.v1"
 MIXED_AUTHORITY_REGISTRY_SCHEMA = "cba-kb.p2a-mixed-evidence-authority-registry.v1"
+MIXED_TAIL_SCHEMA = "cba-kb.p2a-post-chain-control-plane-tail.v1"
 MIXED_RECOVERY_REQ_ID = "REQ-181-CONSUMER-CLOSURE-01"
 MIXED_RECOVERY_GENERATION = 19
 MIXED_RECOVERY_PREDECESSOR_GENERATION = 18
 MIXED_RECOVERY_PREDECESSOR_TASK_ID = "c5855e2d-f77c-43cc-9e9c-8ef0798583fc"
 MIXED_RECOVERY_PREDECESSOR_TASK_SHA256 = FROZEN_GEN18_TASK_SHA256
 MIXED_RECOVERY_HISTORICAL_BASE = "b30c66288fc1d44fd4dafc0a8ebcc286bcf41a9d"
-MIXED_RECOVERY_FINAL_MAIN = "c3a48b856e1e236a1ab73c31773cfe28bd3f02a9"
+MIXED_RECOVERY_HISTORICAL_ENDPOINT = "c3a48b856e1e236a1ab73c31773cfe28bd3f02a9"
 MIXED_RECOVERY_PRS = (44, 45, 46, 47, 48, 49, 50, 51, 52, 54, 55, 56)
 MIXED_RECOVERY_MERGES = (
     "d2714a485436ee9b949bb3222622bf056853b471",
@@ -216,6 +217,22 @@ MIXED_AUTHORITY_REGISTRY_FIELDS = {
     "repository", "production_authority", "authorities",
 }
 MIXED_AUTHORITY_FIELDS = MIXED_EVIDENCE_FIELDS | {"pr_number"}
+MIXED_TAIL_FIELDS = {
+    "schema_version", "req_id", "canonical_generation", "predecessor_task_id",
+    "predecessor_task_sha256", "requirement_sha256", "policy_bundle_sha256",
+    "repository", "historical_start_sha", "live_endpoint_sha",
+    "production_authority", "entries",
+}
+MIXED_TAIL_ENTRY_FIELDS = {
+    "pr_number", "previous_sha", "reviewed_head_sha", "actual_head_sha", "merge_sha",
+    "merged_at", "changed_files", "branch_commits", "pr_ci", "main_ci",
+    "production_authority",
+}
+MIXED_TAIL_ALLOWED_PATHS = {
+    "automation/verify.py",
+    "tests/automation/test_negative_cases.py",
+    "tests/automation/test_verify.py",
+}
 PROCESS_DESCENDANT_PATHS = {
     ".github/workflows/offline-tests.yml", "automation/verify.py",
     "tests/automation/test_negative_cases.py", "tests/automation/test_verify.py",
@@ -1220,6 +1237,19 @@ def _mixed_frozen_authority_registry(task: Mapping[str, Any]) -> tuple[str, str]
     return matches[0]
 
 
+def _mixed_frozen_tail(task: Mapping[str, Any]) -> tuple[str, str]:
+    matches = [m.groups() for action in task["allowed_actions"] if (m := re.fullmatch(
+        r"require immutable post-chain control-plane tail manifest file ID ([A-Za-z0-9_-]+) SHA256 ([0-9a-f]{64})",
+        action,
+    ))]
+    if len(matches) != 1:
+        raise P2AError(
+            "MIXED_TAIL_BINDING_MISSING",
+            "Gen19 task must freeze exactly one immutable post-chain control-plane tail manifest",
+        )
+    return matches[0]
+
+
 def _verify_mixed_authority_registry(
     task: Mapping[str, Any], facts: Mapping[str, Any], store: Any,
 ) -> list[Mapping[str, Any]]:
@@ -1358,6 +1388,133 @@ def _verify_mixed_evidence(
     return kinds
 
 
+def _verify_mixed_tail(
+    task: Mapping[str, Any], result: Mapping[str, Any], facts: Mapping[str, Any], store: Any,
+    github_inspector: Any, github: Mapping[str, Any], git: GitInspector,
+) -> None:
+    tail_file_id, tail_sha256 = _mixed_frozen_tail(task)
+    if (facts.get("tail_manifest_file_id") != tail_file_id
+            or facts.get("tail_manifest_sha256") != tail_sha256):
+        raise P2AError("MIXED_TAIL_UNBOUND", "Result does not bind the task-frozen post-chain tail")
+    tail_file = store.read(tail_file_id)
+    if (tail_file.folder_id != task["canonical_binding"]["canonical_history_folder_id"]
+            or sha256_bytes(tail_file.content) != tail_sha256):
+        raise P2AError("MIXED_TAIL_MISMATCH", "Tail bytes, file ID, folder, or SHA256 differ from frozen authority")
+    tail = load_json_bytes(tail_file.content, code="MIXED_TAIL_INVALID")
+    require_exact_keys(tail, MIXED_TAIL_FIELDS, code="MIXED_TAIL_INVALID", location="post-chain tail")
+    expected = {
+        "schema_version": MIXED_TAIL_SCHEMA,
+        "req_id": MIXED_RECOVERY_REQ_ID,
+        "canonical_generation": MIXED_RECOVERY_GENERATION,
+        "predecessor_task_id": MIXED_RECOVERY_PREDECESSOR_TASK_ID,
+        "predecessor_task_sha256": MIXED_RECOVERY_PREDECESSOR_TASK_SHA256,
+        "requirement_sha256": task["authority_binding"]["requirement_sha256"],
+        "policy_bundle_sha256": task["policy_bundle_sha256"],
+        "repository": task["repository"],
+        "historical_start_sha": MIXED_RECOVERY_HISTORICAL_ENDPOINT,
+        "production_authority": False,
+    }
+    if any(tail.get(key) != value for key, value in expected.items()):
+        raise P2AError("MIXED_TAIL_INVALID", "Tail recovery identity, policy, repository, or authority drifted")
+    live_endpoint = tail["live_endpoint_sha"]
+    require_git_sha(live_endpoint, field_name="mixed_tail.live_endpoint_sha", code="MIXED_TAIL_INVALID")
+    if (task["expected_base_sha"] != live_endpoint
+            or result["base_sha"] != live_endpoint or result["head_sha"] != live_endpoint):
+        raise P2AError("MIXED_TAIL_ENDPOINT_MISMATCH", "Task and result must bind the task-frozen tail endpoint")
+    entries = tail["entries"]
+    if (not isinstance(entries, list) or not entries
+            or not all(isinstance(entry, dict) for entry in entries)):
+        raise P2AError("MIXED_TAIL_INVALID", "Post-chain tail requires one or more exact merge entries")
+    merge_sequence = [entry.get("merge_sha") for entry in entries]
+    if any(not isinstance(merge_sha, str) for merge_sha in merge_sequence):
+        raise P2AError("MIXED_TAIL_INVALID", "Every tail entry requires a merge SHA")
+    observed_sequence = git._run(
+        "rev-list", "--first-parent", "--reverse",
+        f"{MIXED_RECOVERY_HISTORICAL_ENDPOINT}..{live_endpoint}",
+    ).splitlines()
+    if merge_sequence != observed_sequence or merge_sequence[-1] != live_endpoint:
+        raise P2AError("MIXED_TAIL_CHAIN_MISMATCH", "Git first-parent tail differs from frozen merge sequence")
+    previous = MIXED_RECOVERY_HISTORICAL_ENDPOINT
+    for entry in entries:
+        require_exact_keys(entry, MIXED_TAIL_ENTRY_FIELDS, code="MIXED_TAIL_INVALID", location="tail entry")
+        if (not isinstance(entry["pr_number"], int) or entry["previous_sha"] != previous
+                or entry["production_authority"] is not False
+                or not isinstance(entry["merged_at"], str) or not entry["merged_at"]):
+            raise P2AError("MIXED_TAIL_ENTRY_MISMATCH", "Tail entry identity, order, or authority is invalid")
+        for key in ("previous_sha", "reviewed_head_sha", "actual_head_sha", "merge_sha"):
+            require_git_sha(entry[key], field_name=f"mixed_tail.{key}", code="MIXED_TAIL_ENTRY_MISMATCH")
+        if entry["reviewed_head_sha"] != entry["actual_head_sha"]:
+            raise P2AError(
+                "MIXED_TAIL_REVIEWED_HEAD_MISMATCH",
+                "Tail reviewed head must equal the exact merged PR head",
+            )
+        changed_files = entry["changed_files"]
+        if (not isinstance(changed_files, list) or not changed_files
+                or changed_files != sorted(set(changed_files))
+                or not set(changed_files).issubset(MIXED_TAIL_ALLOWED_PATHS)):
+            raise P2AError("MIXED_TAIL_SCOPE_VIOLATION", "Tail changed files exceed exact process-only scope")
+        if git._run("rev-list", "--parents", "-n", "1", entry["merge_sha"]).split() != [
+            entry["merge_sha"], previous, entry["actual_head_sha"],
+        ]:
+            raise P2AError("MIXED_TAIL_CHAIN_MISMATCH", "Tail merge parents differ from frozen order")
+        if (not git.is_ancestor(previous, entry["actual_head_sha"])
+                or not git.is_ancestor(entry["reviewed_head_sha"], entry["actual_head_sha"])):
+            raise P2AError("MIXED_TAIL_CHAIN_MISMATCH", "Tail reviewed head is outside exact branch ancestry")
+        actual_files = sorted(git._run("diff", "--name-only", previous, entry["merge_sha"]).splitlines())
+        if actual_files != changed_files:
+            raise P2AError("MIXED_TAIL_SCOPE_VIOLATION", "Tail changed files differ from Git truth")
+        branch_commits = entry["branch_commits"]
+        if (not isinstance(branch_commits, list) or not branch_commits
+                or not all(isinstance(item, dict) for item in branch_commits)):
+            raise P2AError("MIXED_TAIL_BRANCH_MISMATCH", "Tail requires exact per-branch-commit evidence")
+        observed_branch = git._run("rev-list", "--reverse", f"{previous}..{entry['actual_head_sha']}").splitlines()
+        if [item.get("sha") for item in branch_commits] != observed_branch:
+            raise P2AError("MIXED_TAIL_BRANCH_MISMATCH", "Tail branch commit sequence differs from Git truth")
+        for item in branch_commits:
+            require_exact_keys(item, MIXED_BRANCH_COMMIT_FIELDS, code="MIXED_TAIL_BRANCH_MISMATCH", location="tail branch commit")
+            require_git_sha(item["sha"], field_name="mixed_tail.branch_sha", code="MIXED_TAIL_BRANCH_MISMATCH")
+            paths = item["changed_files"]
+            observed_paths = sorted(git._run("diff-tree", "--no-commit-id", "--name-only", "-r", item["sha"]).splitlines())
+            if (not isinstance(paths, list)
+                    or not all(isinstance(path, str) and path for path in paths)
+                    or paths != sorted(set(paths))
+                    or paths != observed_paths
+                    or not set(observed_paths).issubset(set(changed_files))
+                    or not set(observed_paths).issubset(MIXED_TAIL_ALLOWED_PATHS)):
+                raise P2AError("MIXED_TAIL_SCOPE_VIOLATION", "Tail branch introduced an unbound or forbidden path")
+        observed_pr = github_inspector._json(
+            "pr", "view", str(entry["pr_number"]), "--repo", task["repository"],
+            "--json", "number,state,baseRefOid,headRefOid,mergedAt,mergeCommit",
+        )
+        if (observed_pr.get("number") != entry["pr_number"] or observed_pr.get("state") != "MERGED"
+                or observed_pr.get("baseRefOid") != previous
+                or observed_pr.get("headRefOid") != entry["actual_head_sha"]
+                or observed_pr.get("mergedAt") != entry["merged_at"]
+                or (observed_pr.get("mergeCommit") or {}).get("oid") != entry["merge_sha"]):
+            raise P2AError("MIXED_TAIL_PR_MISMATCH", "Tail PR facts differ from GitHub Code Truth")
+        if entry["pr_ci"].get("head_sha") != entry["reviewed_head_sha"] or entry["main_ci"].get("head_sha") != entry["merge_sha"]:
+            raise P2AError("MIXED_TAIL_CI_MISMATCH", "Tail CI heads do not bind reviewed head and merge SHA")
+        _verify_mixed_ci(github_inspector, task, entry["pr_ci"], expected_event="pull_request")
+        _verify_mixed_ci(github_inspector, task, entry["main_ci"], expected_event="push")
+        main_runs = github_inspector._json(
+            "api", f"repos/{task['repository']}/actions/runs?head_sha={entry['merge_sha']}&per_page=100",
+        ).get("workflow_runs", [])
+        if not any(run.get("id") == entry["main_ci"]["run_id"] and run.get("head_branch") == "main" for run in main_runs):
+            raise P2AError("MIXED_TAIL_CI_MISMATCH", "Tail exact-main CI is not a main push run")
+        previous = entry["merge_sha"]
+    main_ref = github_inspector._json("api", f"repos/{task['repository']}/git/ref/heads/main")
+    if (main_ref.get("object") or {}).get("sha") != live_endpoint:
+        raise P2AError("FINAL_MAIN_MISMATCH", "Live main differs from the task-frozen tail endpoint")
+    claimed_main = {run.get("id") for run in result["ci"].get("runs", [])}
+    verified_main = {run.get("id") for run in github["runs"] if run.get("name") == "Offline tests"
+                     and run.get("event") == "push" and run.get("head_branch") == "main"
+                     and run.get("head_sha") == live_endpoint and run.get("status") == "completed"
+                     and run.get("conclusion") == "success"}
+    final_run_id = entries[-1]["main_ci"]["run_id"]
+    if final_run_id not in claimed_main or not claimed_main.issubset(verified_main):
+        raise P2AError("MIXED_TAIL_CI_MISMATCH", "Final exact-main CI differs from frozen tail authority")
+
+
 def _verify_typed_mixed_descendants(
     result: Mapping[str, Any], task: Mapping[str, Any], github_inspector: Any,
     git_root: str | Path | None, github: Mapping[str, Any], store: Any,
@@ -1372,9 +1529,6 @@ def _verify_typed_mixed_descendants(
         and task["authority_binding"]["predecessor_terminal_task_id"] == MIXED_RECOVERY_PREDECESSOR_TASK_ID
         and task["authority_binding"]["predecessor_terminal_task_sha256"] == MIXED_RECOVERY_PREDECESSOR_TASK_SHA256
         and task["expected_base_branch"] == "main" and task["feature_branch"] == "main"
-        and task["expected_base_sha"] == MIXED_RECOVERY_FINAL_MAIN
-        and result["base_sha"] == MIXED_RECOVERY_FINAL_MAIN
-        and result["head_sha"] == MIXED_RECOVERY_FINAL_MAIN
     )
     if not corridor:
         raise P2AError("MIXED_DESCENDANT_CORRIDOR_MISMATCH", "Mixed descendant mode is unavailable outside the exact REQ-181 Gen19 recovery corridor")
@@ -1398,7 +1552,7 @@ def _verify_typed_mixed_descendants(
         "policy_bundle_sha256": task["policy_bundle_sha256"],
         "repository": task["repository"],
         "historical_base_sha": MIXED_RECOVERY_HISTORICAL_BASE,
-        "final_main_sha": MIXED_RECOVERY_FINAL_MAIN,
+        "final_main_sha": MIXED_RECOVERY_HISTORICAL_ENDPOINT,
         "production_authority": False,
     }
     if any(manifest.get(key) != value for key, value in expected_manifest.items()):
@@ -1415,19 +1569,11 @@ def _verify_typed_mixed_descendants(
     git = GitInspector(git_root)
     commits = tuple(git._run(
         "rev-list", "--first-parent", "--reverse",
-        f"{MIXED_RECOVERY_HISTORICAL_BASE}..{MIXED_RECOVERY_FINAL_MAIN}",
+        f"{MIXED_RECOVERY_HISTORICAL_BASE}..{MIXED_RECOVERY_HISTORICAL_ENDPOINT}",
     ).splitlines())
     if commits != MIXED_RECOVERY_MERGES:
         raise P2AError("MIXED_DESCENDANT_CHAIN_MISMATCH", "Git first-parent history differs from the exact recovery corridor")
-    main_ref = github_inspector._json("api", f"repos/{task['repository']}/git/ref/heads/main")
-    if (main_ref.get("object") or {}).get("sha") != MIXED_RECOVERY_FINAL_MAIN:
-        raise P2AError("FINAL_MAIN_MISMATCH", "Live main advanced beyond the frozen recovery corridor")
-    claimed_main = {run.get("id") for run in result["ci"].get("runs", [])}
-    verified_main = {run.get("id") for run in github["runs"] if run.get("name") == "Offline tests"
-                     and run.get("event") == "push" and run.get("head_sha") == MIXED_RECOVERY_FINAL_MAIN
-                     and run.get("status") == "completed" and run.get("conclusion") == "success"}
-    if not claimed_main or not claimed_main.issubset(verified_main):
-        raise P2AError("MIXED_DESCENDANT_CI_MISMATCH", "Final main lacks exact successful hosted push CI")
+    _verify_mixed_tail(task, result, facts, store, github_inspector, github, git)
     previous = MIXED_RECOVERY_HISTORICAL_BASE
     for entry, expected_pr, expected_merge in zip(entries, MIXED_RECOVERY_PRS, MIXED_RECOVERY_MERGES):
         require_exact_keys(entry, MIXED_ENTRY_FIELDS, code="MIXED_DESCENDANT_MANIFEST_INVALID", location="mixed entry")
