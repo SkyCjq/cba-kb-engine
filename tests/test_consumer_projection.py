@@ -1,8 +1,10 @@
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 from cba_kb.consumer_projection import (
+    build_player_identity_consumer_projection,
     ConsumerProjectionError,
     consumer_baseline_template,
     event_coverage,
@@ -12,7 +14,11 @@ from cba_kb.consumer_projection import (
     usage_failure_layer_schema,
     validate_consumer_baseline,
     validate_consumer_result,
+    validate_player_identity_consumer_projection,
 )
+from cba_kb.common import digest
+from cba_kb.evidence_ledger import canonical_bytes
+from cba_kb.player_identity import new_registry
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,3 +118,81 @@ def test_consumer_result_schema_and_external_baseline_are_not_faked():
         for result in validate_consumer_baseline(baseline)["consumers"].values()
     )
     assert "failure_layer" in usage_failure_layer_schema()["required"]
+
+
+def identity_registry():
+    return new_registry([{
+        "schema_version": 1,
+        "player_uid": "pid_00000000000000000000000000000001",
+        "canonical_name": "测试球员",
+        "status": "ACTIVE",
+        "redirect_to": None,
+    }], record_links=[{
+        "schema_version": 1,
+        "record_key": "2025-2026|club|测试球员",
+        "player_uid": "pid_00000000000000000000000000000001",
+        "link_status": "same",
+        "confidence": "HIGH",
+        "method": "MANUAL_REVIEW",
+        "evidence_refs": [
+            "doc:consumer-safe", "private:secret", "/Users/private/file",
+            "unclassified-secret",
+        ],
+    }])
+
+
+def identity_projection():
+    return build_player_identity_consumer_projection(
+        identity_registry(), release_id="v1.8.1-2",
+        code_commit="a" * 40,
+    )
+
+
+def rehash_projection(value):
+    value["projection_sha256"] = digest(canonical_bytes({
+        key: item for key, item in value.items()
+        if key != "projection_sha256"
+    }))
+
+
+def test_identity_projection_uses_positive_safe_provenance_and_source_binding():
+    projection = identity_projection()
+    assert projection["record_links"][0]["evidence_refs"] == [{
+        "type": "doc", "ref": "consumer-safe",
+    }]
+    result = validate_player_identity_consumer_projection(
+        projection,
+        expected_release_id="v1.8.1-2",
+        expected_code_commit="a" * 40,
+        expected_source_registry_sha256=projection["source_registry_sha256"],
+    )
+    assert result["status"] == "PASS"
+    with pytest.raises(ConsumerProjectionError, match="SOURCE_REGISTRY_BINDING"):
+        validate_player_identity_consumer_projection(
+            projection, expected_source_registry_sha256="0" * 64,
+        )
+
+
+@pytest.mark.parametrize("tamper", ["relation", "summary", "duplicate"])
+def test_identity_projection_semantic_tamper_fails_after_rehash(tamper):
+    projection = identity_projection()
+    if tamper == "relation":
+        projection["record_links"][0]["relation"] = "SAMEISH"
+    elif tamper == "summary":
+        projection["summary"]["same_count"] = 99
+    else:
+        projection["record_links"].append(
+            deepcopy(projection["record_links"][0])
+        )
+        projection["summary"]["total_record_links"] += 1
+        projection["summary"]["same_count"] += 1
+    rehash_projection(projection)
+    with pytest.raises(ConsumerProjectionError, match=(
+        "RECORD_LINK_INVALID|SUMMARY_MISMATCH|RECORD_LINK_DUPLICATE"
+    )):
+        validate_player_identity_consumer_projection(
+            projection,
+            expected_source_registry_sha256=projection[
+                "source_registry_sha256"
+            ],
+        )

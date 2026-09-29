@@ -25,6 +25,7 @@ from cba_kb.instance import load_instance
 from cba_kb.native import wrap
 from cba_kb.release import (
     _inventory, fingerprint, prepare as prepare_release, snapshot,
+    validate_release_infra_compatibility,
 )
 
 
@@ -53,6 +54,13 @@ RELEASE_SPECS = {
         "product_baseline_sha": "b8304f94276b6fca3bc49c945700d3a152194a63",
     },
 }
+
+
+def release_infra_compatibility_preflight(bundle):
+    """Execute the release validator's qualification path without remote writes."""
+    if not isinstance(bundle, dict):
+        raise ProjectionError("RELEASE_INFRA_COMPATIBILITY_INPUT_REQUIRED")
+    return validate_release_infra_compatibility(**bundle)
 FOLDER = "application/vnd.google-apps.folder"
 NATIVE_DOCUMENT = "application/vnd.google-apps.document"
 REGISTRY_KEY = "config/canonical_products.yaml"
