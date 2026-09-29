@@ -399,16 +399,28 @@ def test_descendant_mode_accepts_exact_p2a_process_chain(monkeypatch, task_dict,
 
 def mixed_descendant_case(monkeypatch, task_dict, result_dict):
     from automation.verify import (
-        MIXED_AUTHORITY_REGISTRY_SCHEMA, MIXED_DESCENDANT_MODE, MIXED_MANIFEST_SCHEMA, MIXED_RECOVERY_FINAL_MAIN,
-        MIXED_RECOVERY_HISTORICAL_BASE, MIXED_RECOVERY_MERGES, MIXED_RECOVERY_PRS,
+        MIXED_AUTHORITY_REGISTRY_SCHEMA, MIXED_DESCENDANT_MODE, MIXED_MANIFEST_SCHEMA,
+        MIXED_RECOVERY_HISTORICAL_BASE, MIXED_RECOVERY_HISTORICAL_ENDPOINT,
+        MIXED_RECOVERY_MERGES, MIXED_RECOVERY_PRS, MIXED_TAIL_SCHEMA,
         MIXED_RECOVERY_PREDECESSOR_TASK_ID,
     )
+
+    live_endpoint = "e" * 40
+    tail_head = "d" * 40
+    tail_pr = 900
+    tail_pr_run = 3900
+    tail_main_run = 4900
+    tail_paths = sorted({
+        "automation/verify.py",
+        "tests/automation/test_negative_cases.py",
+        "tests/automation/test_verify.py",
+    })
 
     task = copy.deepcopy(task_dict)
     task.update(
         req_id="REQ-181-CONSUMER-CLOSURE-01", canonical_generation=19,
         task_type="CODEX_READ_ONLY_POST_MERGE_RECONCILIATION",
-        expected_base_sha=MIXED_RECOVERY_FINAL_MAIN, feature_branch="main",
+        expected_base_sha=live_endpoint, feature_branch="main",
         allowed_paths=["NO_REPOSITORY_FILE_CHANGES_RECONCILIATION_ONLY"],
     )
     task["authority_binding"].update(
@@ -479,7 +491,8 @@ def mixed_descendant_case(monkeypatch, task_dict, result_dict):
         "requirement_sha256": task["authority_binding"]["requirement_sha256"],
         "policy_bundle_sha256": task["policy_bundle_sha256"], "repository": task["repository"],
         "historical_base_sha": MIXED_RECOVERY_HISTORICAL_BASE,
-        "final_main_sha": MIXED_RECOVERY_FINAL_MAIN, "production_authority": False, "entries": entries,
+        "final_main_sha": MIXED_RECOVERY_HISTORICAL_ENDPOINT,
+        "production_authority": False, "entries": entries,
     }
     manifest_bytes = canonical_json_bytes(manifest)
     manifest_sha = sha256_bytes(manifest_bytes)
@@ -504,34 +517,82 @@ def mixed_descendant_case(monkeypatch, task_dict, result_dict):
         "mixed-authority-registry", "history", "mixed-authority-registry.json",
         authority_registry_bytes,
     )
+    tail = {
+        "schema_version": MIXED_TAIL_SCHEMA, "req_id": task["req_id"],
+        "canonical_generation": 19,
+        "predecessor_task_id": MIXED_RECOVERY_PREDECESSOR_TASK_ID,
+        "predecessor_task_sha256": GEN18_SHA256,
+        "requirement_sha256": task["authority_binding"]["requirement_sha256"],
+        "policy_bundle_sha256": task["policy_bundle_sha256"],
+        "repository": task["repository"],
+        "historical_start_sha": MIXED_RECOVERY_HISTORICAL_ENDPOINT,
+        "live_endpoint_sha": live_endpoint, "production_authority": False,
+        "entries": [{
+            "pr_number": tail_pr, "previous_sha": MIXED_RECOVERY_HISTORICAL_ENDPOINT,
+            "reviewed_head_sha": tail_head, "actual_head_sha": tail_head,
+            "merge_sha": live_endpoint, "merged_at": "2026-09-29T04:00:00Z",
+            "changed_files": list(tail_paths),
+            "branch_commits": [{"sha": tail_head, "changed_files": list(tail_paths)}],
+            "pr_ci": {"run_id": tail_pr_run, "workflow_name": "Offline tests",
+                      "event": "pull_request", "head_sha": tail_head,
+                      "status": "completed", "conclusion": "success"},
+            "main_ci": {"run_id": tail_main_run, "workflow_name": "Offline tests",
+                        "event": "push", "head_sha": live_endpoint,
+                        "status": "completed", "conclusion": "success"},
+            "production_authority": False,
+        }],
+    }
+    tail_bytes = canonical_json_bytes(tail)
+    tail_sha = sha256_bytes(tail_bytes)
+    store.seed("mixed-tail", "history", "mixed-tail.json", tail_bytes)
     task["allowed_actions"] = [
         f"require immutable mixed descendant manifest file ID mixed-manifest SHA256 {manifest_sha}",
         f"require immutable mixed evidence authority registry file ID mixed-authority-registry SHA256 {authority_registry_sha}",
+        f"require immutable post-chain control-plane tail manifest file ID mixed-tail SHA256 {tail_sha}",
     ]
     task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
     result = copy.deepcopy(result_dict)
     result.update(
         req_id=task["req_id"], canonical_generation=19, task_id=task["task_id"],
-        base_sha=MIXED_RECOVERY_FINAL_MAIN, head_sha=MIXED_RECOVERY_FINAL_MAIN,
+        base_sha=live_endpoint, head_sha=live_endpoint,
         feature_branch="main", changed_files=[], source_task_sha256=sha256_bytes(task_bytes),
         pr={"number": 56, "url": "https://example.test/pr/56", "state": "MERGED"},
-        ci={"workflow_name": "Offline tests", "head_sha": MIXED_RECOVERY_FINAL_MAIN,
-            "conclusion": "success", "runs": [{"id": 2056}]},
+        ci={"workflow_name": "Offline tests", "head_sha": live_endpoint,
+            "conclusion": "success", "runs": [{"id": tail_main_run}]},
         machine_facts={"descendant_mode": MIXED_DESCENDANT_MODE,
                        "manifest_file_id": "mixed-manifest", "manifest_sha256": manifest_sha,
                        "authority_registry_file_id": "mixed-authority-registry",
-                       "authority_registry_sha256": authority_registry_sha},
+                       "authority_registry_sha256": authority_registry_sha,
+                       "tail_manifest_file_id": "mixed-tail", "tail_manifest_sha256": tail_sha},
     )
+
+    pr_facts[tail_pr] = {
+        "number": tail_pr, "state": "MERGED", "baseRefOid": MIXED_RECOVERY_HISTORICAL_ENDPOINT,
+        "headRefOid": tail_head, "mergedAt": tail["entries"][0]["merged_at"],
+        "mergeCommit": {"oid": live_endpoint},
+    }
+    runs[tail_head] = [{
+        "id": tail_pr_run, "name": "Offline tests", "event": "pull_request",
+        "head_sha": tail_head, "status": "completed", "conclusion": "success",
+    }]
+    runs[live_endpoint] = [{
+        "id": tail_main_run, "name": "Offline tests", "event": "push", "head_branch": "main",
+        "head_sha": live_endpoint, "status": "completed", "conclusion": "success",
+    }]
+    parents[live_endpoint] = f"{live_endpoint} {MIXED_RECOVERY_HISTORICAL_ENDPOINT} {tail_head}"
+    branch_paths[tail_head] = list(tail_paths)
+    merge_paths[(MIXED_RECOVERY_HISTORICAL_ENDPOINT, live_endpoint)] = list(tail_paths)
+    main_ref = {"object": {"sha": live_endpoint}}
 
     class GitHub:
         def collect(self, number, workflow, head):
-            return {"pr": pr_facts[56], "runs": runs[MIXED_RECOVERY_FINAL_MAIN]}
+            return {"pr": pr_facts[56], "runs": runs[live_endpoint]}
 
         def _json(self, *args):
             if args[:2] == ("pr", "view"):
                 return pr_facts[int(args[2])]
             if "git/ref/heads/main" in args[1]:
-                return {"object": {"sha": MIXED_RECOVERY_FINAL_MAIN}}
+                return main_ref
             head = args[1].split("head_sha=")[1].split("&")[0]
             return {"workflow_runs": runs[head]}
 
@@ -540,7 +601,7 @@ def mixed_descendant_case(monkeypatch, task_dict, result_dict):
             pass
 
         def head_sha(self):
-            return MIXED_RECOVERY_FINAL_MAIN
+            return live_endpoint
 
         def changed_files(self, base_sha):
             return ()
@@ -550,7 +611,11 @@ def mixed_descendant_case(monkeypatch, task_dict, result_dict):
 
         def _run(self, *args):
             if args[:3] == ("rev-list", "--first-parent", "--reverse"):
-                return "\n".join(MIXED_RECOVERY_MERGES)
+                if args[-1] == f"{MIXED_RECOVERY_HISTORICAL_BASE}..{MIXED_RECOVERY_HISTORICAL_ENDPOINT}":
+                    return "\n".join(MIXED_RECOVERY_MERGES)
+                if args[-1] == f"{MIXED_RECOVERY_HISTORICAL_ENDPOINT}..{live_endpoint}":
+                    return live_endpoint
+                raise AssertionError(args)
             if args[:3] == ("rev-list", "--parents", "-n"):
                 return parents[args[-1]]
             if args[:2] == ("rev-list", "--reverse"):
@@ -563,13 +628,13 @@ def mixed_descendant_case(monkeypatch, task_dict, result_dict):
 
     monkeypatch.setattr("automation.verify.GitInspector", Git)
     return (
-        task, task_bytes, result, manifest, authority_registry, store,
-        GitHub(), pr_facts, runs, Git,
+        task, task_bytes, result, manifest, authority_registry, tail, store,
+        GitHub(), pr_facts, runs, main_ref, parents, branch_paths, merge_paths, Git,
     )
 
 
 def test_typed_mixed_descendant_mode_accepts_exact_recovery_corridor(monkeypatch, task_dict, result_dict):
-    _, task_bytes, result, _, _, store, github, *_ = mixed_descendant_case(monkeypatch, task_dict, result_dict)
+    _, task_bytes, result, _, _, _, store, github, *_ = mixed_descendant_case(monkeypatch, task_dict, result_dict)
     verified = verify_result_bytes(canonical_json_bytes(result), task_bytes, git_root="exact-main",
                                    github_inspector=github, predecessor_store=store)
     assert verified.classification == "EXECUTION_RESULT_VERIFIED"

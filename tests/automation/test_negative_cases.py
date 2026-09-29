@@ -354,9 +354,10 @@ def test_descendant_mode_rejects_unbound_or_drifted_evidence(
 def test_typed_mixed_descendant_mode_fails_closed(
     monkeypatch, task_dict, result_dict, mutation,
 ):
-    task, task_bytes, result, manifest, registry, store, github, prs, runs, git_type = mixed_descendant_case(
-        monkeypatch, task_dict, result_dict,
-    )
+    (
+        task, task_bytes, result, manifest, registry, tail, store, github, prs, runs,
+        main_ref, parents, branch_paths, merge_paths, git_type,
+    ) = mixed_descendant_case(monkeypatch, task_dict, result_dict)
 
     def refresh_task_bytes():
         nonlocal task_bytes
@@ -369,6 +370,8 @@ def test_typed_mixed_descendant_mode_fails_closed(
             f"SHA256 {result['machine_facts']['manifest_sha256']}",
             "require immutable mixed evidence authority registry file ID mixed-authority-registry "
             f"SHA256 {result['machine_facts']['authority_registry_sha256']}",
+            "require immutable post-chain control-plane tail manifest file ID mixed-tail "
+            f"SHA256 {result['machine_facts']['tail_manifest_sha256']}",
         ]
         refresh_task_bytes()
 
@@ -551,6 +554,123 @@ def test_typed_mixed_descendant_mode_fails_closed(
                                    github_inspector=github, predecessor_store=store)
     assert not verified.ok
     assert verified.classification not in {"EXECUTION_RESULT_VERIFIED", "UNCLASSIFIED_EXCEPTION"}
+
+
+@pytest.mark.parametrize(("mutation", "classification"), [
+    ("missing_task_binding", "MIXED_TAIL_BINDING_MISSING"),
+    ("file_id_mismatch", "MIXED_TAIL_UNBOUND"),
+    ("sha_mismatch", "MIXED_TAIL_UNBOUND"),
+    ("wrong_folder", "MIXED_TAIL_MISMATCH"),
+    ("unknown_schema", "MIXED_TAIL_INVALID"),
+    ("extra_schema_field", "MIXED_TAIL_INVALID"),
+    ("missing_schema_field", "MIXED_TAIL_INVALID"),
+    ("historical_start_drift", "MIXED_TAIL_INVALID"),
+    ("endpoint_task_mismatch", "MIXED_TAIL_ENDPOINT_MISMATCH"),
+    ("live_main_mismatch", "FINAL_MAIN_MISMATCH"),
+    ("extra_live_descendant", "FINAL_MAIN_MISMATCH"),
+    ("merge_order_mismatch", "MIXED_TAIL_CHAIN_MISMATCH"),
+    ("wrong_parents", "MIXED_TAIL_CHAIN_MISMATCH"),
+    ("wrong_pr_facts", "MIXED_TAIL_PR_MISMATCH"),
+    ("wrong_reviewed_head", "MIXED_TAIL_CI_MISMATCH"),
+    ("wrong_actual_head", "MIXED_TAIL_CHAIN_MISMATCH"),
+    ("unexpected_file", "MIXED_TAIL_SCOPE_VIOLATION"),
+    ("introduced_then_reverted", "MIXED_TAIL_SCOPE_VIOLATION"),
+    ("wrong_pr_ci", "MIXED_DESCENDANT_CI_MISMATCH"),
+    ("wrong_main_ci", "MIXED_DESCENDANT_CI_MISMATCH"),
+    ("production_authority", "MIXED_TAIL_INVALID"),
+])
+def test_typed_mixed_descendant_tail_fails_closed(
+    monkeypatch, task_dict, result_dict, mutation, classification,
+):
+    (
+        task, task_bytes, result, _, _, tail, store, github, prs, _, main_ref,
+        parents, branch_paths, merge_paths, git_type,
+    ) = mixed_descendant_case(monkeypatch, task_dict, result_dict)
+
+    def refresh_task_bytes():
+        nonlocal task_bytes
+        task_bytes = yaml.safe_dump(task, sort_keys=False).encode()
+        result["source_task_sha256"] = sha256_bytes(task_bytes)
+
+    def refreeze_tail():
+        content = canonical_json_bytes(tail)
+        digest = sha256_bytes(content)
+        store.records["mixed-tail"].content = content
+        result["machine_facts"]["tail_manifest_sha256"] = digest
+        task["allowed_actions"][-1] = (
+            "require immutable post-chain control-plane tail manifest file ID mixed-tail "
+            f"SHA256 {digest}"
+        )
+        refresh_task_bytes()
+
+    entry = tail["entries"][0]
+    if mutation == "missing_task_binding":
+        task["allowed_actions"].pop()
+        refresh_task_bytes()
+    elif mutation == "file_id_mismatch":
+        result["machine_facts"]["tail_manifest_file_id"] = "different-tail"
+    elif mutation == "sha_mismatch":
+        result["machine_facts"]["tail_manifest_sha256"] = "0" * 64
+    elif mutation == "wrong_folder":
+        store.records["mixed-tail"].folder_id = "wrong-folder"
+    elif mutation == "unknown_schema":
+        tail["schema_version"] = "unknown.tail.v1"
+        refreeze_tail()
+    elif mutation == "extra_schema_field":
+        tail["unexpected"] = True
+        refreeze_tail()
+    elif mutation == "missing_schema_field":
+        del tail["repository"]
+        refreeze_tail()
+    elif mutation == "historical_start_drift":
+        tail["historical_start_sha"] = "0" * 40
+        refreeze_tail()
+    elif mutation == "endpoint_task_mismatch":
+        tail["live_endpoint_sha"] = "f" * 40
+        refreeze_tail()
+    elif mutation == "live_main_mismatch":
+        main_ref["object"]["sha"] = "0" * 40
+    elif mutation == "extra_live_descendant":
+        main_ref["object"]["sha"] = "f" * 40
+    elif mutation == "merge_order_mismatch":
+        tail["entries"].append(copy.deepcopy(entry))
+        refreeze_tail()
+    elif mutation == "wrong_parents":
+        parents[entry["merge_sha"]] = f"{entry['merge_sha']} {'0' * 40} {entry['actual_head_sha']}"
+    elif mutation == "wrong_pr_facts":
+        prs[entry["pr_number"]]["mergedAt"] = "2026-01-01T00:00:00Z"
+    elif mutation == "wrong_reviewed_head":
+        entry["reviewed_head_sha"] = "a" * 40
+        refreeze_tail()
+    elif mutation == "wrong_actual_head":
+        entry["actual_head_sha"] = "a" * 40
+        refreeze_tail()
+    elif mutation == "unexpected_file":
+        entry["changed_files"].append("unexpected.txt")
+        entry["changed_files"].sort()
+        merge_paths[(entry["previous_sha"], entry["merge_sha"])] = list(entry["changed_files"])
+        refreeze_tail()
+    elif mutation == "introduced_then_reverted":
+        item = entry["branch_commits"][0]
+        item["changed_files"].append("forbidden-then-reverted.txt")
+        item["changed_files"].sort()
+        branch_paths[item["sha"]] = list(item["changed_files"])
+        refreeze_tail()
+    elif mutation == "wrong_pr_ci":
+        entry["pr_ci"]["event"] = "push"
+        refreeze_tail()
+    elif mutation == "wrong_main_ci":
+        entry["main_ci"]["event"] = "pull_request"
+        refreeze_tail()
+    elif mutation == "production_authority":
+        tail["production_authority"] = True
+        refreeze_tail()
+
+    verified = verify_result_bytes(
+        canonical_json_bytes(result), task_bytes, git_root="exact-main",
+        github_inspector=github, predecessor_store=store,
+    )
+    assert verified.classification == classification
 
 
 @pytest.mark.parametrize(("mutation", "classification"), [
