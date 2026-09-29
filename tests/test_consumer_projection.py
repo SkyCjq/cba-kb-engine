@@ -120,7 +120,7 @@ def test_consumer_result_schema_and_external_baseline_are_not_faked():
     assert "failure_layer" in usage_failure_layer_schema()["required"]
 
 
-def identity_registry():
+def identity_registry(evidence_refs=None):
     return new_registry([{
         "schema_version": 1,
         "player_uid": "pid_00000000000000000000000000000001",
@@ -134,7 +134,7 @@ def identity_registry():
         "link_status": "same",
         "confidence": "HIGH",
         "method": "MANUAL_REVIEW",
-        "evidence_refs": [
+        "evidence_refs": evidence_refs or [
             "doc:consumer-safe", "private:secret", "/Users/private/file",
             "unclassified-secret",
         ],
@@ -170,6 +170,52 @@ def test_identity_projection_uses_positive_safe_provenance_and_source_binding():
     with pytest.raises(ConsumerProjectionError, match="SOURCE_REGISTRY_BINDING"):
         validate_player_identity_consumer_projection(
             projection, expected_source_registry_sha256="0" * 64,
+        )
+
+
+@pytest.mark.parametrize("unsafe_ref", [
+    "source:file:///tmp/private.db",
+    "doc:/Users/example/private.txt",
+    "public:file://local-secret",
+    "web:/private/path",
+])
+def test_identity_projection_omits_unsafe_typed_provenance_values(unsafe_ref):
+    registry = identity_registry([
+        "doc:consumer-safe", "private:secret", "/Users/private/file",
+        "unclassified-secret", unsafe_ref,
+    ])
+
+    projection = build_player_identity_consumer_projection(
+        registry, release_id="v1.8.1-2", code_commit="a" * 40,
+    )
+
+    assert projection["record_links"][0]["evidence_refs"] == [{
+        "type": "doc", "ref": "consumer-safe",
+    }]
+
+
+@pytest.mark.parametrize(("ref_type", "unsafe_value"), [
+    ("source", "file:///tmp/private.db"),
+    ("doc", "/Users/example/private.txt"),
+    ("public", "file://local-secret"),
+    ("web", "/private/path"),
+])
+def test_identity_projection_rejects_injected_unsafe_typed_provenance(
+    ref_type, unsafe_value,
+):
+    projection = identity_projection()
+    projection["record_links"][0]["evidence_refs"].append({
+        "type": ref_type,
+        "ref": unsafe_value,
+    })
+    rehash_projection(projection)
+
+    with pytest.raises(ConsumerProjectionError):
+        validate_player_identity_consumer_projection(
+            projection,
+            expected_source_registry_sha256=projection[
+                "source_registry_sha256"
+            ],
         )
 
 

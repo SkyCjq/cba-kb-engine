@@ -485,9 +485,12 @@ def _consumer_safe_evidence_ref(ref):
     if not isinstance(ref, str) or ":" not in ref:
         return None
     kind, value = ref.split(":", 1)
-    if kind not in CONSUMER_SAFE_PROVENANCE_TYPES or not value.strip():
+    value = value.strip()
+    if kind not in CONSUMER_SAFE_PROVENANCE_TYPES or not value:
         return None
-    return {"type": kind, "ref": value.strip()}
+    if value.startswith(("file://", "/Users/", "/private/")):
+        return None
+    return {"type": kind, "ref": value}
 
 
 def build_player_identity_consumer_projection(
@@ -665,7 +668,10 @@ def validate_player_identity_consumer_projection(
                     or set(ref) != {"type", "ref"}
                     or ref.get("type") not in CONSUMER_SAFE_PROVENANCE_TYPES
                     or not isinstance(ref.get("ref"), str)
-                    or not ref["ref"]):
+                    or not ref["ref"]
+                    or _consumer_safe_evidence_ref(
+                        f"{ref['type']}:{ref['ref']}"
+                    ) != ref):
                 raise ConsumerProjectionError("IDENTITY_PROJECTION_PROVENANCE_INVALID")
         record_keys.append(link["record_key"])
         relation_counts[link["relation"]] += 1
