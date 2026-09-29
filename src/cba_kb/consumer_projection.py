@@ -470,6 +470,27 @@ def derive_consumer_counts(artifacts, projection):
 
 CONSUMER_IDENTITY_SCHEMA = "player_identity_consumer_v1"
 CONSUMER_IDENTITY_SCHEMA_VERSION = 1
+CONSUMER_SAFE_PROVENANCE_TYPES = frozenset({
+    "doc", "public", "source", "web",
+})
+
+
+def _consumer_safe_evidence_ref(ref):
+    """Return an explicitly typed Consumer-safe provenance reference.
+
+    Private registry evidence is untrusted by default.  A negative deny-list is
+    insufficient because an unclassified local identifier can otherwise leak
+    without using a known private prefix.
+    """
+    if not isinstance(ref, str) or ":" not in ref:
+        return None
+    kind, value = ref.split(":", 1)
+    value = value.strip()
+    if kind not in CONSUMER_SAFE_PROVENANCE_TYPES or not value:
+        return None
+    if value.startswith(("file://", "/Users/", "/private/")):
+        return None
+    return {"type": kind, "ref": value}
 
 
 def build_player_identity_consumer_projection(
@@ -489,6 +510,7 @@ def build_player_identity_consumer_projection(
     if not isinstance(identity_registry, dict):
         raise ConsumerProjectionError("IDENTITY_REGISTRY_OBJECT_REQUIRED")
     validated_registry = validate_registry(identity_registry)
+    source_registry_sha256 = digest(canonical_bytes(validated_registry))
 
     # Active players only
     projected_players = []
@@ -520,8 +542,9 @@ def build_player_identity_consumer_projection(
         rel = project_identity_state(status)
         sanitized_refs = []
         for ref in link.get("evidence_refs") or []:
-            if isinstance(ref, str) and not ref.startswith(("/", "file:", "private:")):
-                sanitized_refs.append(ref)
+            safe_ref = _consumer_safe_evidence_ref(ref)
+            if safe_ref is not None:
+                sanitized_refs.append(safe_ref)
         projected_links.append({
             "record_key": rkey,
             "player_uid": puid,
@@ -543,6 +566,7 @@ def build_player_identity_consumer_projection(
         "as_of": as_of or "2026-09-27T00:00:00Z",
         "private_registry_exposed": False,
         "private_registry_leakage": 0,
+        "source_registry_sha256": source_registry_sha256,
         "summary": {
             "total_players": len(projected_players),
             "total_record_links": len(projected_links),
@@ -563,6 +587,7 @@ def validate_player_identity_consumer_projection(
     expected_release_id=None,
     expected_product_version="v1.8.1",
     expected_code_commit=None,
+    expected_source_registry_sha256=None,
 ):
     if not isinstance(projection, dict):
         raise ConsumerProjectionError("IDENTITY_PROJECTION_OBJECT_REQUIRED")
@@ -590,12 +615,78 @@ def validate_player_identity_consumer_projection(
     if expected_code_commit is not None and projection.get("code_commit") != expected_code_commit:
         raise ConsumerProjectionError("IDENTITY_PROJECTION_CODE_COMMIT_MISMATCH")
 
-    # Private registry leakage checks
+    # Detect private keys and path material before structural diagnostics so a
+    # leak is never mislabeled as an ordinary schema mismatch.
     forbidden_tokens = {"notes", "admin", "redirect_to", "internal_id", "/private/", "/Users/"}
     projection_str = json.dumps(projection)
     for token in forbidden_tokens:
         if f'"{token}"' in projection_str or token in projection_str:
             raise ConsumerProjectionError(f"PRIVATE_REGISTRY_LEAKAGE:{token}")
+
+    source_registry_sha256 = projection.get("source_registry_sha256")
+    if not isinstance(expected_source_registry_sha256, str):
+        raise ConsumerProjectionError("SOURCE_REGISTRY_BINDING_REQUIRED")
+    if source_registry_sha256 != expected_source_registry_sha256:
+        raise ConsumerProjectionError("SOURCE_REGISTRY_BINDING_MISMATCH")
+
+    players = projection.get("players")
+    links = projection.get("record_links")
+    if not isinstance(players, list) or not isinstance(links, list):
+        raise ConsumerProjectionError("IDENTITY_PROJECTION_COLLECTIONS_REQUIRED")
+    player_uids = []
+    for player in players:
+        if (not isinstance(player, dict)
+                or set(player) != {"player_uid", "canonical_name", "approved_aliases"}
+                or not isinstance(player.get("player_uid"), str)
+                or not player["player_uid"]
+                or not isinstance(player.get("canonical_name"), str)
+                or not player["canonical_name"]
+                or not isinstance(player.get("approved_aliases"), list)
+                or any(not isinstance(alias, str) or not alias
+                       for alias in player["approved_aliases"])):
+            raise ConsumerProjectionError("IDENTITY_PROJECTION_PLAYER_INVALID")
+        player_uids.append(player["player_uid"])
+    if len(player_uids) != len(set(player_uids)):
+        raise ConsumerProjectionError("IDENTITY_PROJECTION_PLAYER_DUPLICATE")
+
+    record_keys = []
+    relation_counts = {"SAME": 0, "NOT_SAME": 0, "UNDECIDED": 0}
+    for link in links:
+        if (not isinstance(link, dict)
+                or set(link) != {"record_key", "player_uid", "relation",
+                                 "confidence", "evidence_refs"}
+                or not isinstance(link.get("record_key"), str)
+                or not link["record_key"]
+                or link.get("relation") not in relation_counts
+                or link.get("player_uid") not in set(player_uids)
+                or not isinstance(link.get("confidence"), str)
+                or not link["confidence"]
+                or not isinstance(link.get("evidence_refs"), list)):
+            raise ConsumerProjectionError("IDENTITY_PROJECTION_RECORD_LINK_INVALID")
+        for ref in link["evidence_refs"]:
+            if (not isinstance(ref, dict)
+                    or set(ref) != {"type", "ref"}
+                    or ref.get("type") not in CONSUMER_SAFE_PROVENANCE_TYPES
+                    or not isinstance(ref.get("ref"), str)
+                    or not ref["ref"]
+                    or _consumer_safe_evidence_ref(
+                        f"{ref['type']}:{ref['ref']}"
+                    ) != ref):
+                raise ConsumerProjectionError("IDENTITY_PROJECTION_PROVENANCE_INVALID")
+        record_keys.append(link["record_key"])
+        relation_counts[link["relation"]] += 1
+    if len(record_keys) != len(set(record_keys)):
+        raise ConsumerProjectionError("IDENTITY_PROJECTION_RECORD_LINK_DUPLICATE")
+
+    expected_summary = {
+        "total_players": len(players),
+        "total_record_links": len(links),
+        "same_count": relation_counts["SAME"],
+        "not_same_count": relation_counts["NOT_SAME"],
+        "undecided_count": relation_counts["UNDECIDED"],
+    }
+    if projection.get("summary") != expected_summary:
+        raise ConsumerProjectionError("IDENTITY_PROJECTION_SUMMARY_MISMATCH")
 
     stored_sha = projection.get("projection_sha256")
     without_hash = {k: v for k, v in projection.items() if k != "projection_sha256"}
@@ -609,6 +700,7 @@ def validate_player_identity_consumer_projection(
         "players": len(projection.get("players", [])),
         "record_links": len(projection.get("record_links", [])),
         "projection_sha256": stored_sha,
+        "source_registry_sha256": source_registry_sha256,
     }
 
 

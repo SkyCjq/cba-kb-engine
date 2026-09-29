@@ -448,30 +448,49 @@ def evaluate_consumer_closure_acceptance(
     chatgpt_result=None,
     gemini_result=None,
     workbuddy_result=None,
+    expected_source_registry_sha256=None,
 ):
     """Evaluate the complete Consumer Acceptance Matrix for Consumer Closure DoD."""
-    from .consumer_projection import lookup_player_identity, cross_season_identity_query
+    from .consumer_projection import (
+        lookup_player_identity,
+        cross_season_identity_query,
+        validate_player_identity_consumer_projection,
+    )
     from .consumer_manifest import validate_consumer_manifest
 
     results = {}
 
+    rel_status = (status_doc or {}).get("current_release_id")
+    identity_entry = (
+        (consumer_manifest or {}).get("consumer_surfaces", {})
+        .get("identity", {}).get("player_identity_projection", {})
+    )
+    try:
+        if identity_entry.get("source_registry_sha256") != expected_source_registry_sha256:
+            raise ValueError("INDEPENDENT_SOURCE_REGISTRY_BINDING_MISMATCH")
+        projection_validation = validate_player_identity_consumer_projection(
+            identity_projection,
+            expected_release_id=rel_status,
+            expected_product_version=(consumer_manifest or {}).get("product_version"),
+            expected_code_commit=(consumer_manifest or {}).get("code_commit"),
+            expected_source_registry_sha256=expected_source_registry_sha256,
+        )
+    except Exception:
+        projection_validation = None
+
     # 1. IDENTITY_SEMANTIC_SAFETY
-    if (
-        identity_projection
-        and identity_projection.get("schema") == "player_identity_consumer_v1"
-        and identity_projection.get("private_registry_exposed") is False
-        and identity_projection.get("private_registry_leakage") == 0
-    ):
+    if projection_validation and projection_validation.get("status") == "PASS":
         results["IDENTITY_SEMANTIC_SAFETY"] = "PASS"
     else:
         results["IDENTITY_SEMANTIC_SAFETY"] = "FAIL"
 
     # 2. IDENTITY_AUTHORITY_DISCOVERY
     if (
-        consumer_manifest
+        projection_validation
+        and consumer_manifest
         and "player_identity_projection" in consumer_manifest.get("consumer_surfaces", {}).get("identity", {})
         and consumer_manifest["consumer_surfaces"]["identity"]["player_identity_projection"].get("sha256")
-            == identity_projection.get("projection_sha256")
+            == (identity_projection or {}).get("projection_sha256")
     ):
         results["IDENTITY_AUTHORITY_DISCOVERY"] = "PASS"
     else:
@@ -528,7 +547,6 @@ def evaluate_consumer_closure_acceptance(
         results["CROSS_SEASON_IDENTITY_QUERY"] = "FAIL"
 
     # 8. CURRENT_RELEASE_DISCOVERY
-    rel_status = (status_doc or {}).get("current_release_id")
     manifest_rel = (consumer_manifest or {}).get("release_id")
     if (
         status_doc
@@ -557,9 +575,9 @@ def evaluate_consumer_closure_acceptance(
 
     # Platform acceptances
     platforms = {
-        "ChatGPT": chatgpt_result or "PASS",
-        "Gemini Notebook": gemini_result or "PASS",
-        "WorkBuddy": workbuddy_result or "PASS",
+        "ChatGPT": chatgpt_result,
+        "Gemini Notebook": gemini_result,
+        "WorkBuddy": workbuddy_result,
     }
 
     matrix_pass = all(

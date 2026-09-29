@@ -1300,7 +1300,12 @@ def test_archive_timeout_resumes_only_missing_snapshots(tmp_path, monkeypatch):
     with pytest.raises(TimeoutError):
         publish(d, root, True)
     journal = read(root / 'journal.json')
-    assert journal == {'state': 'ARCHIVING', 'uploaded': {}, 'inflight': None}
+    assert journal['state'] == 'ARCHIVING'
+    assert journal['uploaded'] == {} and journal['inflight'] is None
+    assert journal['freeze_prepared_journal_sha256'] == (
+        'c045ce56126ba52a5b942b0a196e9ee4749b1199314161f2005f869d777f079c'
+    )
+    assert len(journal['runtime_lineage']) == 1
     assert d.get('status') == status and d.meta('status') == meta
     assert not d.calls
     assert all(d.get(f'target-{i}') == b'before' for i in range(3))

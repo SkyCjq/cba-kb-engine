@@ -52,8 +52,20 @@ def _validate_entry(key, entry, *, category):
     _required_text(entry["mime"], f"{key}_MIME")
     authority = _required_text(entry["authority"], f"{key}_AUTHORITY")
     rights = _required_text(entry["rights"], f"{key}_RIGHTS")
-    if category == "control" and authority != "control":
-        raise ConsumerManifestError(f"CONTROL_AUTHORITY_INVALID:{key}")
+    expected_authority = {
+        "control": "control",
+        "facts": "canonical",
+        "identity": "derived",
+    }.get(category)
+    if expected_authority is None or authority != expected_authority:
+        raise ConsumerManifestError(
+            f"{category.upper()}_AUTHORITY_INVALID:{key}"
+        )
+    if category == "identity":
+        _required_sha256(
+            entry.get("source_registry_sha256"),
+            f"{key}_SOURCE_REGISTRY",
+        )
     if rights not in {"public", "copyrighted", "private"}:
         raise ConsumerManifestError(f"ENTRY_RIGHTS_INVALID:{key}")
     return dict(entry)
@@ -89,7 +101,7 @@ def build_consumer_manifest(
     facts = facts or {}
     fact_entries = {}
     for key in sorted(facts):
-        fact_entries[key] = _validate_entry(key, facts[key], category="fact")
+        fact_entries[key] = _validate_entry(key, facts[key], category="facts")
     if not REQUIRED_FACT_KEYS <= set(fact_entries):
         missing = sorted(REQUIRED_FACT_KEYS - set(fact_entries))
         raise ConsumerManifestError(f"MISSING_REQUIRED_FACT:{','.join(missing)}")

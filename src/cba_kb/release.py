@@ -88,6 +88,146 @@ def validate_state_transition(current, target):
     return True
 
 
+def _runtime_transaction_binding(plan, plan_sha256):
+    return {
+        'release_id': plan['release_id'],
+        'plan_sha256': plan_sha256,
+        'candidate_hash_set_sha256': _candidate_hash_set(plan),
+        'entry_count': len(plan['entries']),
+    }
+
+
+def runtime_journal_sha256(journal):
+    """Hash a runtime journal using the exact serialization used by save()."""
+    if not isinstance(journal, dict):
+        raise ReleaseContractError('RUNTIME_JOURNAL_INVALID')
+    return digest(json.dumps(
+        journal, ensure_ascii=False, indent=2, sort_keys=True,
+    ).encode())
+
+
+def _runtime_lineage_event(sequence, previous_sha256, current, target,
+                           transaction):
+    payload = {
+        'sequence': sequence,
+        'previous_sha256': previous_sha256,
+        'from_state': current,
+        'to_state': target,
+        **transaction,
+    }
+    payload['event_sha256'] = digest(json.dumps(
+        payload, sort_keys=True, separators=(',', ':'),
+    ).encode())
+    return payload
+
+
+def validate_runtime_journal_lineage(journal, plan, freeze_prepared_sha256,
+                                     *, plan_sha256):
+    """Validate a runtime journal as a descendant of the frozen PREPARED bytes."""
+    if (not isinstance(journal, dict)
+            or not re.fullmatch('[0-9a-f]{64}', freeze_prepared_sha256 or '')):
+        raise ReleaseContractError('RUNTIME_JOURNAL_LINEAGE_INVALID')
+    if journal.get('freeze_prepared_journal_sha256') != freeze_prepared_sha256:
+        raise ReleaseContractError('RUNTIME_JOURNAL_FREEZE_ORIGIN_INVALID')
+    transaction = _runtime_transaction_binding(plan, plan_sha256)
+    if journal.get('runtime_transaction') != transaction:
+        raise ReleaseContractError('RUNTIME_JOURNAL_TRANSACTION_INVALID')
+    lineage = journal.get('runtime_lineage')
+    if not isinstance(lineage, list) or not lineage:
+        raise ReleaseContractError('RUNTIME_JOURNAL_LINEAGE_INVALID')
+    previous_sha, previous_state = freeze_prepared_sha256, 'PREPARED'
+    for sequence, event in enumerate(lineage, 1):
+        expected = _runtime_lineage_event(
+            sequence, previous_sha, previous_state, event.get('to_state'),
+            transaction,
+        ) if isinstance(event, dict) else None
+        if (expected is None or event != expected
+                or event['to_state'] == previous_state
+                or not validate_state_transition(previous_state,
+                                                 event['to_state'])):
+            raise ReleaseContractError('RUNTIME_JOURNAL_LINEAGE_INVALID')
+        previous_sha, previous_state = event['event_sha256'], event['to_state']
+    if journal.get('state') != previous_state:
+        raise ReleaseContractError('RUNTIME_JOURNAL_STATE_INVALID')
+    return {
+        'status': 'PASS',
+        'freeze_prepared_journal_sha256': freeze_prepared_sha256,
+        'runtime_lineage_tip_sha256': previous_sha,
+        'runtime_state': previous_state,
+        'transition_count': len(lineage),
+    }
+
+
+def _transition_runtime_journal(root, plan, journal, target):
+    """Persist one legal state transition with an append-only transaction chain."""
+    root = Path(root)
+    current = journal.get('state')
+    if current == 'FAILED':
+        current = journal.get('failed_from')
+        if current not in RELEASE_STATES:
+            raise ReleaseContractError('RUNTIME_JOURNAL_FAILED_FROM_INVALID')
+        journal['state'] = current
+    validate_state_transition(current, target)
+    plan_sha = digest((root / 'plan.json').read_bytes())
+    transaction = _runtime_transaction_binding(plan, plan_sha)
+    if current == 'PREPARED':
+        freeze_sha = digest((root / 'journal.json').read_bytes())
+        lineage = []
+    else:
+        freeze_sha = journal.get('freeze_prepared_journal_sha256')
+        validate_runtime_journal_lineage(
+            journal, plan, freeze_sha, plan_sha256=plan_sha,
+        )
+        lineage = list(journal['runtime_lineage'])
+    if current == target:
+        save(root / 'journal.json', journal)
+        return journal
+    previous_sha = lineage[-1]['event_sha256'] if lineage else freeze_sha
+    updated = dict(journal)
+    updated['freeze_prepared_journal_sha256'] = freeze_sha
+    updated['runtime_transaction'] = transaction
+    updated['runtime_lineage'] = lineage + [_runtime_lineage_event(
+        len(lineage) + 1, previous_sha, current, target, transaction,
+    )]
+    updated['state'] = target
+    save(root / 'journal.json', updated)
+    journal.clear()
+    journal.update(updated)
+    return journal
+
+
+def _upgrade_governed_legacy_runtime_lineage(root, plan, journal, authority):
+    """Attach lineage to an older, already-governed supersession checkpoint."""
+    if journal.get('state') == 'PREPARED' or journal.get('runtime_lineage'):
+        return journal
+    if (authority is None or not journal.get('authority_supersessions')
+            or authority['value'].get('journal_state') != 'PREPARED'):
+        return journal
+    state = journal.get('state')
+    if state not in {'ARCHIVING', 'ARCHIVE_COMPLETE'}:
+        raise ReleaseContractError('LEGACY_RUNTIME_LINEAGE_STATE_INVALID')
+    freeze_sha = authority['value'].get('journal_sha256')
+    if not re.fullmatch('[0-9a-f]{64}', freeze_sha or ''):
+        raise ReleaseContractError('LEGACY_RUNTIME_FREEZE_ORIGIN_INVALID')
+    plan_sha = digest(Path(root, 'plan.json').read_bytes())
+    transaction = _runtime_transaction_binding(plan, plan_sha)
+    lineage, previous_sha, previous_state = [], freeze_sha, 'PREPARED'
+    start = RELEASE_STATE_SEQUENCE.index('PREPARED') + 1
+    stop = RELEASE_STATE_SEQUENCE.index(state) + 1
+    for target in RELEASE_STATE_SEQUENCE[start:stop]:
+        event = _runtime_lineage_event(
+            len(lineage) + 1, previous_sha, previous_state,
+            target, transaction,
+        )
+        lineage.append(event)
+        previous_sha, previous_state = event['event_sha256'], target
+    journal['freeze_prepared_journal_sha256'] = freeze_sha
+    journal['runtime_transaction'] = transaction
+    journal['runtime_lineage'] = lineage
+    save(Path(root) / 'journal.json', journal)
+    return journal
+
+
 def provenance_dag(roles):
     """Validate typed SHA roles and the frozen provenance relationships."""
     if not isinstance(roles, dict):
@@ -316,6 +456,220 @@ def scan_native_document(drive, entry):
 
 def fingerprint(meta):
     return {k:meta.get(k) for k in ('id','version','modifiedTime','mimeType','parents')}
+
+
+IMMUTABLE_FINGERPRINT_FIELDS = ('id', 'mimeType')
+OBSERVED_FINGERPRINT_FIELDS = ('version', 'modifiedTime', 'parents')
+
+
+def freeze_fingerprint(meta):
+    """Separate immutable release identity from observed environment state."""
+    if not isinstance(meta, dict):
+        raise ReleaseContractError('FREEZE_FINGERPRINT_METADATA_REQUIRED')
+    identity = {key: meta.get(key) for key in IMMUTABLE_FINGERPRINT_FIELDS}
+    observed = {key: meta.get(key) for key in OBSERVED_FINGERPRINT_FIELDS}
+    if (not all(isinstance(value, str) and value for value in identity.values())
+            or not isinstance(observed['parents'], list)
+            or any(not isinstance(parent, str) or not parent
+                   for parent in observed['parents'])):
+        raise ReleaseContractError('FREEZE_FINGERPRINT_INVALID')
+    return {
+        'schema_version': 1,
+        'immutable_release_identity': identity,
+        'observed_environment_state': observed,
+    }
+
+
+def validate_freeze_fingerprint_compatibility(frozen, observed):
+    """Validate identity exactly while classifying mutable observations."""
+    current = freeze_fingerprint(observed)
+    if (not isinstance(frozen, dict)
+            or frozen.get('schema_version') != 1
+            or frozen.get('immutable_release_identity')
+            != current['immutable_release_identity']):
+        raise ReleaseContractError('FREEZE_FINGERPRINT_IDENTITY_MISMATCH')
+    original_observed = frozen.get('observed_environment_state')
+    if not isinstance(original_observed, dict):
+        raise ReleaseContractError('FREEZE_FINGERPRINT_INVALID')
+    return {
+        'status': 'PASS',
+        'immutable_release_identity': 'EXACT',
+        'observed_environment_state': (
+            'UNCHANGED' if original_observed
+            == current['observed_environment_state'] else 'CHANGED'
+        ),
+        'frozen': frozen,
+        'current': current,
+    }
+
+
+TOPOLOGY_CONTAINER_ROLES = frozenset({
+    'ROOT', 'CURRENT_ZONE', 'STAGING_ZONE', 'HISTORY_ZONE', 'EVIDENCE_ZONE',
+})
+TOPOLOGY_LEAF_PARENT_ROLES = {
+    'CURRENT_TARGET': frozenset({'CURRENT_ZONE'}),
+    'STAGING_TARGET': frozenset({'STAGING_ZONE'}),
+    'ROLLBACK_SNAPSHOT': frozenset({'HISTORY_ZONE'}),
+    'RECOVERY_CHECKPOINT': frozenset({'HISTORY_ZONE'}),
+    'SUPERSEDED_AUTHORITY': frozenset({'EVIDENCE_ZONE'}),
+}
+
+
+def validate_release_topology(nodes, *, release_id):
+    """Validate semantic roles and ancestors without observed-ID whitelists."""
+    if not isinstance(nodes, list) or not nodes:
+        raise ReleaseContractError('RELEASE_TOPOLOGY_REQUIRED')
+    by_id = {}
+    for node in nodes:
+        if (not isinstance(node, dict)
+                or not isinstance(node.get('id'), str) or not node['id']
+                or not isinstance(node.get('role'), str)
+                or not isinstance(node.get('parents'), list)
+                or any(not isinstance(parent, str) or not parent
+                       for parent in node['parents'])
+                or node['id'] in by_id):
+            raise ReleaseContractError('RELEASE_TOPOLOGY_NODE_INVALID')
+        by_id[node['id']] = node
+    roots = [node for node in nodes if node['role'] == 'ROOT']
+    if len(roots) != 1 or roots[0]['parents']:
+        raise ReleaseContractError('RELEASE_TOPOLOGY_ROOT_INVALID')
+    known_roles = TOPOLOGY_CONTAINER_ROLES | set(TOPOLOGY_LEAF_PARENT_ROLES)
+    for node in nodes:
+        if node['role'] not in known_roles:
+            raise ReleaseContractError('RELEASE_TOPOLOGY_ROLE_INVALID')
+        if node['role'] == 'ROOT':
+            continue
+        if len(node['parents']) != 1 or node['parents'][0] not in by_id:
+            raise ReleaseContractError('RELEASE_TOPOLOGY_PARENT_INVALID')
+        parent = by_id[node['parents'][0]]
+        if node['role'] in TOPOLOGY_CONTAINER_ROLES:
+            if parent['role'] != 'ROOT':
+                raise ReleaseContractError('RELEASE_TOPOLOGY_ANCESTOR_INVALID')
+        elif parent['role'] not in TOPOLOGY_LEAF_PARENT_ROLES[node['role']]:
+            raise ReleaseContractError('RELEASE_TOPOLOGY_ANCESTOR_INVALID')
+        if node['role'] in {
+            'ROLLBACK_SNAPSHOT', 'RECOVERY_CHECKPOINT',
+            'SUPERSEDED_AUTHORITY',
+        }:
+            if node.get('release_id') != release_id:
+                raise ReleaseContractError('RELEASE_TOPOLOGY_RELEASE_MISMATCH')
+        if node['role'] in {'ROLLBACK_SNAPSHOT', 'RECOVERY_CHECKPOINT'}:
+            target = by_id.get(node.get('target_id'))
+            if target is None or target['role'] not in {
+                'CURRENT_TARGET', 'STAGING_TARGET',
+            }:
+                raise ReleaseContractError('RELEASE_TOPOLOGY_TARGET_INVALID')
+        if node['role'] == 'SUPERSEDED_AUTHORITY':
+            if (node.get('governance') != 'HUMAN_WEB'
+                    or not re.fullmatch('[0-9a-f]{40}',
+                                        node.get('predecessor_sha') or '')
+                    or not re.fullmatch('[0-9a-f]{40}',
+                                        node.get('successor_sha') or '')
+                    or node['predecessor_sha'] == node['successor_sha']):
+                raise ReleaseContractError(
+                    'RELEASE_TOPOLOGY_SUPERSEDED_GOVERNANCE_INVALID'
+                )
+    return {
+        'status': 'PASS',
+        'release_id': release_id,
+        'nodes': len(nodes),
+        'semantic_roles': sorted({node['role'] for node in nodes}),
+    }
+
+
+def validate_release_infra_compatibility(
+        *, plan, plan_sha256, journal, current_runtime_journal_sha256,
+        freeze_prepared_journal_sha256, topology, fingerprints,
+        status_doc, safe_baseline_release_id, consumer_manifest,
+        identity_projection, platform_results,
+        expected_source_registry_sha256=None):
+    """Run the real release contracts as a side-effect-free qualification gate."""
+    if (not isinstance(plan, dict)
+            or not re.fullmatch('[0-9a-f]{64}', plan_sha256 or '')
+            or not re.fullmatch('[0-9a-f]{64}',
+                                current_runtime_journal_sha256 or '')
+            or not isinstance(status_doc, dict)
+            or status_doc.get('state') != 'COMPLETE'
+            or status_doc.get('current_release_id') != safe_baseline_release_id):
+        raise PreMutationAbort('RELEASE_INFRA_SAFE_BASELINE_INVALID')
+    if current_runtime_journal_sha256 != runtime_journal_sha256(journal):
+        raise PreMutationAbort('RELEASE_INFRA_CURRENT_RUNTIME_JOURNAL_SHA_INVALID')
+    if not re.fullmatch('[0-9a-f]{64}', expected_source_registry_sha256 or ''):
+        raise PreMutationAbort('RELEASE_INFRA_SOURCE_REGISTRY_BINDING_INVALID')
+    topology_result = validate_release_topology(
+        topology, release_id=plan['release_id'],
+    )
+    fingerprint_results = []
+    if not isinstance(fingerprints, list) or not fingerprints:
+        raise PreMutationAbort('RELEASE_INFRA_FINGERPRINTS_REQUIRED')
+    for pair in fingerprints:
+        if not isinstance(pair, dict) or set(pair) != {'frozen', 'observed'}:
+            raise PreMutationAbort('RELEASE_INFRA_FINGERPRINT_INVALID')
+        fingerprint_results.append(validate_freeze_fingerprint_compatibility(
+            pair['frozen'], pair['observed'],
+        ))
+    if journal.get('state') == 'PREPARED':
+        if current_runtime_journal_sha256 != freeze_prepared_journal_sha256:
+            raise PreMutationAbort('RELEASE_INFRA_RUNTIME_LINEAGE_INVALID')
+        lineage_result = {
+            'status': 'PASS', 'runtime_state': 'PREPARED',
+            'transition_count': 0,
+        }
+    else:
+        try:
+            lineage_result = validate_runtime_journal_lineage(
+                journal, plan, freeze_prepared_journal_sha256,
+                plan_sha256=plan_sha256,
+            )
+        except ReleaseContractError as exc:
+            raise PreMutationAbort(
+                'RELEASE_INFRA_RUNTIME_LINEAGE_INVALID'
+            ) from exc
+
+    from .consumer_manifest import validate_consumer_manifest
+    from .consumer_projection import validate_player_identity_consumer_projection
+    from .consumer_acceptance import evaluate_consumer_closure_acceptance
+    manifest_result = validate_consumer_manifest(
+        consumer_manifest,
+        expected_release_id=status_doc['current_release_id'],
+        expected_product_version=consumer_manifest.get('product_version'),
+        expected_code_commit=consumer_manifest.get('code_commit'),
+    )
+    projection_result = validate_player_identity_consumer_projection(
+        identity_projection,
+        expected_release_id=status_doc['current_release_id'],
+        expected_product_version=consumer_manifest.get('product_version'),
+        expected_code_commit=consumer_manifest.get('code_commit'),
+        expected_source_registry_sha256=expected_source_registry_sha256,
+    )
+    if (not isinstance(platform_results, dict)
+            or set(platform_results)
+            != {'ChatGPT', 'Gemini Notebook', 'WorkBuddy'}):
+        raise PreMutationAbort('RELEASE_INFRA_CONSUMER_RESULTS_INVALID')
+    acceptance_result = evaluate_consumer_closure_acceptance(
+        status_doc=status_doc,
+        consumer_manifest=consumer_manifest,
+        identity_projection=identity_projection,
+        chatgpt_result=platform_results['ChatGPT'],
+        gemini_result=platform_results['Gemini Notebook'],
+        workbuddy_result=platform_results['WorkBuddy'],
+        expected_source_registry_sha256=expected_source_registry_sha256,
+    )
+    if acceptance_result['status'] != 'PASS':
+        raise PreMutationAbort('RELEASE_INFRA_CONSUMER_ACCEPTANCE_INVALID')
+    return {
+        'classification': 'RELEASE_INFRA_COMPATIBILITY_PREFLIGHT_PASS',
+        'status': 'PASS',
+        'safe_baseline_release_id': safe_baseline_release_id,
+        'topology': topology_result,
+        'fingerprints': fingerprint_results,
+        'runtime_lineage': lineage_result,
+        'consumer_manifest': manifest_result,
+        'identity_projection': projection_result,
+        'consumer_acceptance': acceptance_result,
+        'production_mutation_count': 0,
+        'release_status_mutation_count': 0,
+    }
 
 
 def snapshot(drive, file_id, mode='binary'):
@@ -601,6 +955,9 @@ def publish(drive, root, single_writer=False, execution_authority=None):
         plan,journal=read(root/'plan.json'),read(root/'journal.json')
         authority = read_execution_authority(drive, execution_authority)
         security_preflight(root, plan, authority)
+        _upgrade_governed_legacy_runtime_lineage(
+            root, plan, journal, authority,
+        )
         release_execution_sha = (
             authority['value']['release_execution_sha'] if authority else
             (plan.get('closure') or {}).get('code_commit') or plan.get('code_commit')
@@ -652,6 +1009,13 @@ def publish(drive, root, single_writer=False, execution_authority=None):
         security_preflight(root, plan, current_authority)
         stage('publish','preflight passed')
         state = journal['state']
+        if state == 'FAILED' and journal.get('failed_from') in {
+            'PUBLISHING', 'VERIFYING',
+        }:
+            _transition_runtime_journal(
+                root, plan, journal, journal['failed_from'],
+            )
+            state = journal['state']
         pending_states = {'ARCHIVE_COMPLETE','PUBLISHING','VERIFYING'}
         if state not in {'PREPARED','ARCHIVING',*pending_states}:
             status=json.loads(drive.get(plan['status_id']))
@@ -661,8 +1025,8 @@ def publish(drive, root, single_writer=False, execution_authority=None):
         previous = journal.get('previous_snapshot')
         if state in ('PREPARED', 'ARCHIVING'):
             if state == 'PREPARED':
-                validate_state_transition('PREPARED','ARCHIVING')
-            journal.update(state='ARCHIVING', uploaded={}, inflight=None)
+                journal.update(uploaded={}, inflight=None)
+                _transition_runtime_journal(root, plan, journal, 'ARCHIVING')
             if authority:
                 journal['execution_authority'] = {
                     'file_id': authority['file_id'],
@@ -684,9 +1048,9 @@ def publish(drive, root, single_writer=False, execution_authority=None):
         check_dependencies(drive, plan)
         if state in ('PREPARED', 'ARCHIVING'):
             require_archive_status_unchanged(drive, plan)
-            validate_state_transition('ARCHIVING','ARCHIVE_COMPLETE')
-            journal['state']='ARCHIVE_COMPLETE'
-            save(root/'journal.json',journal)
+            _transition_runtime_journal(
+                root, plan, journal, 'ARCHIVE_COMPLETE',
+            )
             version_meta = plan.get('status_before_meta') or {}
             if version_meta.get('modifiedTime'):
                 append_archive_checkpoint(
@@ -699,17 +1063,27 @@ def publish(drive, root, single_writer=False, execution_authority=None):
                 )
         try:
             if state not in {'PUBLISHING','VERIFYING'}:
-                validate_state_transition('ARCHIVE_COMPLETE','PUBLISHING')
-                journal['state']='PUBLISHING'
-                save(root/'journal.json',journal)
+                _transition_runtime_journal(root, plan, journal, 'PUBLISHING')
                 set_status(
                     drive, plan, 'PUBLISHING', previous,
                     release_execution_sha,
                 )
             else:
                 current_status=json.loads(drive.get(plan['status_id']))
-                if current_status.get('pending_release_id')!=plan['release_id'] and current_status.get('current_release_id')!=plan['release_id']:
-                    raise RuntimeError('Publication status no longer refers to this release')
+                if (current_status.get('pending_release_id') != plan['release_id']
+                        and current_status.get('current_release_id')
+                        != plan['release_id']):
+                    if (state == 'PUBLISHING'
+                            and digest(drive.get(plan['status_id']))
+                            == plan['status_before_hash']):
+                        set_status(
+                            drive, plan, 'PUBLISHING', previous,
+                            release_execution_sha,
+                        )
+                    else:
+                        raise RuntimeError(
+                            'Publication status no longer refers to this release'
+                        )
             for index,e in enumerate(plan['entries'],1):
                 stage('publish',f'{index}/{len(plan["entries"])} {e["name"]}')
                 data=payload(drive,e)
@@ -746,9 +1120,10 @@ def publish(drive, root, single_writer=False, execution_authority=None):
                     raise exc
                 journal.setdefault('uploaded',{})[e['id']]=True; journal['inflight']=None
                 save(root/'journal.json',journal)
-            if state == 'PUBLISHING':
-                validate_state_transition('PUBLISHING','VERIFYING')
-            journal['state']='VERIFYING'; save(root/'journal.json',journal)
+            if journal['state'] == 'PUBLISHING':
+                _transition_runtime_journal(root, plan, journal, 'VERIFYING')
+            elif journal['state'] != 'VERIFYING':
+                raise ReleaseContractError('RUNTIME_JOURNAL_STATE_INVALID')
             verify(drive,root,execution_authority)
             check_dependencies(drive,plan)
             for e in plan['entries']:relocate(drive,e,e.get('publish_parent'))
@@ -757,7 +1132,6 @@ def publish(drive, root, single_writer=False, execution_authority=None):
                     drive, root, plan, candidate=False, relocated=True,
                     execution_authority=authority,
                 )
-            validate_state_transition('VERIFYING','COMPLETE')
             set_status(
                 drive, plan, 'COMPLETE', previous,
                 release_execution_sha,
@@ -767,7 +1141,7 @@ def publish(drive, root, single_writer=False, execution_authority=None):
                     drive, root, plan, candidate=False, relocated=True,
                     final=True, execution_authority=authority,
                 )
-            journal['state']='COMPLETE'; save(root/'journal.json',journal)
+            _transition_runtime_journal(root, plan, journal, 'COMPLETE')
             stage('publish','COMPLETE')
         except BaseException:
             journal['failed_from']=journal.get('state')
@@ -1027,7 +1401,12 @@ def _post_freeze_evidence_bytes(drive, item):
 
 def _candidate_hash_set(plan):
     from .evidence_ledger import canonical_bytes
-    values = {entry['logical_key']: entry['after_hash'] for entry in plan['entries']}
+    values = {
+        entry.get('logical_key') or entry['id']: entry['after_hash']
+        for entry in plan['entries']
+    }
+    if len(values) != len(plan['entries']):
+        raise ReleaseContractError('CANDIDATE_HASH_SET_DUPLICATE')
     return digest(canonical_bytes(values))
 
 
@@ -1426,9 +1805,6 @@ def validate_post_freeze_release_evidence(
     journal_raw = (root / 'journal.json').read_bytes()
     journal_sha = digest(journal_raw)
     journal = json.loads(journal_raw)
-    if execution_authority:
-        journal_sha = execution_authority['value']['journal_sha256']
-        journal = {'state': execution_authority['value']['journal_state']}
     code_commit = plan['closure']['code_commit']
     candidate_hash = _candidate_hash_set(plan)
     baseline_status = {
@@ -1488,13 +1864,24 @@ def validate_post_freeze_release_evidence(
         raise ValueError('POST_FREEZE_ACCEPTANCE_BINDING_INVALID')
 
     runtime_state = journal.get('state')
-    if runtime_state != 'PREPARED':
-        if runtime_state not in RELEASE_STATES:
-            raise ValueError('RUNTIME_TRANSACTION_STATE_INVALID')
-        prep_idx = RELEASE_STATE_SEQUENCE.index('PREPARED')
-        curr_idx = RELEASE_STATE_SEQUENCE.index(runtime_state)
-        if curr_idx < prep_idx:
-            raise ValueError('RUNTIME_TRANSACTION_STATE_REGRESSION')
+    try:
+        if runtime_state == 'PREPARED':
+            if journal_sha != freeze_prepared_journal_sha:
+                raise ReleaseContractError('RUNTIME_JOURNAL_FREEZE_ORIGIN_INVALID')
+            runtime_lineage = {
+                'status': 'PASS',
+                'freeze_prepared_journal_sha256': freeze_prepared_journal_sha,
+                'runtime_lineage_tip_sha256': freeze_prepared_journal_sha,
+                'runtime_state': 'PREPARED',
+                'transition_count': 0,
+            }
+        else:
+            runtime_lineage = validate_runtime_journal_lineage(
+                journal, plan, freeze_prepared_journal_sha,
+                plan_sha256=plan_sha,
+            )
+    except ReleaseContractError as exc:
+        raise ValueError('POST_FREEZE_RUNTIME_LINEAGE_INVALID') from exc
 
     candidate = {
         'candidate_hash_set_sha256': candidate_hash,
@@ -1583,6 +1970,9 @@ def validate_post_freeze_release_evidence(
         'acceptance_id': acceptance_item['id'],
         'readiness_id': readiness_item['id'],
         'authority_id': authority_item['id'],
+        'freeze_prepared_journal_sha256': freeze_prepared_journal_sha,
+        'current_runtime_journal_sha256': journal_sha,
+        'runtime_lineage': runtime_lineage,
     }
 
 

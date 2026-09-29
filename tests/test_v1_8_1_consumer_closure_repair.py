@@ -35,6 +35,7 @@ from cba_kb.current_state import (
     target_metadata,
     validate_current_state,
 )
+from cba_kb.evidence_ledger import canonical_bytes
 from cba_kb.player_identity import new_registry
 
 from test_canonical_registry import SHA, manifest, registry
@@ -126,6 +127,7 @@ def test_reproduce_original_consumer_failure_before_repair():
         status_doc=status,
         consumer_manifest=None,
         identity_projection=None,
+        expected_source_registry_sha256=None,
     )
     assert acceptance_result["status"] == "FAIL"
     assert acceptance_result["matrix"]["IDENTITY_HAPPY_PATH"] == "FAIL"
@@ -150,6 +152,7 @@ def test_repaired_consumer_closure_succeeds():
     )
     val_proj = validate_player_identity_consumer_projection(
         proj, expected_release_id=RELEASE_ID, expected_product_version=PRODUCT_VERSION,
+        expected_source_registry_sha256=proj["source_registry_sha256"],
     )
     assert val_proj["status"] == "PASS"
 
@@ -167,6 +170,7 @@ def test_repaired_consumer_closure_succeeds():
     }
     identity_entry = {
         "id": "f-proj", "name": "player_identity_consumer.json", "sha256": proj["projection_sha256"], "mime": "application/json", "authority": "derived", "rights": "public",
+        "source_registry_sha256": proj["source_registry_sha256"],
     }
     manifest_data = build_consumer_manifest(
         release_id=RELEASE_ID, product_version=PRODUCT_VERSION, code_commit=SHA,
@@ -190,6 +194,8 @@ def test_repaired_consumer_closure_succeeds():
     # 5. Full acceptance matrix passes
     acceptance = evaluate_consumer_closure_acceptance(
         status_doc=status, consumer_manifest=manifest_data, identity_projection=proj,
+        chatgpt_result="PASS", gemini_result="PASS", workbuddy_result="PASS",
+        expected_source_registry_sha256=proj["source_registry_sha256"],
     )
     assert acceptance["status"] == "PASS"
 
@@ -302,7 +308,10 @@ def test_identity_projection_negative_private_registry_leakage_prevented():
     # Injecting private note fails validation
     proj["players"][0]["notes"] = "private admin note"
     with pytest.raises(ConsumerProjectionError, match="PRIVATE_REGISTRY_LEAKAGE"):
-        validate_player_identity_consumer_projection(proj)
+        validate_player_identity_consumer_projection(
+            proj,
+            expected_source_registry_sha256=proj["source_registry_sha256"],
+        )
 
 
 def test_identity_projection_negative_tampered_hash_fails():
@@ -312,7 +321,10 @@ def test_identity_projection_negative_tampered_hash_fails():
     )
     proj["projection_sha256"] = "0" * 64
     with pytest.raises(ConsumerProjectionError, match="IDENTITY_PROJECTION_HASH_MISMATCH"):
-        validate_player_identity_consumer_projection(proj)
+        validate_player_identity_consumer_projection(
+            proj,
+            expected_source_registry_sha256=proj["source_registry_sha256"],
+        )
 
 
 # ==============================================================================
@@ -333,6 +345,7 @@ def test_consumer_manifest_full_lifecycle():
     }
     identity_entry = {
         "id": "f-proj", "name": "player_identity_consumer.json", "sha256": "7" * 64, "mime": "application/json", "authority": "derived", "rights": "public",
+        "source_registry_sha256": "8" * 64,
     }
     manifest_data = build_consumer_manifest(
         release_id=RELEASE_ID, product_version=PRODUCT_VERSION, code_commit=SHA,
@@ -343,6 +356,21 @@ def test_consumer_manifest_full_lifecycle():
     )
     assert result["status"] == "PASS"
     assert result["entries_validated"] == 8
+    for category, key, invalid_authority in (
+        ("control", "readme", "canonical"),
+        ("facts", "master", "arbitrary"),
+        ("identity", "player_identity_projection", "control"),
+    ):
+        tampered = json.loads(json.dumps(manifest_data))
+        tampered["consumer_surfaces"][category][key][
+            "authority"
+        ] = invalid_authority
+        tampered["manifest_sha256"] = digest(canonical_bytes({
+            field: value for field, value in tampered.items()
+            if field != "manifest_sha256"
+        }))
+        with pytest.raises(ConsumerManifestError, match="AUTHORITY_INVALID"):
+            validate_consumer_manifest(tampered)
 
 
 def test_consumer_manifest_missing_control_surface_fails():
@@ -354,7 +382,7 @@ def test_consumer_manifest_missing_control_surface_fails():
         build_consumer_manifest(
             release_id=RELEASE_ID, product_version=PRODUCT_VERSION, code_commit=SHA,
             surfaces=surfaces, facts={"master": {"id": "f", "name": "m", "sha256": "0" * 64, "mime": "t", "authority": "canonical", "rights": "public"}},
-            identity_projection={"id": "i", "name": "p", "sha256": "0" * 64, "mime": "t", "authority": "derived", "rights": "public"},
+            identity_projection={"id": "i", "name": "p", "sha256": "0" * 64, "mime": "t", "authority": "derived", "rights": "public", "source_registry_sha256": "8" * 64},
         )
 
 
@@ -372,6 +400,7 @@ def test_consumer_manifest_unreadable_artifact_fails_validation():
     }
     identity_entry = {
         "id": "f-proj", "name": "player_identity_consumer.json", "sha256": "7" * 64, "mime": "application/json", "authority": "derived", "rights": "public",
+        "source_registry_sha256": "8" * 64,
     }
     manifest_data = build_consumer_manifest(
         release_id=RELEASE_ID, product_version=PRODUCT_VERSION, code_commit=SHA,
@@ -404,6 +433,7 @@ def test_external_surface_freshness_bootstrap_contract():
     }
     identity_entry = {
         "id": "f-proj", "name": "player_identity_consumer.json", "sha256": "7" * 64, "mime": "application/json", "authority": "derived", "rights": "public",
+        "source_registry_sha256": "8" * 64,
     }
     manifest_data = build_consumer_manifest(
         release_id=RELEASE_ID, product_version=PRODUCT_VERSION, code_commit=SHA,
@@ -440,6 +470,7 @@ def test_consumer_acceptance_matrix_all_mandatory_rows_pass():
     }
     identity_entry = {
         "id": "f-proj", "name": "player_identity_consumer.json", "sha256": proj["projection_sha256"], "mime": "application/json", "authority": "derived", "rights": "public",
+        "source_registry_sha256": proj["source_registry_sha256"],
     }
     manifest_data = build_consumer_manifest(
         release_id=RELEASE_ID, product_version=PRODUCT_VERSION, code_commit=SHA,
@@ -454,8 +485,60 @@ def test_consumer_acceptance_matrix_all_mandatory_rows_pass():
         chatgpt_result="PASS",
         gemini_result="PASS",
         workbuddy_result="PASS",
+        expected_source_registry_sha256=proj["source_registry_sha256"],
     )
     assert eval_result["status"] == "PASS"
+
+    missing_binding = evaluate_consumer_closure_acceptance(
+        status_doc=status,
+        consumer_manifest=manifest_data,
+        identity_projection=proj,
+        chatgpt_result="PASS",
+        gemini_result="PASS",
+        workbuddy_result="PASS",
+    )
+    assert missing_binding["status"] == "FAIL"
+
+    mismatched_binding = evaluate_consumer_closure_acceptance(
+        status_doc=status,
+        consumer_manifest=manifest_data,
+        identity_projection=proj,
+        chatgpt_result="PASS",
+        gemini_result="PASS",
+        workbuddy_result="PASS",
+        expected_source_registry_sha256="f" * 64,
+    )
+    assert mismatched_binding["status"] == "FAIL"
+
+    # Projection and Manifest can be rewritten into a self-consistent pair,
+    # but neither controls the independently supplied source-registry binding.
+    forged_projection = json.loads(json.dumps(proj))
+    forged_manifest = json.loads(json.dumps(manifest_data))
+    forged_source_sha = "f" * 64
+    forged_projection["source_registry_sha256"] = forged_source_sha
+    forged_projection["projection_sha256"] = digest(canonical_bytes({
+        key: value for key, value in forged_projection.items()
+        if key != "projection_sha256"
+    }))
+    forged_identity_entry = forged_manifest["consumer_surfaces"]["identity"][
+        "player_identity_projection"
+    ]
+    forged_identity_entry["source_registry_sha256"] = forged_source_sha
+    forged_identity_entry["sha256"] = forged_projection["projection_sha256"]
+    forged_manifest["manifest_sha256"] = digest(canonical_bytes({
+        key: value for key, value in forged_manifest.items()
+        if key != "manifest_sha256"
+    }))
+    forged_result = evaluate_consumer_closure_acceptance(
+        status_doc=status,
+        consumer_manifest=forged_manifest,
+        identity_projection=forged_projection,
+        chatgpt_result="PASS",
+        gemini_result="PASS",
+        workbuddy_result="PASS",
+        expected_source_registry_sha256=proj["source_registry_sha256"],
+    )
+    assert forged_result["status"] == "FAIL"
     matrix = eval_result["matrix"]
     required_rows = [
         "IDENTITY_SEMANTIC_SAFETY",
@@ -479,23 +562,97 @@ def test_consumer_acceptance_matrix_all_mandatory_rows_pass():
     assert eval_result["platforms"]["Gemini Notebook"] == "PASS"
     assert eval_result["platforms"]["WorkBuddy"] == "PASS"
 
+    # Every governed external result is explicit; missing/null/unknown never
+    # inherits PASS from the other consumers.
+    for overrides in (
+        {"chatgpt_result": None},
+        {"gemini_result": "UNKNOWN"},
+        {"workbuddy_result": "FAIL"},
+    ):
+        platform_values = {
+            "chatgpt_result": "PASS",
+            "gemini_result": "PASS",
+            "workbuddy_result": "PASS",
+            **overrides,
+        }
+        failed = evaluate_consumer_closure_acceptance(
+            status_doc=status,
+            consumer_manifest=manifest_data,
+            identity_projection=proj,
+            **platform_values,
+            expected_source_registry_sha256=proj["source_registry_sha256"],
+        )
+        assert failed["status"] == "FAIL"
+
+    # Safe self-reported flags and a recomputed self-hash cannot hide semantic
+    # projection tampering because Acceptance invokes the full validator.
+    tampered = json.loads(json.dumps(proj))
+    tampered["summary"]["same_count"] += 1
+    tampered["projection_sha256"] = digest(canonical_bytes({
+        key: value for key, value in tampered.items()
+        if key != "projection_sha256"
+    }))
+    manifest_tampered = json.loads(json.dumps(manifest_data))
+    manifest_tampered["consumer_surfaces"]["identity"][
+        "player_identity_projection"
+    ]["sha256"] = tampered["projection_sha256"]
+    manifest_tampered["manifest_sha256"] = digest(canonical_bytes({
+        key: value for key, value in manifest_tampered.items()
+        if key != "manifest_sha256"
+    }))
+    rejected = evaluate_consumer_closure_acceptance(
+        status_doc=status,
+        consumer_manifest=manifest_tampered,
+        identity_projection=tampered,
+        chatgpt_result="PASS",
+        gemini_result="PASS",
+        workbuddy_result="PASS",
+        expected_source_registry_sha256=proj["source_registry_sha256"],
+    )
+    assert rejected["status"] == "FAIL"
+    assert rejected["matrix"]["IDENTITY_SEMANTIC_SAFETY"] == "FAIL"
+
 
 # ==============================================================================
 # 7. Section 7 & 8: POST-FREEZE ACCEPTANCE BINDING MODEL
 # ==============================================================================
 
-def test_post_freeze_acceptance_binding_model_separates_freeze_from_runtime(tmp_path):
-    """Verify that acceptance binds freeze-origin PREPARED journal sha and state,
-    and post-freeze validation succeeds across runtime state progression (ARCHIVING,
-    PUBLISHING, VERIFYING, COMPLETE) without false mismatches."""
-    from cba_kb.release import validate_post_freeze_release_evidence
+def test_exact_v181_2_failure_regression_and_corrected_lineage(tmp_path):
+    """Reproduce the frozen v1.8.1-2 failure facts, then prove the repair.
 
-    freeze_sha = "c045ce56126ba52a5b942b0a196e9ee4749b1199314161f2005f869d777f079c"
+    The original runtime journal bytes are unavailable.  Exact historical
+    hashes remain immutable inputs; a clearly synthetic legal lineage proves
+    that only the erroneous PREPARED=current SHA equality is removed.
+    """
+    from cba_kb.release import (
+        _runtime_lineage_event,
+        _runtime_transaction_binding,
+        validate_post_freeze_release_evidence,
+    )
+
+    historical = {
+        "release_id": "v1.8.1-2",
+        "safe_current_release_id": "v1.8.1-1",
+        "failure_state": "VERIFYING",
+        "failure_classification": "POST_FREEZE_ACCEPTANCE_BINDING_INVALID",
+        "prepared_sha256": "c045ce56126ba52a5b942b0a196e9ee4749b1199314161f2005f869d777f079c",
+        "failed_runtime_sha256": "6e2be9f8a03c637c834503501f67a3cff0c3781babbba6af253f724b9ba70164",
+        "target_verification_exact_hash_mime_passed": 279,
+        "target_verification_total": 279,
+    }
+    assert historical["failure_state"] == "VERIFYING"
+    assert historical["target_verification_exact_hash_mime_passed"] == 279
+    assert historical["target_verification_total"] == 279
+    with pytest.raises(ValueError, match="POST_FREEZE_ACCEPTANCE_BINDING_INVALID"):
+        if historical["failed_runtime_sha256"] != historical["prepared_sha256"]:
+            raise ValueError(historical["failure_classification"])
+
+    freeze_sha = historical["prepared_sha256"]
     plan = {
-        "release_id": "v1.8.1-3",
+        "release_id": historical["release_id"],
         "entries": [{"id": "t1", "after_hash": "a" * 64, "logical_key": "k1"}],
         "closure": {"code_commit": SHA},
-        "previous_release_id": "v1.8.1-1",
+        "previous_release_id": historical["safe_current_release_id"],
         "status_before_hash": "b" * 64,
     }
     from cba_kb.release import _candidate_hash_set
@@ -518,7 +675,7 @@ def test_post_freeze_acceptance_binding_model_separates_freeze_from_runtime(tmp_
         "schema_version": 1,
         "classification": "V181_CONSUMER_ACCEPTANCE_PASS",
         "status": "PASS",
-        "release_id": "v1.8.1-3",
+        "release_id": historical["release_id"],
         "main_sha": SHA,
         "candidate": freeze_candidate,
         "golden": {"schema_version": 2, "version": "v2"},
@@ -530,14 +687,14 @@ def test_post_freeze_acceptance_binding_model_separates_freeze_from_runtime(tmp_
         "schema_version": 1,
         "classification": "V181_RELEASE_READINESS_PASS",
         "status": "PASS",
-        "release_id": "v1.8.1-3",
+        "release_id": historical["release_id"],
         "main_sha": SHA,
         "candidate": freeze_candidate,
         "consumer_acceptance": {
             "evidence_sha256": digest(acc_raw),
             "ChatGPT": "PASS", "Gemini Notebook": "PASS", "WorkBuddy": "PASS",
         },
-        "production_baseline": {"state": "COMPLETE", "current_release_id": "v1.8.1-1", "release_status_sha256": "b" * 64},
+        "production_baseline": {"state": "COMPLETE", "current_release_id": historical["safe_current_release_id"], "release_status_sha256": "b" * 64},
         "namespace_audit": {"status": "PASS", "violations": 0},
         "production_mutation": 0, "publish": "NOT_RUN", "restore": "NOT_RUN",
         "identity_invariants": {
@@ -554,7 +711,7 @@ def test_post_freeze_acceptance_binding_model_separates_freeze_from_runtime(tmp_
         "classification": "V181_PRODUCTION_GO",
         "status": "APPROVED",
         "approved_by": "HUMAN",
-        "release_id": "v1.8.1-3",
+        "release_id": historical["release_id"],
         "main_sha": SHA,
         "release_readiness_file_id": "read-id",
         "release_readiness_sha256": digest(read_raw),
@@ -564,7 +721,7 @@ def test_post_freeze_acceptance_binding_model_separates_freeze_from_runtime(tmp_
         "journal_sha256": freeze_sha,
         "journal_state": "PREPARED",
         "production_baseline_state": "COMPLETE",
-        "production_baseline_release_id": "v1.8.1-1",
+        "production_baseline_release_id": historical["safe_current_release_id"],
         "production_baseline_release_status_sha256": "b" * 64,
         "publish_authorized": "true",
         "pre_publish_canary_required": "true",
@@ -597,16 +754,52 @@ def test_post_freeze_acceptance_binding_model_separates_freeze_from_runtime(tmp_
     mock_drive = MockDrive()
     items = [mock_drive.meta("acc-id"), mock_drive.meta("read-id"), mock_drive.meta("auth-id")]
 
-    # Runtime journal advances through lifecycle phases; validation must PASS because freeze-origin is preserved
-    for runtime_state in ("PREPARED", "ARCHIVING", "PUBLISHING", "VERIFYING", "COMPLETE"):
+    # Runtime journal advances through lifecycle phases; validation must PASS because
+    # the exact historical PREPARED origin is preserved in a contiguous lineage.
+    transaction = _runtime_transaction_binding(plan, plan_sha)
+    lineage = []
+    previous_sha = freeze_sha
+    previous_state = "PREPARED"
+    for runtime_state in (
+        "ARCHIVING", "ARCHIVE_COMPLETE", "PUBLISHING", "VERIFYING", "COMPLETE",
+    ):
+        event = _runtime_lineage_event(
+            len(lineage) + 1, previous_sha, previous_state,
+            runtime_state, transaction,
+        )
+        lineage.append(event)
         runtime_journal = {
             "state": runtime_state,
             "inflight": None,
-            "uploaded": {"t1": True} if runtime_state != "PREPARED" else {},
+            "uploaded": {"t1": True},
+            "freeze_prepared_journal_sha256": freeze_sha,
+            "runtime_transaction": transaction,
+            "runtime_lineage": list(lineage),
         }
         (root / "journal.json").write_bytes(json.dumps(runtime_journal).encode())
         res = validate_post_freeze_release_evidence(mock_drive, root, plan, items)
         assert res["status"] == "PASS"
+        assert res["freeze_prepared_journal_sha256"] == freeze_sha
+        assert res["current_runtime_journal_sha256"] != freeze_sha
+        previous_sha, previous_state = event["event_sha256"], runtime_state
+
+    valid_runtime_journal = json.loads(json.dumps(runtime_journal))
+    for tamper in ("origin", "history", "transaction"):
+        broken = json.loads(json.dumps(valid_runtime_journal))
+        if tamper == "origin":
+            broken["freeze_prepared_journal_sha256"] = "0" * 64
+        elif tamper == "history":
+            broken["runtime_lineage"][1]["previous_sha256"] = "0" * 64
+        else:
+            broken["runtime_transaction"]["release_id"] = "wrong-release"
+        (root / "journal.json").write_bytes(json.dumps(broken).encode())
+        with pytest.raises(ValueError, match="POST_FREEZE_RUNTIME_LINEAGE_INVALID"):
+            validate_post_freeze_release_evidence(
+                mock_drive, root, plan, items,
+            )
+    (root / "journal.json").write_bytes(
+        json.dumps(valid_runtime_journal).encode()
+    )
 
     # Negative: if candidate hash in acceptance drifts, fails closed
     bad_acceptance = dict(acceptance)
