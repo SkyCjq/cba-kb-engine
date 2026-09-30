@@ -1,10 +1,14 @@
 """Adversarial and boundary tests for REQ-190-STATEMENT-CLAIM-01.
 
-Validates:
-- Malformed inputs and schema rejections
-- Ambiguous identity and same-name safety
-- Status machine enforcement and unauthorized transitions
-- Rights boundaries and fail-closed protections
+Validates all required R1-R8 adversarial and negative test conditions:
+- Consumer target authorization mismatch & absence fails closed (R1)
+- Private locators / absolute paths / Drive URLs sanitization (R1)
+- Unresolved named speaker -> automatic Verification Queue routing (R2)
+- Ambiguous same-name subject -> unresolved + queue item, zero multi-UID assertion (R3)
+- Self-asserted reviewer string cannot promote strong Claim status (R4)
+- Valid evidence-bound reviewed transition preserves stable claim_id (R4, R8)
+- Arbitrary doc_id / content mismatch bypass fails closed (R5)
+- Research View UNKNOWN grain exists and fixed grains cannot be spoofed (R7)
 """
 from __future__ import annotations
 
@@ -27,11 +31,14 @@ from cba_kb.claim import (
     validate_relation_assertion,
 )
 from cba_kb.consumer_integration import (
+    ConsumerSafetyError,
     is_claim_publicly_exportable,
     is_statement_publicly_exportable,
     project_claims_for_consumer,
     project_statements_for_consumer,
 )
+from cba_kb.document_lane import doc_id as compute_doc_id
+from cba_kb.research_view import ResearchView
 from cba_kb.source_intake import (
     SourceIntakeError,
     normalize_source_payload,
@@ -42,6 +49,7 @@ from cba_kb.statement import (
     extract_statements_from_text,
     generate_statement_id,
     validate_statement,
+    verify_document_binding,
 )
 from cba_kb.verification_queue import (
     VerificationQueue,
@@ -138,7 +146,7 @@ def test_statement_adversarial_validation():
 
 def test_claim_adversarial_validation():
     valid_sid = "stmt_0123456789abcdef01234567"
-    valid_cid = generate_claim_id([valid_sid], "测试主张", "unverified")
+    valid_cid = generate_claim_id([valid_sid], "测试主张")
     valid_claim_dict = {
         "claim_id": valid_cid,
         "claim_text": "测试主张",
@@ -224,3 +232,239 @@ def test_source_intake_adversarial_validation():
             "normalized_document_ref": None,
             "intake_status": "accepted",
         })
+
+
+# ---------------------------------------------------------------------------
+# R1 Adversarial: Consumer target authorization & locator privacy
+# ---------------------------------------------------------------------------
+def test_consumer_target_authorization_mismatch_fails_closed():
+    doc_id = "doc_0123456789abcdef01234567"
+    actor = make_actor_ref("player", "顾全", "doc_1#L1", "P0042_GUQUAN_0001")
+    stmt = validate_statement({
+        "statement_id": "stmt_0123456789abcdef01234567",
+        "doc_id": doc_id,
+        "speaker_actor_ref": actor,
+        "subject_actor_refs": [],
+        "time_anchor": "2024-03-03",
+        "statement_text_or_controlled_excerpt": "防守第一",
+        "source_ref": "press_release",
+        "evidence_ref": "doc_1#L1",
+        "attribution_type": "structured_turn",
+        "rights": {"classification": "public", "public_export_allowed": True, "evidence": ["cc"]},
+        "provenance": {"source": "interview"},
+        "extraction_status": "accepted",
+    })
+
+    # 1. Unauthorized target raises ConsumerSafetyError
+    with pytest.raises(ConsumerSafetyError, match="UNAUTHORIZED_TARGET"):
+        project_statements_for_consumer([stmt], target="UnauthorizedBot")
+
+    # 2. Absence of authorizations fails closed -> NOT_MATERIALIZED
+    exported, cap = project_statements_for_consumer([stmt], target="ChatGPT", authorizations=None)
+    assert len(exported) == 0
+    assert "NOT_MATERIALIZED" in cap
+
+    # 3. Mismatched doc_id in authorization -> excluded
+    auth_mismatch = [{
+        "doc_id": "doc_other_unrelated_doc_123456",
+        "target": "ChatGPT",
+        "allowed_scope": "statement_claim_research",
+        "authorization_basis": "PUBLIC",
+        "frozen_at": "2026-09-30T00:00:00Z",
+    }]
+    exported_mis, cap_mis = project_statements_for_consumer([stmt], target="ChatGPT", authorizations=auth_mismatch)
+    assert len(exported_mis) == 0
+    assert "NOT_MATERIALIZED" in cap_mis
+
+    # 4. Target mismatch in authorization -> excluded
+    auth_other_target = [{
+        "doc_id": doc_id,
+        "target": "Gemini Notebook",
+        "allowed_scope": "statement_claim_research",
+        "authorization_basis": "PUBLIC",
+        "frozen_at": "2026-09-30T00:00:00Z",
+    }]
+    exported_tgt, cap_tgt = project_statements_for_consumer([stmt], target="ChatGPT", authorizations=auth_other_target)
+    assert len(exported_tgt) == 0
+
+
+def test_private_locators_cannot_leak_to_consumer():
+    doc_id = "doc_0123456789abcdef01234567"
+    private_local_path = "/var/private/secrets/synthetic_sensitive_interview.txt"
+    private_drive_url = "https://docs.google.com/document/d/synthetic_private_drive_locator_doc_id_000000/edit"
+    
+    actor = make_actor_ref("player", "顾全", private_local_path, "P0042_GUQUAN_0001")
+    stmt = validate_statement({
+        "statement_id": "stmt_0123456789abcdef01234567",
+        "doc_id": doc_id,
+        "speaker_actor_ref": actor,
+        "subject_actor_refs": [actor],
+        "time_anchor": "2024-03-03",
+        "statement_text_or_controlled_excerpt": "防守第一",
+        "source_ref": private_drive_url,
+        "evidence_ref": f"{private_local_path}#line-42",
+        "attribution_type": "structured_turn",
+        "rights": {"classification": "public", "public_export_allowed": True, "evidence": ["cc"]},
+        "provenance": {
+            "private_path": private_local_path,
+            "raw_ref": private_drive_url,
+            "notes": f"Extracted from {private_local_path}",
+        },
+        "extraction_status": "accepted",
+    })
+
+    auth = [{
+        "doc_id": doc_id,
+        "target": "ChatGPT",
+        "allowed_scope": "statement_claim_research",
+        "authorization_basis": "PUBLIC",
+        "frozen_at": "2026-09-30T00:00:00Z",
+    }]
+
+    exported_stmts, _ = project_statements_for_consumer([stmt], target="ChatGPT", authorizations=auth)
+    assert len(exported_stmts) == 1
+    out_stmt = exported_stmts[0]
+
+    # Verify no local path or drive url leaked anywhere in exported JSON
+    serialized = json.dumps(out_stmt)
+    assert "/var/private/" not in serialized
+    assert "synthetic_sensitive_interview" not in serialized
+    assert "docs.google.com" not in serialized
+    assert "private_path" not in serialized
+    assert "raw_ref" not in serialized
+
+
+# ---------------------------------------------------------------------------
+# R3 Adversarial: Same-name subject ambiguity
+# ---------------------------------------------------------------------------
+def test_same_name_subject_ambiguity_no_multi_uid_assertion():
+    registry = {
+        "schema_version": 1,
+        "identity_version": "v1.8",
+        "players": [
+            {"schema_version": 1, "player_uid": "P_LX_1", "canonical_name": "李想", "active": True},
+            {"schema_version": 1, "player_uid": "P_LX_2", "canonical_name": "李想", "active": True},
+        ],
+        "aliases": [],
+    }
+
+    # Text containing subject mention of "李想"
+    text = "顾全：李想最近在训练中非常刻苦，展现了出色的状态。"
+    doc_id = compute_doc_id(text)
+    result = extract_statements_from_text(text, doc_id=doc_id, identity_registry=registry)
+    
+    assert len(result) == 1
+    s = result[0]
+    # Invariant: One ambiguous raw name must not assert multiple canonical player identities
+    assert len(s["subject_actor_refs"]) == 1
+    sub = s["subject_actor_refs"][0]
+    assert sub["kind"] == "unresolved"
+    assert sub["id"] is None
+    assert sub["raw_name"] == "李想"
+
+    # Must automatically emit Verification Queue item for ambiguous actor (R2, R3)
+    assert len(result.verification_items) >= 1
+    assert any(v["reason_code"] == "AMBIGUOUS_SAME_NAME_ACTOR" for v in result.verification_items)
+
+
+# ---------------------------------------------------------------------------
+# R4 Adversarial: Claim transition authority enforcement
+# ---------------------------------------------------------------------------
+def test_claim_transition_authority_rejection():
+    sid = "stmt_0123456789abcdef01234567"
+    cid = generate_claim_id([sid], "防守带动进攻")
+    claim = validate_claim({
+        "claim_id": cid,
+        "claim_text": "防守带动进攻",
+        "supporting_statement_ids": [sid],
+        "status": "unverified",
+        "evidence_refs": ["doc_1#L1"],
+        "review_reason": None,
+        "provenance": {"creator": "test"},
+    })
+
+    # 1. Bare string reviewer rejected
+    with pytest.raises(ClaimError, match="TRANSITION_AUTHORITY_REQUIRED"):
+        transition_claim_status(claim, "corroborated", reviewed_by="llm_self_asserted")
+
+    # 2. Unauthorized authority kind rejected
+    with pytest.raises(ClaimError, match="UNAUTHORIZED_AUTHORITY_KIND"):
+        transition_claim_status(
+            claim,
+            "corroborated",
+            transition_authority={
+                "decision_ref": "DEC-1",
+                "authority_kind": "llm_self_asserted",
+                "reviewer": "bot",
+                "prior_claim_id": cid,
+                "prior_status": "unverified",
+                "target_status": "corroborated",
+                "supporting_evidence_refs": ["doc_1#L1"],
+            },
+        )
+
+    # 3. Disallowed reviewer name rejected
+    with pytest.raises(ClaimError, match="INVALID_REVIEWER_AUTHORITY"):
+        transition_claim_status(
+            claim,
+            "corroborated",
+            transition_authority={
+                "decision_ref": "DEC-1",
+                "authority_kind": "human_review",
+                "reviewer": "unreviewed",
+                "prior_claim_id": cid,
+                "prior_status": "unverified",
+                "target_status": "corroborated",
+                "supporting_evidence_refs": ["doc_1#L1"],
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# R5 Adversarial: Document binding bypass defense
+# ---------------------------------------------------------------------------
+def test_document_binding_bypass_fails():
+    text = "孟铎：我们从小一起长大。"
+    correct_doc_id = compute_doc_id(text)
+    bogus_doc_id = "doc_arbitrary_attacker_supplied_id"
+
+    # Bypassing document binding with arbitrary mismatching doc_id must fail closed
+    with pytest.raises(StatementError, match="DOC_ID_CONTENT_MISMATCH"):
+        verify_document_binding(text, bogus_doc_id)
+
+    with pytest.raises(StatementError, match="DOC_ID_CONTENT_MISMATCH"):
+        extract_statements_from_text(text, doc_id=bogus_doc_id)
+
+
+# ---------------------------------------------------------------------------
+# R7 Adversarial: Research View grain integrity & spoofing defense
+# ---------------------------------------------------------------------------
+def test_research_view_grain_spoofing_defense():
+    # Attempt to spoof CLAIM inside canonical facts
+    spoofed_fact = {
+        "semantic_grain": "CLAIM",
+        "season": "2024-2025",
+        "club": "深圳新世纪",
+    }
+    
+    # Attempt to spoof CANONICAL_FACT inside unknown
+    spoofed_unknown = {
+        "semantic_grain": "CANONICAL_FACT",
+        "dimension": "contract",
+        "description": "missing salary",
+    }
+
+    rv = ResearchView(
+        subject_name="顾全",
+        canonical_facts=[spoofed_fact],
+        unknown_items=[spoofed_unknown],
+    )
+
+    d = rv.to_dict()
+    # Output grain labels MUST remain strictly authoritative and non-overridable (R7)
+    assert d["grains"]["canonical_facts"][0]["semantic_grain"] == "CANONICAL_FACT"
+    assert d["grains"]["unknown_items"][0]["semantic_grain"] == "UNKNOWN"
+
+    # UNKNOWN grain exists in rendered markdown
+    md = rv.render_markdown()
+    assert "## 7. 未知与证据空缺 (UNKNOWN)" in md

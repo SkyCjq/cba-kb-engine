@@ -255,6 +255,7 @@ def main():
     q=sub.add_parser('statement-extract')
     q.add_argument('--input',type=Path,required=True)
     q.add_argument('--doc-id',required=True)
+    q.add_argument('--normalized-document',type=Path)
     q.add_argument('--identity-registry',type=Path)
     q.add_argument('--person-registry',type=Path)
     q.add_argument('--rights-classification',choices=('public','copyrighted','private','unknown'),default='private')
@@ -267,6 +268,7 @@ def main():
     q.add_argument('--status',choices=('unverified','corroborated','contradicted','superseded','review_required'))
     q.add_argument('--review-reason')
     q.add_argument('--reviewed-by')
+    q.add_argument('--transition-authority',type=Path)
     q.add_argument('--output',type=Path,required=True)
     q=sub.add_parser('verification-queue')
     q.add_argument('--queue',type=Path,required=True)
@@ -279,6 +281,7 @@ def main():
     q.add_argument('--statements',type=Path)
     q.add_argument('--claims',type=Path)
     q.add_argument('--queue',type=Path)
+    q.add_argument('--unknown',type=Path)
     q.add_argument('--master',type=Path)
     q.add_argument('--format',choices=('json','markdown'),default='json')
     q.add_argument('--output',type=Path,required=True)
@@ -1210,12 +1213,39 @@ def main():
             result = envelope
         elif a.command=='statement-extract':
             from .statement import extract_statements_from_text
-            content = a.input.read_text(encoding='utf-8')
+            target_doc_id = a.doc_id
+            if a.normalized_document:
+                norm_data = json.loads(a.normalized_document.read_text(encoding='utf-8'))
+                if isinstance(norm_data, dict) and 'normalized_document' in norm_data:
+                    norm_doc = norm_data['normalized_document']
+                elif isinstance(norm_data, dict) and 'content' in norm_data and 'doc_id' in norm_data:
+                    norm_doc = norm_data
+                else:
+                    raise RuntimeError("NORMALIZED_DOCUMENT_FORMAT_INVALID")
+                content = norm_doc['content']
+                target_doc_id = norm_doc['doc_id']
+                if a.doc_id and a.doc_id != target_doc_id:
+                    raise RuntimeError(f"DOC_ID_MISMATCH: provided {a.doc_id} but normalized document has {target_doc_id}")
+            else:
+                raw_input = a.input.read_text(encoding='utf-8')
+                try:
+                    loaded = json.loads(raw_input)
+                    if isinstance(loaded, dict) and 'normalized_document' in loaded:
+                        content = loaded['normalized_document']['content']
+                        target_doc_id = loaded['normalized_document']['doc_id']
+                    elif isinstance(loaded, dict) and 'content' in loaded and 'doc_id' in loaded:
+                        content = loaded['content']
+                        target_doc_id = loaded['doc_id']
+                    else:
+                        content = raw_input
+                except Exception:
+                    content = raw_input
+
             id_reg = json.loads(a.identity_registry.read_text(encoding='utf-8')) if a.identity_registry else None
             pr_reg = json.loads(a.person_registry.read_text(encoding='utf-8')) if a.person_registry else None
             statements = extract_statements_from_text(
                 content,
-                doc_id=a.doc_id,
+                doc_id=target_doc_id,
                 identity_registry=id_reg,
                 person_registry=pr_reg,
                 rights={
@@ -1230,6 +1260,11 @@ def main():
         elif a.command=='claim-extract':
             from .claim import create_claim_from_statements
             stmts = json.loads(a.statements.read_text(encoding='utf-8'))
+            auth = None
+            if a.transition_authority:
+                auth = json.loads(a.transition_authority.read_text(encoding='utf-8'))
+            elif a.status in {'corroborated', 'contradicted', 'superseded'}:
+                raise RuntimeError("CLAIM_AUTHORITY_REQUIRED: Promotion to strong status requires --transition-authority")
             prov = {'reviewed_by': a.reviewed_by} if a.reviewed_by else None
             claim = create_claim_from_statements(
                 a.claim_text,
@@ -1237,6 +1272,7 @@ def main():
                 status=a.status,
                 review_reason=a.review_reason,
                 provenance=prov,
+                transition_authority=auth,
             )
             save(a.output, claim)
             result = claim
@@ -1255,6 +1291,13 @@ def main():
             if a.queue:
                 from .verification_queue import VerificationQueue
                 v_items = VerificationQueue.load(a.queue).list_items()
+            u_items = []
+            if a.unknown:
+                u_data = json.loads(a.unknown.read_text(encoding='utf-8'))
+                if isinstance(u_data, list):
+                    u_items = u_data
+                elif isinstance(u_data, dict) and 'unknown_items' in u_data:
+                    u_items = u_data['unknown_items']
             facts = []
             if a.master:
                 import csv
@@ -1270,6 +1313,7 @@ def main():
                 statements=stmts,
                 claims=clms,
                 verification_items=v_items,
+                unknown_items=u_items,
             )
             if a.format == 'markdown':
                 md = rv.render_markdown()

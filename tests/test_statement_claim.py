@@ -44,6 +44,7 @@ from cba_kb.consumer_integration import (
     project_claims_for_consumer,
     project_statements_for_consumer,
 )
+from cba_kb.document_lane import doc_id as compute_doc_id
 from cba_kb.research_view import ResearchView
 from cba_kb.source_intake import normalize_source_payload, validate_source_intake
 from cba_kb.statement import (
@@ -79,7 +80,7 @@ def narrative_quotes_text():
 # 1. Structured-turn exact attribution (A02, B1)
 # ---------------------------------------------------------------------------
 def test_structured_turn_exact_attribution(identity_registry, structured_turn_text):
-    doc_id = "doc_0123456789abcdef01234567"
+    doc_id = compute_doc_id(structured_turn_text)
     statements = extract_statements_from_text(
         structured_turn_text,
         doc_id=doc_id,
@@ -110,7 +111,7 @@ def test_structured_turn_exact_attribution(identity_registry, structured_turn_te
 # 2. Direct quote vs narrator separation (A03, B2)
 # ---------------------------------------------------------------------------
 def test_direct_quote_vs_narrator_separation(identity_registry, narrative_quotes_text):
-    doc_id = "doc_0123456789abcdef01234567"
+    doc_id = compute_doc_id(narrative_quotes_text)
     statements = extract_statements_from_text(
         narrative_quotes_text,
         doc_id=doc_id,
@@ -143,7 +144,7 @@ def test_direct_quote_vs_narrator_separation(identity_registry, narrative_quotes
 # 3. Ambiguous attribution -> review_required (A04, B9)
 # ---------------------------------------------------------------------------
 def test_ambiguous_attribution_review_required(identity_registry, narrative_quotes_text):
-    doc_id = "doc_0123456789abcdef01234567"
+    doc_id = compute_doc_id(narrative_quotes_text)
     statements = extract_statements_from_text(
         narrative_quotes_text,
         doc_id=doc_id,
@@ -156,6 +157,9 @@ def test_ambiguous_attribution_review_required(identity_registry, narrative_quot
     assert ind["extraction_status"] == "review_required"
     assert ind["speaker_actor_ref"]["kind"] == "unresolved"
     assert ind["speaker_actor_ref"]["id"] is None
+    # Check that verification queue item was automatically emitted (R2)
+    assert len(statements.verification_items) >= 1
+    assert any(v["reason_code"] == "AMBIGUOUS_ATTRIBUTION" for v in statements.verification_items)
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +220,7 @@ def test_unresolved_non_player_actor_and_same_name_safety(identity_registry):
 # 6. Deterministic statement/claim IDs and replay (A01, B6)
 # ---------------------------------------------------------------------------
 def test_deterministic_statement_and_claim_ids(identity_registry, structured_turn_text):
-    doc_id = "doc_0123456789abcdef01234567"
+    doc_id = compute_doc_id(structured_turn_text)
     run1 = extract_statements_from_text(
         structured_turn_text,
         doc_id=doc_id,
@@ -253,7 +257,7 @@ def test_no_fact_mutation(identity_registry, structured_turn_text):
     # Snapshot before
     before_reg = json.dumps(identity_registry, sort_keys=True)
 
-    doc_id = "doc_0123456789abcdef01234567"
+    doc_id = compute_doc_id(structured_turn_text)
     statements = extract_statements_from_text(
         structured_turn_text,
         doc_id=doc_id,
@@ -269,10 +273,10 @@ def test_no_fact_mutation(identity_registry, structured_turn_text):
 
 
 # ---------------------------------------------------------------------------
-# 8. Rights/private evidence fail-closed (A08, B7)
+# 8. Rights/private evidence fail-closed & target authorization (A08, B7, R1)
 # ---------------------------------------------------------------------------
 def test_rights_fail_closed(identity_registry, structured_turn_text):
-    doc_id = "doc_0123456789abcdef01234567"
+    doc_id = compute_doc_id(structured_turn_text)
 
     # Private statements
     private_stmts = extract_statements_from_text(
@@ -284,12 +288,29 @@ def test_rights_fail_closed(identity_registry, structured_turn_text):
     )
     claim = create_claim_from_statements("测试主张", private_stmts)
 
-    # Consumer projection should reject / filter out private statements
-    exported_stmts, cap_stmts = project_statements_for_consumer(private_stmts)
+    # Without authorizations -> fail-closed
+    exported_unauth, cap_unauth = project_statements_for_consumer(private_stmts)
+    assert len(exported_unauth) == 0
+    assert "NOT_MATERIALIZED" in cap_unauth
+
+    auth = [{
+        "doc_id": doc_id,
+        "target": "ChatGPT",
+        "allowed_scope": "statement_claim_research",
+        "authorization_basis": "TEST_AUTHORIZATION",
+        "frozen_at": "2026-09-30T00:00:00Z",
+    }]
+
+    # Even with target authorization, private statements must NOT be exported
+    exported_stmts, cap_stmts = project_statements_for_consumer(
+        private_stmts, target="ChatGPT", authorizations=auth
+    )
     assert len(exported_stmts) == 0
     assert "NOT_MATERIALIZED" in cap_stmts
 
-    exported_claims, cap_claims = project_claims_for_consumer([claim], private_stmts)
+    exported_claims, cap_claims = project_claims_for_consumer(
+        [claim], private_stmts, target="ChatGPT", authorizations=auth
+    )
     assert len(exported_claims) == 0
     assert "NOT_MATERIALIZED" in cap_claims
 
@@ -302,20 +323,25 @@ def test_rights_fail_closed(identity_registry, structured_turn_text):
         provenance={"source_locator": "public_press_interview"},
     )
     pub_claim = create_claim_from_statements("公开主张", public_stmts)
-    exported_pub_stmts, pub_cap = project_statements_for_consumer(public_stmts)
+
+    exported_pub_stmts, pub_cap = project_statements_for_consumer(
+        public_stmts, target="ChatGPT", authorizations=auth
+    )
     assert len(exported_pub_stmts) == len(public_stmts)
     assert pub_cap == "MATERIALIZED"
 
-    exported_pub_claims, pub_claim_cap = project_claims_for_consumer([pub_claim], public_stmts)
+    exported_pub_claims, pub_claim_cap = project_claims_for_consumer(
+        [pub_claim], public_stmts, target="ChatGPT", authorizations=auth
+    )
     assert len(exported_pub_claims) == 1
     assert pub_claim_cap == "MATERIALIZED"
 
 
 # ---------------------------------------------------------------------------
-# 9. Claim status authority safety (A11, B8)
+# 9. Claim status authority safety (A11, B8, R4, R8)
 # ---------------------------------------------------------------------------
 def test_claim_status_authority_safety(identity_registry, structured_turn_text):
-    doc_id = "doc_0123456789abcdef01234567"
+    doc_id = compute_doc_id(structured_turn_text)
     statements = extract_statements_from_text(
         structured_turn_text,
         doc_id=doc_id,
@@ -325,28 +351,49 @@ def test_claim_status_authority_safety(identity_registry, structured_turn_text):
     # Automatic creation defaults to unverified
     claim = create_claim_from_statements("深圳男篮在第四节贯彻防守", statements[:2])
     assert claim["status"] == "unverified"
+    orig_claim_id = claim["claim_id"]
 
     # Attempting to create claim directly with corroborated status without reviewed authority must fail
-    with pytest.raises(ClaimError, match="REQUIRES_REVIEWED_PROVENANCE"):
+    with pytest.raises(ClaimError, match="REQUIRES_TRANSITION_AUTHORITY"):
         create_claim_from_statements(
             "未经审核推断",
             statements[:2],
             status="corroborated",
         )
 
-    # Proper status transition under reviewed authority
+    # Free-form reviewer string alone without transition authority must fail (R4)
+    with pytest.raises(ClaimError, match="TRANSITION_AUTHORITY_REQUIRED"):
+        transition_claim_status(
+            claim,
+            "corroborated",
+            reviewed_by="human_lead_editor",
+            resolution_note="Verified against game tape and press audio",
+        )
+
+    # Proper status transition under valid evidence-bound transition authority (R4)
+    valid_authority = {
+        "decision_ref": "DEC-20260930-GAME-TAPE-01",
+        "authority_kind": "human_review",
+        "reviewer": "human_lead_editor",
+        "prior_claim_id": claim["claim_id"],
+        "prior_status": claim["status"],
+        "target_status": "corroborated",
+        "supporting_evidence_refs": claim["evidence_refs"],
+    }
     transitioned = transition_claim_status(
         claim,
         "corroborated",
-        reviewed_by="human_lead_editor",
+        transition_authority=valid_authority,
         resolution_note="Verified against game tape and press audio",
     )
     assert transitioned["status"] == "corroborated"
     assert transitioned["provenance"]["reviewed_by"] == "human_lead_editor"
+    # Claim ID must be stable across lifecycle (R8)
+    assert transitioned["claim_id"] == orig_claim_id
 
 
 # ---------------------------------------------------------------------------
-# 10. Verification Queue routing (A04, B9)
+# 10. Verification Queue routing (A04, B9, R2)
 # ---------------------------------------------------------------------------
 def test_verification_queue_routing(tmp_path):
     queue = VerificationQueue()
@@ -384,7 +431,7 @@ def test_verification_queue_routing(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 11. Provider-neutral Source Intake normalization (A09)
+# 11. Provider-neutral Source Intake normalization (A09, R5)
 # ---------------------------------------------------------------------------
 def test_provider_neutral_source_intake_normalization():
     content = "顾全：那场比赛在第四节最后阶段，大家的心态是怎么调整的？\r\n顾全：我们当时顶住了很大压力。"
@@ -407,13 +454,14 @@ def test_provider_neutral_source_intake_normalization():
     assert norm_local == norm_drive
     assert env_local["content_hash"] == env_drive["content_hash"]
     assert env_local["normalized_document_ref"] == env_drive["normalized_document_ref"]
+    assert "normalized_document" in env_local
 
 
 # ---------------------------------------------------------------------------
-# 12. Research View semantic-grain separation (A10, B10)
+# 12. Research View semantic-grain separation & UNKNOWN grain (A10, B10, R7)
 # ---------------------------------------------------------------------------
 def test_research_view_semantic_grain_separation(identity_registry, structured_turn_text):
-    doc_id = "doc_0123456789abcdef01234567"
+    doc_id = compute_doc_id(structured_turn_text)
     statements = extract_statements_from_text(
         structured_turn_text,
         doc_id=doc_id,
@@ -448,6 +496,10 @@ def test_research_view_semantic_grain_separation(identity_registry, structured_t
         statements=statements,
         claims=[claim],
         verification_items=queue.list_items(),
+        unknown_items=[{
+            "dimension": "contract_amount",
+            "description": "2025赛季后合同金额未公开",
+        }],
     )
 
     d = rv.to_dict()
@@ -455,12 +507,15 @@ def test_research_view_semantic_grain_separation(identity_registry, structured_t
     assert d["summary_counts"]["statements_count"] == 4
     assert d["summary_counts"]["claims_count"] == 1
     assert d["summary_counts"]["open_verification_items_count"] == 1
+    assert d["summary_counts"]["unknown_items_count"] == 1
 
     md = rv.render_markdown()
     assert "CANONICAL_FACTS" in md
     assert "STATEMENTS" in md
     assert "CLAIMS" in md
     assert "VERIFICATION_QUEUE" in md
+    assert "UNKNOWN" in md
+    assert "## 7. 未知与证据空缺 (UNKNOWN)" in md
 
 
 # ---------------------------------------------------------------------------
@@ -488,50 +543,69 @@ def test_evidence_bound_relationship_view():
 
 
 # ---------------------------------------------------------------------------
-# 14. Real Canary Reference Test (A13)
+# 14. Real Canary Reference Test (A13, A15, R6)
 # ---------------------------------------------------------------------------
 def test_real_canary_coverage_when_staged():
-    """Test real canary coverage (P0265 贺希宁 and coach 郑永刚) when staged in private instance."""
+    """Test dual real canary coverage (P0265 贺希宁 and coach 郑永刚) when staged in private instance."""
     instance_root_env = os.environ.get("CBA_KB_INSTANCE_ROOT")
     if not instance_root_env:
         pytest.skip("CBA_KB_INSTANCE_ROOT not set; skipping real canary check")
     instance_root = Path(instance_root_env)
+
+    # 1. Canary 1: 贺希宁 WeChat interview
     wechat_dir = instance_root / "inbox/documents/wechat"
-    candidates = list(wechat_dir.glob("*贺希宁*.txt")) if wechat_dir.is_dir() else []
-    if not candidates:
+    hexining_candidates = list(wechat_dir.glob("*贺希宁*.txt")) if wechat_dir.is_dir() else []
+    if not hexining_candidates:
         pytest.skip("Real canary file for P0265 (贺希宁) not staged locally")
 
-    hexining_file = candidates[0]
-
-    # Ingest real canary text for P0265
+    hexining_file = hexining_candidates[0]
     raw_text = hexining_file.read_text(encoding="utf-8", errors="replace")
-    envelope, norm_text = normalize_source_payload(
+    env1, norm_text1 = normalize_source_payload(
         raw_text,
         source_provider="wechat_browser_clip",
         source_item_id_or_locator=hexining_file.name,
     )
-    assert envelope["intake_status"] == "accepted"
-    assert envelope["normalized_document_ref"].startswith("doc_")
+    assert env1["intake_status"] == "accepted"
+    assert env1["normalized_document_ref"].startswith("doc_")
 
-    # Extract statements with synthetic identity registry
     id_reg_path = FIXTURES_DIR / "synthetic_identity_registry.json"
     id_reg = json.loads(id_reg_path.read_text(encoding="utf-8"))
 
-    statements = extract_statements_from_text(
-        norm_text,
-        doc_id=envelope["normalized_document_ref"],
+    stmts1 = extract_statements_from_text(
+        norm_text1,
+        doc_id=env1["normalized_document_ref"],
         identity_registry=id_reg,
     )
-    assert len(statements) > 0
-
-    # Ensure P0265 贺希宁 is identified as player actor
-    hexining_stmts = [s for s in statements if s["speaker_actor_ref"]["raw_name"] == "贺希宁"]
+    assert len(stmts1) > 0
+    hexining_stmts = [s for s in stmts1 if s["speaker_actor_ref"]["raw_name"] == "贺希宁"]
     assert len(hexining_stmts) > 0
     assert hexining_stmts[0]["speaker_actor_ref"]["id"] == "P0265_HEXINING_0001"
     assert hexining_stmts[0]["speaker_actor_ref"]["kind"] == "player"
 
+    # 2. Canary 2: 郑永刚 local PDF file
+    local_dir = instance_root / "inbox/documents/local"
+    zyg_candidates = sorted(list(local_dir.glob("*郑永刚*.pdf")), reverse=True) if local_dir.is_dir() else []
+    if not zyg_candidates:
+        pytest.skip("Real canary PDF for 郑永刚 not staged locally")
+
+    zyg_file = zyg_candidates[0]
+    raw_pdf_bytes = zyg_file.read_bytes()
+    env2, norm_text2 = normalize_source_payload(
+        raw_pdf_bytes,
+        source_provider="local_file",
+        source_item_id_or_locator=zyg_file.name,
+        media_type="application/pdf",
+    )
+    assert env2["intake_status"] == "accepted"
+    assert env2["normalized_document_ref"].startswith("doc_")
+    assert len(norm_text2) > 100
+
     # Coach / non-player case: 郑永刚 resolved as unresolved with id=None
-    coach_actor = resolve_actor("郑永刚", evidence_ref=f"{envelope['normalized_document_ref']}#coach", identity_registry=id_reg)
+    coach_actor = resolve_actor(
+        "郑永刚",
+        evidence_ref=f"{env2['normalized_document_ref']}#coach",
+        identity_registry=id_reg,
+    )
     assert coach_actor["kind"] == "unresolved"
     assert coach_actor["id"] is None
     assert coach_actor["raw_name"] == "郑永刚"

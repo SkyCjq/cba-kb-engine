@@ -10,10 +10,13 @@ Tests:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 import pytest
+
+from cba_kb.document_lane import doc_id as compute_doc_id
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES_DIR = REPO_ROOT / "requirements/REQ-190-STATEMENT-CLAIM-01/fixtures"
@@ -26,12 +29,14 @@ def run_cli(*args):
         "cba_kb.cli",
         *args,
     ]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = "src"
     res = subprocess.run(
         cmd,
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        env={"PYTHONPATH": "src", "PATH": sys.executable},
+        env=env,
     )
     return res
 
@@ -59,7 +64,7 @@ def test_cli_statement_extract(tmp_path):
     input_file = FIXTURES_DIR / "synthetic_interview_turns.txt"
     id_reg_file = FIXTURES_DIR / "synthetic_identity_registry.json"
     out_file = tmp_path / "statements.json"
-    doc_id = "doc_0123456789abcdef01234567"
+    doc_id = compute_doc_id(input_file.read_text(encoding="utf-8"))
 
     res = run_cli(
         "statement-extract",
@@ -79,7 +84,7 @@ def test_cli_claim_extract(tmp_path):
     input_file = FIXTURES_DIR / "synthetic_interview_turns.txt"
     id_reg_file = FIXTURES_DIR / "synthetic_identity_registry.json"
     stmts_file = tmp_path / "statements.json"
-    doc_id = "doc_0123456789abcdef01234567"
+    doc_id = compute_doc_id(input_file.read_text(encoding="utf-8"))
 
     # Extract statements first
     run_cli(
@@ -134,7 +139,7 @@ def test_cli_research_view(tmp_path):
     input_file = FIXTURES_DIR / "synthetic_interview_turns.txt"
     id_reg_file = FIXTURES_DIR / "synthetic_identity_registry.json"
     stmts_file = tmp_path / "statements.json"
-    doc_id = "doc_0123456789abcdef01234567"
+    doc_id = compute_doc_id(input_file.read_text(encoding="utf-8"))
 
     run_cli(
         "statement-extract",

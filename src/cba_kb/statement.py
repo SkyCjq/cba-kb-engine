@@ -1,4 +1,4 @@
-"""Statement contract and deterministic extraction.
+"""Statement contract, deterministic extraction, and automatic verification routing.
 
 Follows REQ-190-STATEMENT-CLAIM-01 Deliverable D01:
 - statement_id: deterministic hash
@@ -17,7 +17,9 @@ Follows REQ-190-STATEMENT-CLAIM-01 Deliverable D01:
 Invariants:
 - Statement occurrence is source-bound and deterministic.
 - Direct quote vs narrator separation is strict: narrator text cannot be attributed to quoted speaker.
-- Ambiguous attribution -> review_required.
+- Ambiguous attribution -> review_required and automatic Verification Queue routing (R2).
+- Same-name subjects must not assert multiple canonical player identities (R3).
+- Arbitrary caller-supplied doc_id cannot bypass intake binding (R5).
 - Ordering and replay are deterministic for identical input.
 """
 from __future__ import annotations
@@ -25,11 +27,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 from .actor import ActorError, validate_actor_ref, resolve_actor, make_actor_ref
+from .document_lane import doc_id as compute_doc_id
 from .document_mentions import validate_doc_id
 from .evidence_ledger import canonical_bytes
+from .verification_queue import VerificationQueue
 
 SCHEMA_VERSION = 1
 STATEMENT_VERSION = "v1.9"
@@ -57,11 +61,9 @@ _STRUCTURED_TURN_RE = re.compile(
 # e.g.: 贺希宁在接受采访时表示：“我们全队都非常渴望赢下这场比赛。”
 # or: “回到深圳就像回家一样，”沈梓捷说。
 _QUOTE_PATTERNS = [
-    # Speaker before quote: 贺希宁说：“...” or 贺希宁表示：“...” or 沈梓捷直言：“...”
     re.compile(
         r"(?P<context>(?:(?P<speaker>[\w\u4e00-\u9fa5·]{2,12})[，,\s]*)?(?:在[^，。\n]{0,20})?(?:说|表示|直言|坦言|回忆|强调|回应|谈到|透露|指出|称|道))[：:]\s*[“\"](?P<quote>[^”\"\n]+)[”\"]"
     ),
-    # Quote before speaker: “...，”贺希宁说
     re.compile(
         r"[“\"](?P<quote>[^”\"\n]+)[”\"][，,\s]*(?P<speaker>[\w\u4e00-\u9fa5·]{2,12})[，,\s]*(?:说|表示|直言|坦言|回忆|强调|回应|谈到|指出|称|道)"
     ),
@@ -70,6 +72,21 @@ _QUOTE_PATTERNS = [
 
 class StatementError(RuntimeError):
     pass
+
+
+class ExtractionResult(list):
+    """List-compatible container for extracted statements and automatic verification items (R2)."""
+
+    def __init__(
+        self,
+        statements: List[Dict[str, Any]],
+        verification_items: List[Dict[str, Any]],
+        queue: VerificationQueue,
+    ):
+        super().__init__(statements)
+        self.statements = statements
+        self.verification_items = verification_items
+        self.queue = queue
 
 
 def _required_text(value: Any, label: str) -> str:
@@ -85,6 +102,16 @@ def validate_statement_id(value: str) -> str:
     if not _STATEMENT_ID.fullmatch(value):
         raise StatementError("STATEMENT_ID_FORMAT_INVALID")
     return value
+
+
+def verify_document_binding(text: str, doc_id: str) -> str:
+    """Verify that caller-supplied doc_id binds strictly to normalized content (R5)."""
+    expected_doc_id = compute_doc_id(text)
+    if doc_id != expected_doc_id:
+        raise StatementError(
+            f"DOC_ID_CONTENT_MISMATCH: expected {expected_doc_id} but got {doc_id}"
+        )
+    return doc_id
 
 
 def generate_statement_id(
@@ -205,76 +232,107 @@ def validate_statement(statement: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _is_same_name_ambiguity(name: str, identity_registry: Dict[str, Any]) -> bool:
+    """Check if name matches multiple active players (R3)."""
+    players = identity_registry.get("players", [])
+    matches = sum(
+        1 for p in players
+        if (p.get("status") == "ACTIVE" or p.get("active") is True)
+        and p.get("canonical_name") == name
+    )
+    return matches > 1
+
+
 def _find_subject_mentions(
     text: str,
     *,
     identity_registry: Optional[Dict[str, Any]],
+    person_registry: Optional[Dict[str, Any]],
     speaker_raw_name: str,
     doc_id: str,
     ordinal: int,
+    queue: Optional[VerificationQueue] = None,
 ) -> List[Dict[str, Any]]:
-    """Find actors mentioned in the statement text as subjects."""
-    subjects = []
+    """Find actors mentioned in the statement text as subjects with uniqueness enforcement (R3).
+
+    Invariants:
+    - Same-name must never assert multiple canonical player identities.
+    - Ambiguous same-name mentions resolve to kind='unresolved', id=None and emit a Verification Queue item.
+    """
+    subjects: List[Dict[str, Any]] = []
     if not identity_registry:
         return subjects
 
     players = identity_registry.get("players", [])
     aliases = identity_registry.get("aliases", [])
-    
-    seen_uids = set()
+
+    candidate_names: Set[str] = set()
     for p in players:
-        name = p.get("canonical_name")
-        if not name or name == speaker_raw_name:
-            continue
-        if name in text and p.get("status") == "ACTIVE":
-            uid = p["player_uid"]
-            if uid not in seen_uids:
-                seen_uids.add(uid)
-                subjects.append(make_actor_ref(
-                    kind="player",
-                    actor_id=uid,
-                    raw_name=name,
-                    evidence_ref=f"{doc_id}#turn-{ordinal}",
-                ))
+        cname = p.get("canonical_name")
+        if cname and cname != speaker_raw_name and cname in text:
+            candidate_names.add(cname)
 
     for a in aliases:
-        alias = a.get("alias_name")
-        if not alias or alias == speaker_raw_name:
-            continue
-        if alias in text:
-            uid = a.get("player_uid")
-            if uid not in seen_uids:
-                seen_uids.add(uid)
-                subjects.append(make_actor_ref(
-                    kind="player",
-                    actor_id=uid,
-                    raw_name=alias,
-                    evidence_ref=f"{doc_id}#turn-{ordinal}",
-                ))
+        aname = a.get("alias_name")
+        if aname and aname != speaker_raw_name and aname in text:
+            candidate_names.add(aname)
+
+    for cand_name in sorted(candidate_names):
+        actor_ref = resolve_actor(
+            cand_name,
+            evidence_ref=f"{doc_id}#turn-{ordinal}",
+            identity_registry=identity_registry,
+            person_registry=person_registry,
+        )
+
+        if actor_ref["kind"] == "unresolved":
+            is_ambig = _is_same_name_ambiguity(cand_name, identity_registry)
+            reason = "AMBIGUOUS_SAME_NAME_ACTOR" if is_ambig else "UNRESOLVED_SUBJECT_ACTOR"
+            if queue:
+                queue.create_and_add(
+                    object_type="actor",
+                    object_ref={"raw_name": cand_name, "doc_id": doc_id, "turn": ordinal},
+                    reason_code=reason,
+                    evidence_refs=[f"{doc_id}#turn-{ordinal}"],
+                    created_from="statement_extractor",
+                )
+        subjects.append(actor_ref)
 
     return sorted(subjects, key=lambda s: s["raw_name"])
 
 
 def extract_statements_from_text(
     text: str,
-    doc_id: str,
+    doc_id: Optional[str] = None,
     *,
     identity_registry: Optional[Dict[str, Any]] = None,
     person_registry: Optional[Dict[str, Any]] = None,
     rights: Optional[Dict[str, Any]] = None,
     provenance: Optional[Any] = None,
     default_time_anchor: Any = "UNKNOWN",
-) -> List[Dict[str, Any]]:
-    """Extract deterministic statements from document text.
+    queue: Optional[VerificationQueue] = None,
+    verify_binding: bool = True,
+) -> ExtractionResult:
+    """Extract deterministic statements from document text with automatic verification routing (R2, R3, R5).
 
     Supports:
     1. Structured dialogue turns (顾全：..., 孟铎: ...) -> structured_turn
     2. Direct quotations in narrative (沈梓捷表示：“...”) -> direct_quote
     3. Indirect/ambiguous statements (据透露...) -> indirect_attribution
+
+    Returns ExtractionResult (a list of statements with .verification_items and .queue).
     """
+    if doc_id is None:
+        doc_id = compute_doc_id(text)
+    elif verify_binding:
+        verify_document_binding(text, doc_id)
+
     validate_doc_id(doc_id)
     rights = rights or {"classification": "private", "public_export_allowed": False, "evidence": []}
     provenance = provenance or {"extracted_at": "1970-01-01T00:00:00Z", "doc_id": doc_id}
+
+    if queue is None:
+        queue = VerificationQueue()
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     statements: List[Dict[str, Any]] = []
@@ -314,10 +372,19 @@ def extract_statements_from_text(
                 subjects = _find_subject_mentions(
                     quote_text,
                     identity_registry=identity_registry,
+                    person_registry=person_registry,
                     speaker_raw_name=clean_speaker,
                     doc_id=doc_id,
                     ordinal=ordinal,
+                    queue=queue,
                 )
+                is_accepted = (speaker_ref["kind"] != "unresolved" or clean_speaker not in {"UNKNOWN", "有人", "外界"})
+                extraction_status = "accepted" if is_accepted else "review_required"
+
+                evidence_ref = {
+                    "line_number": line_idx,
+                    "locator": f"{doc_id}#L{line_idx}",
+                }
                 stmt = validate_statement({
                     "statement_id": stmt_id,
                     "doc_id": doc_id,
@@ -326,16 +393,31 @@ def extract_statements_from_text(
                     "time_anchor": default_time_anchor,
                     "statement_text_or_controlled_excerpt": quote_text,
                     "source_ref": f"{doc_id}#quote-{ordinal}",
-                    "evidence_ref": {
-                        "line_number": line_idx,
-                        "locator": f"{doc_id}#L{line_idx}",
-                    },
+                    "evidence_ref": evidence_ref,
                     "attribution_type": "direct_quote",
                     "rights": rights,
                     "provenance": provenance,
-                    "extraction_status": "accepted" if (speaker_ref["kind"] != "unresolved" or clean_speaker not in {"UNKNOWN", "有人", "外界"}) else "review_required",
+                    "extraction_status": extraction_status,
                 })
                 statements.append(stmt)
+
+                # Automatic verification queue routing (R2)
+                if speaker_ref["kind"] == "unresolved":
+                    queue.create_and_add(
+                        object_type="actor",
+                        object_ref={"raw_name": clean_speaker, "statement_id": stmt_id},
+                        reason_code="UNRESOLVED_SPEAKER_ACTOR",
+                        evidence_refs=[f"{doc_id}#L{line_idx}"],
+                        created_from="statement_extractor",
+                    )
+                if extraction_status == "review_required":
+                    queue.create_and_add(
+                        object_type="statement",
+                        object_ref=stmt_id,
+                        reason_code="AMBIGUOUS_ATTRIBUTION",
+                        evidence_refs=[f"{doc_id}#L{line_idx}"],
+                        created_from="statement_extractor",
+                    )
                 continue
 
             ordinal += 1
@@ -347,7 +429,6 @@ def extract_statements_from_text(
             )
 
             status = "accepted"
-            # If speaker is generic/interviewer or unresolved with unknown semantics
             if speaker_str in {"问", "Q", "记者", "主持人", "主持人说", "网传"}:
                 status = "review_required"
 
@@ -362,9 +443,11 @@ def extract_statements_from_text(
             subjects = _find_subject_mentions(
                 content,
                 identity_registry=identity_registry,
+                person_registry=person_registry,
                 speaker_raw_name=speaker_str,
                 doc_id=doc_id,
                 ordinal=ordinal,
+                queue=queue,
             )
 
             stmt = validate_statement({
@@ -385,6 +468,24 @@ def extract_statements_from_text(
                 "extraction_status": status,
             })
             statements.append(stmt)
+
+            # Automatic verification queue routing (R2)
+            if speaker_ref["kind"] == "unresolved":
+                queue.create_and_add(
+                    object_type="actor",
+                    object_ref={"raw_name": speaker_str, "statement_id": stmt_id},
+                    reason_code="UNRESOLVED_SPEAKER_ACTOR",
+                    evidence_refs=[f"{doc_id}#L{line_idx}"],
+                    created_from="statement_extractor",
+                )
+            if status == "review_required":
+                queue.create_and_add(
+                    object_type="statement",
+                    object_ref=stmt_id,
+                    reason_code="AMBIGUOUS_ATTRIBUTION",
+                    evidence_refs=[f"{doc_id}#L{line_idx}"],
+                    created_from="statement_extractor",
+                )
             continue
 
         # 2. Check for direct quotes in narrative
@@ -427,9 +528,11 @@ def extract_statements_from_text(
                 subjects = _find_subject_mentions(
                     quote_text,
                     identity_registry=identity_registry,
+                    person_registry=person_registry,
                     speaker_raw_name=speaker_str or "",
                     doc_id=doc_id,
                     ordinal=ordinal,
+                    queue=queue,
                 )
 
                 stmt = validate_statement({
@@ -451,11 +554,28 @@ def extract_statements_from_text(
                 })
                 statements.append(stmt)
 
+                # Automatic verification queue routing (R2)
+                if speaker_ref["kind"] == "unresolved":
+                    queue.create_and_add(
+                        object_type="actor",
+                        object_ref={"raw_name": speaker_str or "UNKNOWN", "statement_id": stmt_id},
+                        reason_code="UNRESOLVED_SPEAKER_ACTOR",
+                        evidence_refs=[f"{doc_id}#L{line_idx}"],
+                        created_from="statement_extractor",
+                    )
+                if status == "review_required":
+                    queue.create_and_add(
+                        object_type="statement",
+                        object_ref=stmt_id,
+                        reason_code="AMBIGUOUS_ATTRIBUTION",
+                        evidence_refs=[f"{doc_id}#L{line_idx}"],
+                        created_from="statement_extractor",
+                    )
+
         if found_quote:
             continue
 
         # 3. Check for indirect attribution signals
-        # e.g.: "据透露，...", "据悉，...", "外界普遍认为..."
         if any(marker in line for marker in ("据透露", "据悉", "消息称", "据知情人士透露", "外界分析")):
             ordinal += 1
             speaker_ref = make_actor_ref(
@@ -474,9 +594,11 @@ def extract_statements_from_text(
             subjects = _find_subject_mentions(
                 line,
                 identity_registry=identity_registry,
+                person_registry=person_registry,
                 speaker_raw_name="",
                 doc_id=doc_id,
                 ordinal=ordinal,
+                queue=queue,
             )
             stmt = validate_statement({
                 "statement_id": stmt_id,
@@ -497,4 +619,23 @@ def extract_statements_from_text(
             })
             statements.append(stmt)
 
-    return statements
+            # Automatic verification queue routing (R2)
+            queue.create_and_add(
+                object_type="statement",
+                object_ref=stmt_id,
+                reason_code="AMBIGUOUS_ATTRIBUTION",
+                evidence_refs=[f"{doc_id}#L{line_idx}"],
+                created_from="statement_extractor",
+            )
+
+    return ExtractionResult(statements, queue.list_items(), queue)
+
+
+def extract_statements_with_queue(
+    text: str,
+    doc_id: Optional[str] = None,
+    **kwargs,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Convenience helper explicitly returning (statements, verification_items)."""
+    res = extract_statements_from_text(text, doc_id=doc_id, **kwargs)
+    return res.statements, res.verification_items

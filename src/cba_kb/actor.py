@@ -129,7 +129,8 @@ def resolve_actor(
         # Build exact name index for active players
         matching_uids = set()
         for p in players:
-            if p.get("status") == "ACTIVE" and p.get("canonical_name") == cleaned_name:
+            is_active = p.get("status") == "ACTIVE" or p.get("active") is True
+            if is_active and p.get("canonical_name") == cleaned_name:
                 matching_uids.add(p["player_uid"])
         
         # Check aliases
@@ -138,7 +139,7 @@ def resolve_actor(
                 uid = a.get("player_uid")
                 # Ensure player is active
                 for p in players:
-                    if p.get("player_uid") == uid and p.get("status") == "ACTIVE":
+                    if p.get("player_uid") == uid and (p.get("status") == "ACTIVE" or p.get("active") is True):
                         matching_uids.add(uid)
                         break
 
