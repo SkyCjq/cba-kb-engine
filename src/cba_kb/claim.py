@@ -144,11 +144,19 @@ def generate_relation_id(
     return f"rel_{digest}"
 
 
+def _canonical_evidence_key(ref: Any) -> bytes:
+    if isinstance(ref, (dict, list)):
+        return canonical_bytes(ref)
+    if isinstance(ref, str):
+        return ref.encode("utf-8")
+    return str(ref).encode("utf-8")
+
+
 def validate_relation_assertion(relation: Dict[str, Any]) -> Dict[str, Any]:
     """Validate evidence-bound relationship view assertion."""
     if not isinstance(relation, dict):
         raise ClaimError("RELATION_OBJECT_REQUIRED")
-    
+
     required = {
         "relation_id", "relation_type", "from_actor", "to_actor",
         "evidence_refs", "supporting_statement_ids", "confidence"
@@ -292,23 +300,69 @@ def validate_claim(claim: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(provenance, dict):
             raise ClaimError("CLAIM_PROVENANCE_OBJECT_REQUIRED_FOR_STRONG_STATUS")
         transitions = provenance.get("transitions")
-        latest_auth = provenance.get("latest_transition_authority") or provenance.get("transition_authority")
-        if not transitions and not latest_auth:
+        if not isinstance(transitions, list) or not transitions:
             raise ClaimError(f"STRONG_STATUS_{status.upper()}_REQUIRES_PERSISTED_TRANSITION_AUTHORITY")
-        found_target = False
-        if isinstance(transitions, list):
-            for t in transitions:
-                if isinstance(t, dict) and t.get("to_status") == status and isinstance(t.get("authority"), dict):
-                    found_target = True
-                    break
-        if not found_target and isinstance(latest_auth, dict) and latest_auth.get("target_status") == status:
-            found_target = True
-        if not found_target:
+
+        # 1. Select the serialized transition that justifies the current status (prefer last transition with to_status == status)
+        justifying_transition = None
+        for t in reversed(transitions):
+            if isinstance(t, dict) and t.get("to_status") == status:
+                justifying_transition = t
+                break
+
+        if not justifying_transition:
             raise ClaimError(f"STRONG_STATUS_{status.upper()}_TRANSITION_AUTHORITY_CHAIN_INVALID")
+
+        # 2. Require transition.authority is a dict, from_status == prior_status, and to_status == target_status == current status
+        auth = justifying_transition.get("authority")
+        if not isinstance(auth, dict):
+            raise ClaimError("TRANSITION_AUTHORITY_OBJECT_REQUIRED")
+
+        from_status = justifying_transition.get("from_status")
+        if from_status != auth.get("prior_status"):
+            raise ClaimError("PRIOR_STATUS_MISMATCH")
+
+        to_status = justifying_transition.get("to_status")
+        if to_status != status or auth.get("target_status") != status:
+            raise ClaimError("TARGET_STATUS_MISMATCH")
+
+        # 3. Reconstruct prior_claim_for_validation = {claim_id: current claim_id, status: authority.prior_status}
+        prior_claim_for_validation = {
+            "claim_id": claim_id,
+            "status": auth.get("prior_status"),
+        }
+
+        # 4. Call canonical validate_transition_authority
+        validated_authority = validate_transition_authority(auth, prior_claim_for_validation, status)
+
+        # 5. Require validated authority prior_claim_id == current claim_id
+        if validated_authority["prior_claim_id"] != claim_id:
+            raise ClaimError("PRIOR_CLAIM_ID_MISMATCH")
+
+        # 6. If latest_transition_authority or transition_authority is present, must be semantically identical
+        for auth_key in ("latest_transition_authority", "transition_authority"):
+            if auth_key in provenance and provenance[auth_key] is not None:
+                other_auth = provenance[auth_key]
+                if not isinstance(other_auth, dict):
+                    raise ClaimError(f"INVALID_{auth_key.upper()}")
+                val_other = validate_transition_authority(other_auth, prior_claim_for_validation, status)
+                if canonical_bytes(val_other) != canonical_bytes(validated_authority):
+                    raise ClaimError(f"CONFLICTING_{auth_key.upper()}")
 
     rel_assertion = None
     if "relation_assertion" in claim and claim["relation_assertion"] is not None:
         rel_assertion = validate_relation_assertion(claim["relation_assertion"])
+
+        # Bounded by enclosing Claim (G6-R4)
+        rel_stmt_ids = set(rel_assertion["supporting_statement_ids"])
+        claim_stmt_ids = set(sorted_stmt_ids)
+        if not rel_stmt_ids or not rel_stmt_ids.issubset(claim_stmt_ids):
+            raise ClaimError("RELATION_SUPPORTING_STATEMENTS_NOT_SUBSET_OF_CLAIM")
+
+        claim_ev_keys = {_canonical_evidence_key(e) for e in evidence_refs}
+        for rel_ev in rel_assertion["evidence_refs"]:
+            if _canonical_evidence_key(rel_ev) not in claim_ev_keys:
+                raise ClaimError("RELATION_EVIDENCE_REFS_NOT_SUBSET_OF_CLAIM")
 
     result = {
         "claim_id": claim_id,
@@ -333,6 +387,7 @@ def create_claim_from_statements(
     provenance: Optional[Any] = None,
     relation_assertion: Optional[Dict[str, Any]] = None,
     transition_authority: Optional[Dict[str, Any]] = None,
+    additional_evidence_refs: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     """Create a claim from supporting statements.
 
@@ -344,7 +399,7 @@ def create_claim_from_statements(
       evidence-bound transition authority object.
     - Free-form reviewer text or LLM self-assertion fails closed.
     - Claim ID is stable across lifecycle (R8).
-    - Persists auditable transition authority in provenance (G4-R2).
+    - Persists auditable transition authority in provenance (G4-R2, G6-R1).
     """
     if not statements:
         raise ClaimError("STATEMENTS_REQUIRED_FOR_CLAIM")
@@ -356,6 +411,16 @@ def create_claim_from_statements(
         evidence_refs.append(s["evidence_ref"])
         if s.get("extraction_status") == "review_required":
             has_review_req = True
+
+    if additional_evidence_refs:
+        for ref in additional_evidence_refs:
+            if ref not in evidence_refs:
+                evidence_refs.append(ref)
+
+    if relation_assertion and isinstance(relation_assertion, dict):
+        for ref in relation_assertion.get("evidence_refs") or []:
+            if ref not in evidence_refs:
+                evidence_refs.append(ref)
 
     # Stable claim_id independent of mutable status (R8)
     cid = generate_claim_id(stmt_ids, claim_text)

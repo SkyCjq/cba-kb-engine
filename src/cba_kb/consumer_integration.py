@@ -23,13 +23,56 @@ from .statement import validate_statement
 
 CONSUMER_CAPABILITY_STATEMENT_CLAIM = "statement_claim_research"
 
-_LOCAL_PATH_RE = re.compile(r"(?:/(?:Users|home|root|private|var|tmp)/[^\s,;\"'\]]+|file://[^\s,;\"'\]]+)")
 _DRIVE_LOCATOR_RE = re.compile(r"https?://(?:docs|drive)\.google\.com/[^\s,;\"'\]]+")
 _RAW_DRIVE_ID_RE = re.compile(r"\b[0-9a-zA-Z_-]{28,50}\b")
+_WIN_DRIVE_PATH_RE = re.compile(r"(?:^|[\s,;\"'\[\(=])[a-zA-Z]:[/\\]")
+_UNC_PATH_RE = re.compile(r"(?:^|[\s,;\"'\[\(=])\\\\[^\s,;\"'\]\)=]+")
+_FILE_URL_RE = re.compile(r"file://[^\s,;\"'\]]+")
+_POSIX_PATH_RE = re.compile(r"(?:^|[\s,;\"'\[\(=])/(?:[^\s,;\"'\]\)=]+)")
 
 
 class ConsumerSafetyError(RuntimeError):
     pass
+
+
+def is_private_locator(text: str) -> bool:
+    """Detect local absolute filesystem paths, UNC paths, and private Drive locators generically."""
+    if not isinstance(text, str):
+        return False
+    s = text.strip()
+    if not s:
+        return False
+
+    # 1. file:// locators
+    if _FILE_URL_RE.search(s):
+        return True
+
+    # 2. docs.google.com / drive.google.com URLs
+    if _DRIVE_LOCATOR_RE.search(s):
+        return True
+
+    # 3. Windows drive-absolute paths (e.g. C:\... or C:/...)
+    if _WIN_DRIVE_PATH_RE.search(s):
+        return True
+
+    # 4. UNC paths (e.g. \\server\share\...)
+    if _UNC_PATH_RE.search(s):
+        return True
+
+    # 5. Generic absolute POSIX paths beginning with /
+    # Skip web URLs starting with http:// or https://
+    if not (s.startswith("http://") or s.startswith("https://")):
+        if s.startswith("/") or _POSIX_PATH_RE.search(s):
+            return True
+
+    # 6. Raw Drive-like IDs
+    if not s.startswith(("doc_", "stmt_", "claim_", "rel_", "safe://", "consumer:")):
+        if _RAW_DRIVE_ID_RE.fullmatch(s):
+            return True
+        if "google" in s.lower() and _RAW_DRIVE_ID_RE.search(s):
+            return True
+
+    return False
 
 
 def sanitize_locator_string(
@@ -41,10 +84,7 @@ def sanitize_locator_string(
     if not isinstance(locator, str):
         return f"consumer:{target_slug}:{doc_id}"
     cleaned = locator
-    if _LOCAL_PATH_RE.search(cleaned) or _DRIVE_LOCATOR_RE.search(cleaned):
-        return f"consumer:{target_slug}:{doc_id}"
-    # Check if string is a raw private drive ID
-    if _RAW_DRIVE_ID_RE.fullmatch(cleaned.strip()):
+    if is_private_locator(cleaned):
         return f"consumer:{target_slug}:{doc_id}"
     return cleaned
 
@@ -94,7 +134,7 @@ def is_claim_publicly_exportable(
 def sanitize_provenance(prov: Any, doc_id: str = "unknown", target_slug: str = "consumer") -> Any:
     """Sanitize provenance to strip raw absolute filesystem paths or private keys."""
     if isinstance(prov, str):
-        if _LOCAL_PATH_RE.search(prov) or _DRIVE_LOCATOR_RE.search(prov) or _RAW_DRIVE_ID_RE.search(prov):
+        if is_private_locator(prov):
             return f"consumer:{target_slug}:{doc_id}"
         return prov
     elif isinstance(prov, dict):
@@ -117,8 +157,8 @@ def sanitize_actor_for_consumer(
     """Scrub local paths or private evidence locators from actor ref."""
     clean_actor = dict(actor)
     if "evidence_ref" in clean_actor:
-        clean_actor["evidence_ref"] = sanitize_locator_string(
-            str(clean_actor["evidence_ref"]), doc_id, target_slug
+        clean_actor["evidence_ref"] = sanitize_locator_value(
+            clean_actor["evidence_ref"], doc_id, target_slug
         )
     if "provenance" in clean_actor:
         clean_actor["provenance"] = sanitize_provenance(
@@ -162,7 +202,16 @@ def project_statements_for_consumer(
         doc_id = validated["doc_id"]
 
         # 1. Target authorization check
-        if (target, doc_id) not in auth_map:
+        auth_record = auth_map.get((target, doc_id))
+        if not auth_record:
+            continue
+
+        # Enforce authorization semantics (G6-R2):
+        # - allowed_scope MUST equal statement_claim_research
+        # - authorization_basis MUST equal PUBLIC
+        if auth_record.get("allowed_scope") != CONSUMER_CAPABILITY_STATEMENT_CLAIM:
+            continue
+        if auth_record.get("authorization_basis") != "PUBLIC":
             continue
 
         # 2. Public exportability check
@@ -241,7 +290,7 @@ def project_claims_for_consumer(
             for ref in raw_evidence_refs
         ]
 
-        # 2. Sanitize relation_assertion evidence_refs if present
+        # 2. Sanitize relation_assertion evidence_refs and actor refs (G6-R2)
         if "relation_assertion" in clean_c and isinstance(clean_c["relation_assertion"], dict):
             rel = dict(clean_c["relation_assertion"])
             if "evidence_refs" in rel and isinstance(rel["evidence_refs"], list):
@@ -249,9 +298,17 @@ def project_claims_for_consumer(
                     sanitize_locator_value(r, "relation", target_slug)
                     for r in rel["evidence_refs"]
                 ]
+            if "from_actor" in rel and isinstance(rel["from_actor"], dict):
+                rel["from_actor"] = sanitize_actor_for_consumer(
+                    rel["from_actor"], "relation", target_slug
+                )
+            if "to_actor" in rel and isinstance(rel["to_actor"], dict):
+                rel["to_actor"] = sanitize_actor_for_consumer(
+                    rel["to_actor"], "relation", target_slug
+                )
             clean_c["relation_assertion"] = rel
 
-        # 3. Sanitize provenance and transition history authority
+        # 3. Sanitize provenance and transition history authority (G4-R1, G6-R2)
         prov = dict(clean_c.get("provenance") or {})
         if "transitions" in prov and isinstance(prov["transitions"], list):
             cleaned_transitions = []

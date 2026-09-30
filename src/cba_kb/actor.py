@@ -48,11 +48,11 @@ def validate_actor_ref(actor_ref: Dict[str, Any]) -> Dict[str, Any]:
     """Validate and return normalized actor_ref dictionary."""
     if not isinstance(actor_ref, dict):
         raise ActorError("ACTOR_REF_OBJECT_REQUIRED")
-    
+
     required = {"kind", "id", "raw_name", "evidence_ref"}
     if not required <= set(actor_ref):
         raise ActorError(f"ACTOR_REF_FIELDS_MISSING:{sorted(required - set(actor_ref))}")
-    
+
     extra = set(actor_ref) - required
     if extra:
         raise ActorError(f"ACTOR_REF_EXTRA_FIELDS:{sorted(extra)}")
@@ -121,18 +121,18 @@ def resolve_actor(
     - Never mutates input registries or canonical player truth.
     """
     cleaned_name = normalize_name(raw_name)
-    
+
     if identity_registry:
         players = identity_registry.get("players", [])
         aliases = identity_registry.get("aliases", [])
-        
+
         # Build exact name index for active players
         matching_uids = set()
         for p in players:
             is_active = p.get("status") == "ACTIVE" or p.get("active") is True
             if is_active and p.get("canonical_name") == cleaned_name:
                 matching_uids.add(p["player_uid"])
-        
+
         # Check aliases
         for a in aliases:
             if a.get("alias_name") == cleaned_name:

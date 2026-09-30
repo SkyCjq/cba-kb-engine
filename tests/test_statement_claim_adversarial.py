@@ -292,7 +292,7 @@ def test_private_locators_cannot_leak_to_consumer():
     doc_id = "doc_0123456789abcdef01234567"
     private_local_path = "/var/private/secrets/synthetic_sensitive_interview.txt"
     private_drive_url = "https://docs.google.com/document/d/synthetic_private_drive_locator_doc_id_000000/edit"
-    
+
     actor = make_actor_ref("player", "顾全", private_local_path, "P0042_GUQUAN_0001")
     stmt = validate_statement({
         "statement_id": "stmt_0123456789abcdef01234567",
@@ -352,7 +352,7 @@ def test_same_name_subject_ambiguity_no_multi_uid_assertion():
     text = "顾全：李想最近在训练中非常刻苦，展现了出色的状态。"
     doc_id = compute_doc_id(text)
     result = extract_statements_from_text(text, doc_id=doc_id, identity_registry=registry)
-    
+
     assert len(result) == 1
     s = result[0]
     # Invariant: One ambiguous raw name must not assert multiple canonical player identities
@@ -446,7 +446,7 @@ def test_research_view_grain_spoofing_defense():
         "season": "2024-2025",
         "club": "深圳新世纪",
     }
-    
+
     # Attempt to spoof CANONICAL_FACT inside unknown
     spoofed_unknown = {
         "semantic_grain": "CANONICAL_FACT",
@@ -626,3 +626,369 @@ def test_strong_status_authority_persistence_and_serialization_g4_r2():
     }
     with pytest.raises(ClaimError, match="TRANSITION_AUTHORITY_CHAIN_INVALID"):
         validate_claim(tampered_mismatch)
+
+
+# ---------------------------------------------------------------------------
+# Gen6 Precision Amendment 01: Mandatory Adversarial Tests
+# ---------------------------------------------------------------------------
+def test_serialized_strong_claim_authority_revalidated_gen6():
+    """G6-R1: Valid serialized strong Claim and JSON round-trip must PASS with same claim_id and authority chain."""
+    stmt = validate_statement({
+        "statement_id": "stmt_0123456789abcdef01234567",
+        "doc_id": "doc_0123456789abcdef01234567",
+        "speaker_actor_ref": make_actor_ref("player", "顾全", "doc_1#L1", "P0042_GUQUAN_0001"),
+        "subject_actor_refs": [],
+        "time_anchor": "2024-03-03",
+        "statement_text_or_controlled_excerpt": "防守第一",
+        "source_ref": "https://example.com/press",
+        "evidence_ref": "doc_1#L1",
+        "attribution_type": "structured_turn",
+        "rights": {"classification": "public", "public_export_allowed": True, "evidence": ["cc"]},
+        "provenance": {"source": "interview"},
+        "extraction_status": "accepted",
+    })
+    cid = generate_claim_id([stmt["statement_id"]], "防守带动进攻")
+    valid_authority = {
+        "decision_ref": "DEC-20260930-GAME-01",
+        "authority_kind": "human_review",
+        "reviewer": "lead_editor",
+        "prior_claim_id": cid,
+        "prior_status": "unverified",
+        "target_status": "corroborated",
+        "supporting_evidence_refs": ["doc_1#L1"],
+        "timestamp": "2026-09-30T12:00:00Z",
+        "note": "Verified game tape",
+    }
+    claim = create_claim_from_statements(
+        "防守带动进攻",
+        [stmt],
+        status="corroborated",
+        transition_authority=valid_authority,
+    )
+    assert claim["status"] == "corroborated"
+    assert claim["claim_id"] == cid
+    assert claim["provenance"]["transitions"][0]["authority"]["decision_ref"] == "DEC-20260930-GAME-01"
+
+    # JSON round-trip
+    serialized = json.dumps(claim)
+    deserialized = json.loads(serialized)
+    validated = validate_claim(deserialized)
+    assert validated["claim_id"] == cid
+    assert validated["status"] == "corroborated"
+    assert validated["provenance"]["transitions"][0]["authority"]["reviewer"] == "lead_editor"
+    assert validated["provenance"]["transitions"][0]["authority"]["prior_claim_id"] == cid
+
+
+def test_serialized_strong_claim_forged_authority_matrix_gen6():
+    """G6-R1 Mandatory attack oracles for serialized strong claims fail closed."""
+    stmt = validate_statement({
+        "statement_id": "stmt_0123456789abcdef01234567",
+        "doc_id": "doc_0123456789abcdef01234567",
+        "speaker_actor_ref": make_actor_ref("player", "顾全", "doc_1#L1", "P0042_GUQUAN_0001"),
+        "subject_actor_refs": [],
+        "time_anchor": "2024-03-03",
+        "statement_text_or_controlled_excerpt": "防守第一",
+        "source_ref": "https://example.com/press",
+        "evidence_ref": "doc_1#L1",
+        "attribution_type": "structured_turn",
+        "rights": {"classification": "public", "public_export_allowed": True, "evidence": ["cc"]},
+        "provenance": {"source": "interview"},
+        "extraction_status": "accepted",
+    })
+    cid = generate_claim_id([stmt["statement_id"]], "防守带动进攻")
+    base_auth = {
+        "decision_ref": "DEC-20260930-GAME-01",
+        "authority_kind": "human_review",
+        "reviewer": "lead_editor",
+        "prior_claim_id": cid,
+        "prior_status": "unverified",
+        "target_status": "corroborated",
+        "supporting_evidence_refs": ["doc_1#L1"],
+        "timestamp": "2026-09-30T12:00:00Z",
+    }
+    valid_claim = create_claim_from_statements(
+        "防守带动进攻",
+        [stmt],
+        status="corroborated",
+        transition_authority=base_auth,
+    )
+
+    # 1. reviewer=llm_self_asserted -> FAIL
+    bad_reviewer = json.loads(json.dumps(valid_claim))
+    bad_reviewer["provenance"]["transitions"][0]["authority"]["reviewer"] = "llm_self_asserted"
+    bad_reviewer["provenance"]["latest_transition_authority"]["reviewer"] = "llm_self_asserted"
+    with pytest.raises(ClaimError, match="INVALID_REVIEWER_AUTHORITY"):
+        validate_claim(bad_reviewer)
+
+    # 2. authority_kind outside VALID_AUTHORITY_KINDS -> FAIL
+    bad_kind = json.loads(json.dumps(valid_claim))
+    bad_kind["provenance"]["transitions"][0]["authority"]["authority_kind"] = "unauthorized_ai_bot"
+    bad_kind["provenance"]["latest_transition_authority"]["authority_kind"] = "unauthorized_ai_bot"
+    with pytest.raises(ClaimError, match="UNAUTHORIZED_AUTHORITY_KIND"):
+        validate_claim(bad_kind)
+
+    # 3. wrong prior_claim_id -> FAIL
+    bad_cid = json.loads(json.dumps(valid_claim))
+    bad_cid["provenance"]["transitions"][0]["authority"]["prior_claim_id"] = "claim_000000000000000000000000"
+    bad_cid["provenance"]["latest_transition_authority"]["prior_claim_id"] = "claim_000000000000000000000000"
+    with pytest.raises(ClaimError, match="PRIOR_CLAIM_ID_MISMATCH"):
+        validate_claim(bad_cid)
+
+    # 4. transition.from_status != authority.prior_status -> FAIL
+    bad_from = json.loads(json.dumps(valid_claim))
+    bad_from["provenance"]["transitions"][0]["from_status"] = "review_required"
+    with pytest.raises(ClaimError, match="PRIOR_STATUS_MISMATCH"):
+        validate_claim(bad_from)
+
+    # 5. authority.target_status != claim.status -> FAIL
+    bad_target = json.loads(json.dumps(valid_claim))
+    bad_target["provenance"]["transitions"][0]["authority"]["target_status"] = "contradicted"
+    bad_target["provenance"]["latest_transition_authority"]["target_status"] = "contradicted"
+    with pytest.raises(ClaimError, match="TARGET_STATUS_MISMATCH"):
+        validate_claim(bad_target)
+
+    # 6. empty supporting_evidence_refs -> FAIL
+    empty_ev = json.loads(json.dumps(valid_claim))
+    empty_ev["provenance"]["transitions"][0]["authority"]["supporting_evidence_refs"] = []
+    empty_ev["provenance"]["latest_transition_authority"]["supporting_evidence_refs"] = []
+    with pytest.raises(ClaimError, match="SUPPORTING_EVIDENCE_REFS_REQUIRED"):
+        validate_claim(empty_ev)
+
+    # 7. missing decision_ref -> FAIL
+    missing_dec = json.loads(json.dumps(valid_claim))
+    missing_dec["provenance"]["transitions"][0]["authority"].pop("decision_ref", None)
+    missing_dec["provenance"]["latest_transition_authority"].pop("decision_ref", None)
+    with pytest.raises(ClaimError, match="TRANSITION_AUTHORITY_FIELDS_MISSING"):
+        validate_claim(missing_dec)
+
+
+def test_consumer_authorization_scope_basis_matrix_gen6():
+    """G6-R2: Consumer authorization scope and basis matrix fails closed."""
+    doc_id = "doc_0123456789abcdef01234567"
+    actor = make_actor_ref("player", "顾全", "doc_1#L1", "P0042_GUQUAN_0001")
+    stmt = validate_statement({
+        "statement_id": "stmt_0123456789abcdef01234567",
+        "doc_id": doc_id,
+        "speaker_actor_ref": actor,
+        "subject_actor_refs": [],
+        "time_anchor": "2024-03-03",
+        "statement_text_or_controlled_excerpt": "防守第一",
+        "source_ref": "https://example.com/press",
+        "evidence_ref": "doc_1#L1",
+        "attribution_type": "structured_turn",
+        "rights": {"classification": "public", "public_export_allowed": True, "evidence": ["cc"]},
+        "provenance": {"source": "interview"},
+        "extraction_status": "accepted",
+    })
+    claim = create_claim_from_statements("防守带动进攻", [stmt])
+
+    # 1. Valid scope=statement_claim_research + basis=PUBLIC + matching target/doc -> MATERIALIZED
+    valid_auth = [{
+        "doc_id": doc_id,
+        "target": "ChatGPT",
+        "allowed_scope": "statement_claim_research",
+        "authorization_basis": "PUBLIC",
+        "frozen_at": "2026-09-30T00:00:00Z",
+    }]
+    stmts_out, cap_s = project_statements_for_consumer([stmt], target="ChatGPT", authorizations=valid_auth)
+    claims_out, cap_c = project_claims_for_consumer([claim], [stmt], target="ChatGPT", authorizations=valid_auth)
+    assert cap_s == "MATERIALIZED"
+    assert cap_c == "MATERIALIZED"
+    assert len(stmts_out) == 1
+    assert len(claims_out) == 1
+
+    # 2. scope=documents_only -> NOT_MATERIALIZED
+    doc_only_auth = [{
+        "doc_id": doc_id,
+        "target": "ChatGPT",
+        "allowed_scope": "documents_only",
+        "authorization_basis": "PUBLIC",
+        "frozen_at": "2026-09-30T00:00:00Z",
+    }]
+    _, cap_doc = project_claims_for_consumer([claim], [stmt], target="ChatGPT", authorizations=doc_only_auth)
+    assert "NOT_MATERIALIZED" in cap_doc
+
+    # 3. basis=DENIED -> NOT_MATERIALIZED
+    denied_auth = [{
+        "doc_id": doc_id,
+        "target": "ChatGPT",
+        "allowed_scope": "statement_claim_research",
+        "authorization_basis": "DENIED",
+        "frozen_at": "2026-09-30T00:00:00Z",
+    }]
+    _, cap_denied = project_claims_for_consumer([claim], [stmt], target="ChatGPT", authorizations=denied_auth)
+    assert "NOT_MATERIALIZED" in cap_denied
+
+    # 4. missing authorization -> NOT_MATERIALIZED
+    _, cap_none = project_claims_for_consumer([claim], [stmt], target="ChatGPT", authorizations=None)
+    assert "NOT_MATERIALIZED" in cap_none
+
+    # 5. target mismatch -> NOT_MATERIALIZED
+    gemini_auth = [{
+        "doc_id": doc_id,
+        "target": "Gemini Notebook",
+        "allowed_scope": "statement_claim_research",
+        "authorization_basis": "PUBLIC",
+        "frozen_at": "2026-09-30T00:00:00Z",
+    }]
+    _, cap_target_mis = project_claims_for_consumer([claim], [stmt], target="ChatGPT", authorizations=gemini_auth)
+    assert "NOT_MATERIALIZED" in cap_target_mis
+
+    # 6. doc mismatch -> NOT_MATERIALIZED
+    diff_doc_auth = [{
+        "doc_id": "doc_999999999999999999999999",
+        "target": "ChatGPT",
+        "allowed_scope": "statement_claim_research",
+        "authorization_basis": "PUBLIC",
+        "frozen_at": "2026-09-30T00:00:00Z",
+    }]
+    _, cap_doc_mis = project_claims_for_consumer([claim], [stmt], target="ChatGPT", authorizations=diff_doc_auth)
+    assert "NOT_MATERIALIZED" in cap_doc_mis
+
+
+def test_relation_actor_locator_cross_platform_sanitization_gen6():
+    """G6-R2: Cross-platform local path and Drive locators in relation actors/evidence must be sanitized."""
+    doc_id = "doc_0123456789abcdef01234567"
+    posix_path = "/opt/private/x"
+    win_path = r"C:\Users\alice\secret.txt"
+    unc_path = r"\\server\share\secret.txt"
+    file_url = "file:///private/x"
+    drive_url = "https://docs.google.com/document/d/synthetic_fake_drive_doc_id_000000000000/edit"
+
+    actor_posix = make_actor_ref("player", "顾全", posix_path, "P0042_GUQUAN_0001")
+    actor_win = make_actor_ref("player", "孟铎", win_path, "P0018_MENGDUO_0001")
+    actor_unc = make_actor_ref("player", "顾全", unc_path, "P0042_GUQUAN_0001")
+    actor_file = make_actor_ref("player", "孟铎", file_url, "P0018_MENGDUO_0001")
+
+    stmt = validate_statement({
+        "statement_id": "stmt_0123456789abcdef01234567",
+        "doc_id": doc_id,
+        "speaker_actor_ref": actor_posix,
+        "subject_actor_refs": [actor_win],
+        "time_anchor": "2024-03-03",
+        "statement_text_or_controlled_excerpt": "防守第一",
+        "source_ref": "https://example.com/press",
+        "evidence_ref": f"{doc_id}#turn-1",
+        "attribution_type": "structured_turn",
+        "rights": {"classification": "public", "public_export_allowed": True, "evidence": ["cc"]},
+        "provenance": {"source": "interview"},
+        "extraction_status": "accepted",
+    })
+
+    claim = create_claim_from_statements(
+        "防守带动进攻",
+        [stmt],
+        relation_assertion={
+            "relation_id": "rel_0123456789abcdef01234567",
+            "relation_type": "teammate_of",
+            "from_actor": actor_unc,
+            "to_actor": actor_file,
+            "evidence_refs": [drive_url],
+            "supporting_statement_ids": [stmt["statement_id"]],
+            "confidence": "HIGH",
+        },
+    )
+
+    auth = [{
+        "doc_id": doc_id,
+        "target": "ChatGPT",
+        "allowed_scope": "statement_claim_research",
+        "authorization_basis": "PUBLIC",
+        "frozen_at": "2026-09-30T00:00:00Z",
+    }]
+
+    exported, cap = project_claims_for_consumer([claim], [stmt], target="ChatGPT", authorizations=auth)
+    assert cap == "MATERIALIZED"
+    assert len(exported) == 1
+    mat_claim = exported[0]
+    serialized = json.dumps(mat_claim)
+
+    # Verify no raw private locator survives in materialized claim
+    assert "/opt/private/x" not in serialized
+    assert "C:\\Users\\alice" not in serialized
+    assert "\\\\server\\share" not in serialized
+    assert "file:///private/x" not in serialized
+    assert "docs.google.com" not in serialized
+
+
+def test_relation_assertion_bounded_to_enclosing_claim_gen6():
+    """G6-R4: Relation assertion must be strictly bounded by enclosing Claim's statements and evidence."""
+    actor_a = make_actor_ref("player", "顾全", "doc_1#L1", "P0042_GUQUAN_0001")
+    actor_b = make_actor_ref("player", "孟铎", "doc_1#L2", "P0018_MENGDUO_0001")
+    stmt_1 = "stmt_0123456789abcdef01234567"
+    stmt_unrelated = "stmt_999999999999999999999999"
+
+    base_claim = {
+        "claim_id": "claim_0123456789abcdef01234567",
+        "claim_text": "顾全与孟铎配合默契",
+        "supporting_statement_ids": [stmt_1],
+        "status": "unverified",
+        "evidence_refs": ["doc_1#L1", "doc_1#L2"],
+        "review_reason": None,
+        "provenance": {"source": "interview"},
+    }
+
+    # 1. Unrelated relation statement ID -> FAIL
+    c_unrelated_sid = dict(base_claim, relation_assertion={
+        "relation_id": "rel_0123456789abcdef01234567",
+        "relation_type": "teammate_of",
+        "from_actor": actor_a,
+        "to_actor": actor_b,
+        "evidence_refs": ["doc_1#L1"],
+        "supporting_statement_ids": [stmt_unrelated],
+        "confidence": "HIGH",
+    })
+    with pytest.raises(ClaimError, match="RELATION_SUPPORTING_STATEMENTS_NOT_SUBSET_OF_CLAIM"):
+        validate_claim(c_unrelated_sid)
+
+    # 2. Mixture of one valid + one unrelated relation statement ID -> FAIL
+    c_mixed_sid = dict(base_claim, relation_assertion={
+        "relation_id": "rel_0123456789abcdef01234567",
+        "relation_type": "teammate_of",
+        "from_actor": actor_a,
+        "to_actor": actor_b,
+        "evidence_refs": ["doc_1#L1"],
+        "supporting_statement_ids": [stmt_1, stmt_unrelated],
+        "confidence": "HIGH",
+    })
+    with pytest.raises(ClaimError, match="RELATION_SUPPORTING_STATEMENTS_NOT_SUBSET_OF_CLAIM"):
+        validate_claim(c_mixed_sid)
+
+    # 3. Unrelated relation evidence ref -> FAIL
+    c_unrelated_ev = dict(base_claim, relation_assertion={
+        "relation_id": "rel_0123456789abcdef01234567",
+        "relation_type": "teammate_of",
+        "from_actor": actor_a,
+        "to_actor": actor_b,
+        "evidence_refs": ["doc_99#L99"],
+        "supporting_statement_ids": [stmt_1],
+        "confidence": "HIGH",
+    })
+    with pytest.raises(ClaimError, match="RELATION_EVIDENCE_REFS_NOT_SUBSET_OF_CLAIM"):
+        validate_claim(c_unrelated_ev)
+
+    # 4. Empty relation evidence -> FAIL under existing relation validator
+    c_empty_ev = dict(base_claim, relation_assertion={
+        "relation_id": "rel_0123456789abcdef01234567",
+        "relation_type": "teammate_of",
+        "from_actor": actor_a,
+        "to_actor": actor_b,
+        "evidence_refs": [],
+        "supporting_statement_ids": [stmt_1],
+        "confidence": "HIGH",
+    })
+    with pytest.raises(ClaimError, match="RELATION_EVIDENCE_REFS_REQUIRED"):
+        validate_claim(c_empty_ev)
+
+    # 5. Relation statement IDs subset of Claim AND relation evidence refs subset of Claim -> PASS
+    c_valid = dict(base_claim, relation_assertion={
+        "relation_id": "rel_0123456789abcdef01234567",
+        "relation_type": "teammate_of",
+        "from_actor": actor_a,
+        "to_actor": actor_b,
+        "evidence_refs": ["doc_1#L1"],
+        "supporting_statement_ids": [stmt_1],
+        "confidence": "HIGH",
+    })
+    validated = validate_claim(c_valid)
+    assert validated["relation_assertion"]["relation_id"] == "rel_0123456789abcdef01234567"

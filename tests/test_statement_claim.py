@@ -297,7 +297,7 @@ def test_rights_fail_closed(identity_registry, structured_turn_text):
         "doc_id": doc_id,
         "target": "ChatGPT",
         "allowed_scope": "statement_claim_research",
-        "authorization_basis": "TEST_AUTHORIZATION",
+        "authorization_basis": "PUBLIC",
         "frozen_at": "2026-09-30T00:00:00Z",
     }]
 

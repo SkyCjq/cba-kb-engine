@@ -1213,49 +1213,44 @@ def main():
             save(a.output, envelope)
             result = envelope
         elif a.command=='statement-extract':
-            from .document_lane import content_hash as doc_content_hash, doc_id as compute_doc_id
+            from .document_lane import doc_id as compute_doc_id
+            from .source_intake import validate_normalized_document, SourceIntakeError
             from .statement import extract_statements_from_text, verify_document_binding
 
             norm_artifact_path = a.normalized_document
             if not norm_artifact_path and a.input:
                 try:
                     loaded = json.loads(a.input.read_text(encoding='utf-8'))
-                    if isinstance(loaded, dict) and ('normalized_document' in loaded or 'normalized_text' in loaded):
+                    if isinstance(loaded, dict) and ('normalized_document' in loaded or 'doc_id' in loaded or 'normalized_text' in loaded):
                         norm_artifact_path = a.input
                 except Exception:
                     pass
 
             if norm_artifact_path:
-                norm_data = json.loads(norm_artifact_path.read_text(encoding='utf-8'))
+                try:
+                    norm_data = json.loads(norm_artifact_path.read_text(encoding='utf-8'))
+                except Exception as exc:
+                    raise RuntimeError(f"NORMALIZED_DOCUMENT_JSON_INVALID: {exc}") from exc
+
                 if isinstance(norm_data, dict) and 'normalized_document' in norm_data:
-                    norm_doc = norm_data['normalized_document']
-                elif isinstance(norm_data, dict) and 'normalized_text' in norm_data:
-                    norm_doc = norm_data
+                    candidate_doc = norm_data['normalized_document']
+                elif isinstance(norm_data, dict):
+                    candidate_doc = norm_data
                 else:
-                    raise RuntimeError("NORMALIZED_DOCUMENT_FORMAT_INVALID: artifact must contain normalized_document or normalized_text")
+                    raise RuntimeError("NORMALIZED_DOCUMENT_FORMAT_INVALID: artifact must be a JSON object")
 
-                normalized_text = norm_doc.get('normalized_text')
-                if not isinstance(normalized_text, str) or not normalized_text.strip():
-                    raise RuntimeError("NORMALIZED_TEXT_REQUIRED: artifact missing non-empty normalized_text")
+                try:
+                    validated_doc = validate_normalized_document(candidate_doc)
+                except SourceIntakeError as exc:
+                    raise RuntimeError(f"NORMALIZED_DOCUMENT_SCHEMA_INVALID: {exc}") from exc
 
-                artifact_doc_id = norm_doc.get('doc_id')
-                artifact_content_hash = norm_doc.get('content_hash')
+                if a.doc_id and a.doc_id != validated_doc["doc_id"]:
+                    raise RuntimeError(f"DOC_ID_MISMATCH: CLI argument {a.doc_id} != artifact doc_id {validated_doc['doc_id']}")
 
-                expected_hash = doc_content_hash(normalized_text)
-                if artifact_content_hash and artifact_content_hash != expected_hash:
-                    raise RuntimeError(f"CONTENT_HASH_MISMATCH: declared {artifact_content_hash} != computed {expected_hash}")
+                target_doc_id = validated_doc["doc_id"]
+                content = validated_doc["normalized_text"]
 
-                expected_doc_id = compute_doc_id(normalized_text)
-                if artifact_doc_id and artifact_doc_id != expected_doc_id:
-                    raise RuntimeError(f"DOC_ID_CONTENT_MISMATCH: declared {artifact_doc_id} != computed {expected_doc_id}")
-
-                if a.doc_id and a.doc_id != expected_doc_id:
-                    raise RuntimeError(f"DOC_ID_MISMATCH: CLI argument {a.doc_id} != computed artifact doc_id {expected_doc_id}")
-
-                target_doc_id = expected_doc_id
-                content = normalized_text
-
-                artifact_rights = norm_doc.get('rights') or {}
+                artifact_rights = validated_doc.get('rights') or {}
                 rights_class = a.rights_classification if a.rights_classification != 'private' else artifact_rights.get('classification', a.rights_classification)
                 public_export = a.public_export_allowed if a.public_export_allowed else artifact_rights.get('public_export_allowed', False)
                 evidence = artifact_rights.get('evidence', [])
@@ -1264,7 +1259,7 @@ def main():
                     'public_export_allowed': public_export,
                     'evidence': evidence,
                 }
-                provenance = norm_doc.get('provenance') or {'source_provider': norm_doc.get('source_provider', 'unknown')}
+                provenance = validated_doc.get('provenance') or {'source_provider': validated_doc.get('source_provider', 'unknown')}
             elif a.allow_unnormalized_raw_input:
                 if not a.input:
                     raise RuntimeError("INPUT_REQUIRED_FOR_LEGACY_RAW_MODE")
