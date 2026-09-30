@@ -524,7 +524,7 @@ def test_claim_evidence_refs_locator_sanitization_g4_r1():
         },
     )
     # Inject raw private evidence into the actual contract evidence_refs field
-    raw_claim["evidence_refs"] = [private_local_evidence, private_drive_evidence]
+    raw_claim["evidence_refs"] = [private_local_evidence, private_drive_evidence, nested_private_evidence]
     validated_claim = validate_claim(raw_claim)
 
     auth = [{
@@ -992,3 +992,277 @@ def test_relation_assertion_bounded_to_enclosing_claim_gen6():
     })
     validated = validate_claim(c_valid)
     assert validated["relation_assertion"]["relation_id"] == "rel_0123456789abcdef01234567"
+
+
+def test_claim_transition_chain_invariant_adversarial():
+    """Universal invariant: Strong Claim transition-chain validation matrix.
+
+    Invariants tested:
+    - first from_status must come from INITIAL_CLAIM_STATUSES ('unverified' or 'review_required').
+    - bogus initial status fails closed.
+    - valid-but-disconnected initial status fails closed.
+    - null evidence ref ([None]) fails closed.
+    - empty evidence refs ([] and [""]) fails closed.
+    - unrelated evidence ref not bound to claim fails closed.
+    - broken multi-transition continuity fails closed.
+    - valid single transition passes.
+    - valid multi-transition round trip passes with all transitions preserved.
+    """
+    doc_id = "doc_0123456789abcdef01234567"
+    stmt = validate_statement({
+        "statement_id": "stmt_0123456789abcdef01234567",
+        "doc_id": doc_id,
+        "speaker_actor_ref": make_actor_ref("player", "郭艾伦", "doc_1#L1", "P0001_GUOAILUN_0001"),
+        "subject_actor_refs": [],
+        "time_anchor": "2024-03-03",
+        "statement_text_or_controlled_excerpt": "比赛很激烈",
+        "source_ref": "https://example.com/press",
+        "evidence_ref": f"{doc_id}#turn-1",
+        "attribution_type": "structured_turn",
+        "rights": {"classification": "public", "public_export_allowed": True, "evidence": ["cc"]},
+        "provenance": {"source": "interview"},
+        "extraction_status": "accepted",
+    })
+    claim_ev = [f"{doc_id}#turn-1"]
+    cid = generate_claim_id([stmt["statement_id"]], "比赛很激烈")
+
+    base_auth = {
+        "decision_ref": "DEC-TEST-001",
+        "authority_kind": "human_review",
+        "reviewer": "lead_editor",
+        "prior_claim_id": cid,
+        "prior_status": "unverified",
+        "target_status": "corroborated",
+        "supporting_evidence_refs": [claim_ev[0]],
+    }
+
+    base_claim_dict = {
+        "claim_id": cid,
+        "claim_text": "比赛很激烈",
+        "supporting_statement_ids": [stmt["statement_id"]],
+        "status": "corroborated",
+        "evidence_refs": list(claim_ev),
+        "review_reason": None,
+    }
+
+    # 1. Bogus initial status -> FAIL
+    c_bogus_init = dict(base_claim_dict, provenance={
+        "transitions": [{
+            "from_status": "bogus_status",
+            "to_status": "corroborated",
+            "authority": dict(base_auth, prior_status="bogus_status"),
+        }],
+    })
+    with pytest.raises(ClaimError, match="TRANSITION_AUTHORITY_CHAIN_INVALID"):
+        validate_claim(c_bogus_init)
+
+    # 2. Valid status but disconnected (not an allowed initial status) -> FAIL
+    c_discon_init = dict(base_claim_dict, provenance={
+        "transitions": [{
+            "from_status": "disputed",
+            "to_status": "corroborated",
+            "authority": dict(base_auth, prior_status="disputed"),
+        }],
+    })
+    with pytest.raises(ClaimError, match="TRANSITION_AUTHORITY_CHAIN_INVALID"):
+        validate_claim(c_discon_init)
+
+    # 3. Null evidence ref in authority ([None]) -> FAIL
+    c_null_ev = dict(base_claim_dict, provenance={
+        "transitions": [{
+            "from_status": "unverified",
+            "to_status": "corroborated",
+            "authority": dict(base_auth, supporting_evidence_refs=[None]),
+        }],
+    })
+    with pytest.raises(ClaimError, match="AUTHORITY_EVIDENCE_NULL_FORBIDDEN"):
+        validate_claim(c_null_ev)
+
+    # 4. Empty evidence refs in authority ([]) -> FAIL
+    c_empty_ev = dict(base_claim_dict, provenance={
+        "transitions": [{
+            "from_status": "unverified",
+            "to_status": "corroborated",
+            "authority": dict(base_auth, supporting_evidence_refs=[]),
+        }],
+    })
+    with pytest.raises(ClaimError, match="SUPPORTING_EVIDENCE_REFS_REQUIRED"):
+        validate_claim(c_empty_ev)
+
+    # 5. Empty string evidence ref in authority ([""]) -> FAIL
+    c_empty_str_ev = dict(base_claim_dict, provenance={
+        "transitions": [{
+            "from_status": "unverified",
+            "to_status": "corroborated",
+            "authority": dict(base_auth, supporting_evidence_refs=[""]),
+        }],
+    })
+    with pytest.raises(ClaimError, match="AUTHORITY_EVIDENCE_EMPTY_FORBIDDEN"):
+        validate_claim(c_empty_str_ev)
+
+    # 6. Unrelated evidence ref not bound to claim -> FAIL
+    c_unrelated_ev = dict(base_claim_dict, provenance={
+        "transitions": [{
+            "from_status": "unverified",
+            "to_status": "corroborated",
+            "authority": dict(base_auth, supporting_evidence_refs=["unrelated_doc#L99"]),
+        }],
+    })
+    with pytest.raises(ClaimError, match="AUTHORITY_EVIDENCE_NOT_BOUND_TO_CLAIM"):
+        validate_claim(c_unrelated_ev)
+
+    # 7. Broken multi-transition continuity -> FAIL
+    c_broken_cont = dict(base_claim_dict, provenance={
+        "transitions": [
+            {
+                "from_status": "unverified",
+                "to_status": "review_required",
+                "authority": dict(base_auth, prior_status="unverified", target_status="review_required"),
+            },
+            {
+                "from_status": "contradicted",
+                "to_status": "corroborated",
+                "authority": dict(base_auth, prior_status="contradicted", target_status="corroborated"),
+            },
+        ],
+    })
+    with pytest.raises(ClaimError, match="TRANSITION_CHAIN_DISCONTINUOUS"):
+        validate_claim(c_broken_cont)
+
+    # 8. Valid single transition -> PASS
+    c_valid_single = create_claim_from_statements(
+        "比赛很激烈",
+        [stmt],
+        status="corroborated",
+        transition_authority=base_auth,
+    )
+    assert validate_claim(c_valid_single)["status"] == "corroborated"
+
+    # 9. Valid multi-transition round trip -> PASS
+    c_initial = create_claim_from_statements("比赛很激烈", [stmt], status="unverified")
+    assert c_initial["status"] == "unverified"
+
+    auth_step1 = {
+        "decision_ref": "DEC-TEST-002",
+        "authority_kind": "human_review",
+        "reviewer": "fact_checker",
+        "prior_claim_id": cid,
+        "prior_status": "unverified",
+        "target_status": "review_required",
+        "supporting_evidence_refs": [claim_ev[0]],
+    }
+    c_step1 = transition_claim_status(c_initial, "review_required", transition_authority=auth_step1)
+    assert c_step1["status"] == "review_required"
+
+    auth_step2 = {
+        "decision_ref": "DEC-TEST-003",
+        "authority_kind": "human_review",
+        "reviewer": "lead_editor",
+        "prior_claim_id": cid,
+        "prior_status": "review_required",
+        "target_status": "corroborated",
+        "supporting_evidence_refs": [claim_ev[0]],
+    }
+    c_corroborated = transition_claim_status(c_step1, "corroborated", transition_authority=auth_step2)
+    validated_multi = validate_claim(c_corroborated)
+    assert validated_multi["status"] == "corroborated"
+    assert len(validated_multi["provenance"]["transitions"]) == 2
+
+
+def test_consumer_locator_free_invariant_adversarial():
+    """Universal invariant: Final consumer projection locator-free recursive postcondition.
+
+    Invariants tested:
+    - Normal Chinese text with slashes / punctuation is NOT falsely flagged (MATERIALIZED).
+    - Leak in claim_text (/opt/private/claim) fails closed as NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS).
+    - Leak in actor.raw_name (/opt/private/person) fails closed as NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS).
+    - Leak in nested dict/list fails closed as NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS).
+    - Windows absolute path, UNC path, file URL, Drive URL fail closed.
+    - Statement leak propagates failure to Claim projection.
+    """
+    doc_id = "doc_0123456789abcdef01234567"
+    actor_normal = make_actor_ref("player", "郭艾伦", "doc_1#L1", "P0001_GUOAILUN_0001")
+    stmt = validate_statement({
+        "statement_id": "stmt_0123456789abcdef01234567",
+        "doc_id": doc_id,
+        "speaker_actor_ref": actor_normal,
+        "subject_actor_refs": [],
+        "time_anchor": "2024-03-03",
+        "statement_text_or_controlled_excerpt": "2024/2025赛季场均得分/篮板表现优秀",
+        "source_ref": "https://example.com/press",
+        "evidence_ref": f"{doc_id}#turn-1",
+        "attribution_type": "structured_turn",
+        "rights": {"classification": "public", "public_export_allowed": True, "evidence": ["cc"]},
+        "provenance": {"source": "interview"},
+        "extraction_status": "accepted",
+    })
+
+    auth = [{
+        "doc_id": doc_id,
+        "target": "ChatGPT",
+        "allowed_scope": "statement_claim_research",
+        "authorization_basis": "PUBLIC",
+        "frozen_at": "2026-09-30T00:00:00Z",
+    }]
+
+    claim = create_claim_from_statements(
+        "2024/2025赛季场均得分/篮板表现优秀",
+        [stmt],
+        status="unverified",
+    )
+
+    # 1. Normal Chinese text with slashes / standard terminology must pass MATERIALIZED
+    exp_stmts, cap_stmts = project_statements_for_consumer([stmt], target="ChatGPT", authorizations=auth)
+    assert cap_stmts == "MATERIALIZED"
+    assert len(exp_stmts) == 1
+    exp_claims, cap_claims = project_claims_for_consumer([claim], [stmt], target="ChatGPT", authorizations=auth)
+    assert cap_claims == "MATERIALIZED"
+    assert len(exp_claims) == 1
+
+    # 2. Private locator in claim_text -> NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)
+    claim_leaky_text = dict(claim, claim_text="/opt/private/claim")
+    _, cap_bad_text = project_claims_for_consumer([claim_leaky_text], [stmt], target="ChatGPT", authorizations=auth)
+    assert cap_bad_text == "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)"
+
+    # 3. Private locator in actor.raw_name -> NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)
+    actor_leaky = make_actor_ref("player", "/opt/private/person", "doc_1#L1", "P0001_GUOAILUN_0001")
+    stmt_leaky_actor = dict(stmt, speaker_actor_ref=actor_leaky)
+    _, cap_stmt_actor = project_statements_for_consumer([stmt_leaky_actor], target="ChatGPT", authorizations=auth)
+    assert cap_stmt_actor == "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)"
+
+    claim_for_leaky_stmt = create_claim_from_statements("正常断言", [stmt_leaky_actor], status="unverified")
+    _, cap_claim_actor = project_claims_for_consumer([claim_for_leaky_stmt], [stmt_leaky_actor], target="ChatGPT", authorizations=auth)
+    assert cap_claim_actor == "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)"
+
+    # 4. Windows absolute path leaf -> NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)
+    claim_win = dict(claim, claim_text=r"C:\Users\private\document.txt")
+    _, cap_win = project_claims_for_consumer([claim_win], [stmt], target="ChatGPT", authorizations=auth)
+    assert cap_win == "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)"
+
+    # 5. UNC path leaf -> NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)
+    claim_unc = dict(claim, claim_text=r"\\corp\share\secrets.docx")
+    _, cap_unc = project_claims_for_consumer([claim_unc], [stmt], target="ChatGPT", authorizations=auth)
+    assert cap_unc == "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)"
+
+    # 6. file:// URL leaf -> NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)
+    claim_file_url = dict(claim, claim_text="file:///var/secret/keys.json")
+    _, cap_file_url = project_claims_for_consumer([claim_file_url], [stmt], target="ChatGPT", authorizations=auth)
+    assert cap_file_url == "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)"
+
+    # 7. Drive URL leaf in nested actor ref inside relation_assertion -> NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)
+    actor_drive = make_actor_ref(
+        "unresolved",
+        "https://docs.google.com/document/d/synthetic_fake_drive_doc_id_000000000000/edit",
+        "doc_1#L1",
+    )
+    claim_nested = dict(claim, relation_assertion={
+        "relation_id": "rel_0123456789abcdef01234567",
+        "relation_type": "teammate_of",
+        "from_actor": actor_normal,
+        "to_actor": actor_drive,
+        "evidence_refs": [claim["evidence_refs"][0]],
+        "supporting_statement_ids": claim["supporting_statement_ids"],
+        "confidence": "HIGH",
+    })
+    _, cap_nested = project_claims_for_consumer([claim_nested], [stmt], target="ChatGPT", authorizations=auth)
+    assert cap_nested == "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)"

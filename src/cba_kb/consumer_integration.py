@@ -75,6 +75,28 @@ def is_private_locator(text: str) -> bool:
     return False
 
 
+def find_private_locator_in_object(obj: Any) -> Optional[str]:
+    """Recursively search for any private locator string leaf in an arbitrary nested data structure.
+
+    Returns the first offending locator string found, or None if completely clean.
+    """
+    if isinstance(obj, str):
+        if is_private_locator(obj):
+            return obj
+        return None
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            found = find_private_locator_in_object(v)
+            if found is not None:
+                return found
+    elif isinstance(obj, (list, tuple, set)):
+        for item in obj:
+            found = find_private_locator_in_object(item)
+            if found is not None:
+                return found
+    return None
+
+
 def sanitize_locator_string(
     locator: str,
     doc_id: str,
@@ -239,6 +261,10 @@ def project_statements_for_consumer(
         exported.append(clean_s)
 
     if exported:
+        for s_exp in exported:
+            bad_loc = find_private_locator_in_object(s_exp)
+            if bad_loc is not None:
+                return [], "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)"
         capability = "MATERIALIZED"
     else:
         capability = "NOT_MATERIALIZED(NO_AUTHORIZED_PUBLIC_STATEMENT_EVIDENCE)"
@@ -264,9 +290,11 @@ def project_claims_for_consumer(
         return [], "NOT_MATERIALIZED(NO_TARGET_AUTHORIZATIONS_PROVIDED)"
 
     # Pre-project statements for this target
-    exported_stmts, _ = project_statements_for_consumer(
+    exported_stmts, stmt_cap = project_statements_for_consumer(
         statements, target=target, authorizations=authorizations
     )
+    if stmt_cap == "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)":
+        return [], "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)"
     exported_stmt_ids = {s["statement_id"] for s in exported_stmts}
 
     exported: List[Dict[str, Any]] = []
@@ -355,6 +383,10 @@ def project_claims_for_consumer(
         exported.append(clean_c)
 
     if exported:
+        for c_exp in exported:
+            bad_loc = find_private_locator_in_object(c_exp)
+            if bad_loc is not None:
+                return [], "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)"
         capability = "MATERIALIZED"
     else:
         capability = "NOT_MATERIALIZED(NO_AUTHORIZED_PUBLIC_CLAIM_EVIDENCE)"

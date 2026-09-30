@@ -252,6 +252,106 @@ def validate_transition_authority(
     }
 
 
+INITIAL_CLAIM_STATUSES = frozenset({
+    "unverified",
+    "review_required",
+})
+
+
+def validate_transition_chain(
+    transitions: List[Dict[str, Any]],
+    claim_id: str,
+    current_status: str,
+    claim_evidence_refs: List[Any],
+) -> List[Dict[str, Any]]:
+    """Validate a complete, continuous, evidence-bound transition authority chain.
+
+    Invariants:
+    - transitions must be a non-empty list of dicts.
+    - first from_status must be a trusted initial status: unverified or review_required.
+    - All from_status and to_status must belong to CLAIM_STATUSES.
+    - Every jump must be continuous: previous to_status == next from_status.
+    - authority.prior_status == transition.from_status.
+    - authority.target_status == transition.to_status.
+    - authority.prior_claim_id == claim_id.
+    - Each jump calls canonical validate_transition_authority.
+    - supporting_evidence_refs must be non-empty, and cannot contain null or empty values.
+    - authority evidence must be bound to that Claim's evidence_refs.
+    - Final to_status == current_status.
+    """
+    if not isinstance(transitions, list) or not transitions:
+        raise ClaimError("STRONG_STATUS_REQUIRES_PERSISTED_TRANSITION_AUTHORITY: TRANSITION_CHAIN_EMPTY")
+
+    first_transition = transitions[0]
+    if not isinstance(first_transition, dict):
+        raise ClaimError("TRANSITION_OBJECT_REQUIRED")
+
+    first_from = first_transition.get("from_status")
+    if first_from not in INITIAL_CLAIM_STATUSES:
+        raise ClaimError(f"TRANSITION_AUTHORITY_CHAIN_INVALID: INVALID_INITIAL_TRANSITION_STATUS:{first_from}")
+
+    claim_ev_keys = {_canonical_evidence_key(e) for e in claim_evidence_refs}
+
+    current_state = first_from
+    validated_transitions = []
+
+    for idx, t in enumerate(transitions):
+        if not isinstance(t, dict):
+            raise ClaimError(f"TRANSITION_OBJECT_REQUIRED_AT_INDEX:{idx}")
+
+        from_status = t.get("from_status")
+        to_status = t.get("to_status")
+
+        if from_status not in CLAIM_STATUSES or to_status not in CLAIM_STATUSES:
+            raise ClaimError("CLAIM_STATUS_INVALID")
+
+        if from_status != current_state:
+            raise ClaimError(f"TRANSITION_AUTHORITY_CHAIN_INVALID: TRANSITION_CHAIN_DISCONTINUOUS expected from_status {current_state} but got {from_status}")
+
+        auth = t.get("authority")
+        if not isinstance(auth, dict):
+            raise ClaimError("TRANSITION_AUTHORITY_OBJECT_REQUIRED")
+
+        if auth.get("prior_status") != from_status:
+            raise ClaimError("PRIOR_STATUS_MISMATCH")
+
+        if auth.get("target_status") != to_status:
+            raise ClaimError("TARGET_STATUS_MISMATCH")
+
+        if auth.get("prior_claim_id") != claim_id:
+            raise ClaimError("PRIOR_CLAIM_ID_MISMATCH")
+
+        ev_refs = auth.get("supporting_evidence_refs")
+        if not isinstance(ev_refs, list) or not ev_refs:
+            raise ClaimError("SUPPORTING_EVIDENCE_REFS_REQUIRED")
+
+        for ev in ev_refs:
+            if ev is None:
+                raise ClaimError("AUTHORITY_EVIDENCE_NULL_FORBIDDEN: Supporting evidence ref cannot be None")
+            if isinstance(ev, str) and not ev.strip():
+                raise ClaimError("AUTHORITY_EVIDENCE_EMPTY_FORBIDDEN: Supporting evidence ref cannot be empty string")
+            if _canonical_evidence_key(ev) not in claim_ev_keys:
+                raise ClaimError("AUTHORITY_EVIDENCE_NOT_BOUND_TO_CLAIM: Supporting evidence ref not bound to enclosing claim evidence_refs")
+
+        prior_claim_for_validation = {
+            "claim_id": claim_id,
+            "status": current_state,
+        }
+        val_auth = validate_transition_authority(auth, prior_claim_for_validation, to_status)
+
+        validated_transitions.append({
+            "from_status": from_status,
+            "to_status": to_status,
+            "authority": val_auth,
+        })
+        current_state = to_status
+
+    if current_state != current_status:
+        raise ClaimError(f"TRANSITION_AUTHORITY_CHAIN_INVALID: TRANSITION_CHAIN_FINAL_STATUS_MISMATCH expected {current_status} but chain ended at {current_state}")
+
+    return validated_transitions
+
+
 def validate_claim(claim: Dict[str, Any]) -> Dict[str, Any]:
     """Validate and normalize a claim dict."""
     if not isinstance(claim, dict):
@@ -303,50 +403,28 @@ def validate_claim(claim: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(transitions, list) or not transitions:
             raise ClaimError(f"STRONG_STATUS_{status.upper()}_REQUIRES_PERSISTED_TRANSITION_AUTHORITY")
 
-        # 1. Select the serialized transition that justifies the current status (prefer last transition with to_status == status)
-        justifying_transition = None
-        for t in reversed(transitions):
-            if isinstance(t, dict) and t.get("to_status") == status:
-                justifying_transition = t
-                break
+        val_transitions = validate_transition_chain(
+            transitions,
+            claim_id=claim_id,
+            current_status=status,
+            claim_evidence_refs=evidence_refs,
+        )
 
-        if not justifying_transition:
-            raise ClaimError(f"STRONG_STATUS_{status.upper()}_TRANSITION_AUTHORITY_CHAIN_INVALID")
-
-        # 2. Require transition.authority is a dict, from_status == prior_status, and to_status == target_status == current status
-        auth = justifying_transition.get("authority")
-        if not isinstance(auth, dict):
-            raise ClaimError("TRANSITION_AUTHORITY_OBJECT_REQUIRED")
-
-        from_status = justifying_transition.get("from_status")
-        if from_status != auth.get("prior_status"):
-            raise ClaimError("PRIOR_STATUS_MISMATCH")
-
-        to_status = justifying_transition.get("to_status")
-        if to_status != status or auth.get("target_status") != status:
-            raise ClaimError("TARGET_STATUS_MISMATCH")
-
-        # 3. Reconstruct prior_claim_for_validation = {claim_id: current claim_id, status: authority.prior_status}
-        prior_claim_for_validation = {
+        last_auth = val_transitions[-1]["authority"]
+        last_from = val_transitions[-1]["from_status"]
+        last_prior_claim = {
             "claim_id": claim_id,
-            "status": auth.get("prior_status"),
+            "status": last_from,
         }
 
-        # 4. Call canonical validate_transition_authority
-        validated_authority = validate_transition_authority(auth, prior_claim_for_validation, status)
-
-        # 5. Require validated authority prior_claim_id == current claim_id
-        if validated_authority["prior_claim_id"] != claim_id:
-            raise ClaimError("PRIOR_CLAIM_ID_MISMATCH")
-
-        # 6. If latest_transition_authority or transition_authority is present, must be semantically identical
+        # If latest_transition_authority or transition_authority is present, must be semantically identical
         for auth_key in ("latest_transition_authority", "transition_authority"):
             if auth_key in provenance and provenance[auth_key] is not None:
                 other_auth = provenance[auth_key]
                 if not isinstance(other_auth, dict):
                     raise ClaimError(f"INVALID_{auth_key.upper()}")
-                val_other = validate_transition_authority(other_auth, prior_claim_for_validation, status)
-                if canonical_bytes(val_other) != canonical_bytes(validated_authority):
+                val_other = validate_transition_authority(other_auth, last_prior_claim, status)
+                if canonical_bytes(val_other) != canonical_bytes(last_auth):
                     raise ClaimError(f"CONFLICTING_{auth_key.upper()}")
 
     rel_assertion = None
@@ -415,6 +493,11 @@ def create_claim_from_statements(
     if additional_evidence_refs:
         for ref in additional_evidence_refs:
             if ref not in evidence_refs:
+                evidence_refs.append(ref)
+
+    if transition_authority and isinstance(transition_authority, dict):
+        for ref in transition_authority.get("supporting_evidence_refs") or []:
+            if ref and ref not in evidence_refs:
                 evidence_refs.append(ref)
 
     if relation_assertion and isinstance(relation_assertion, dict):
@@ -496,11 +579,22 @@ def transition_claim_status(
     updated = dict(claim)
     old_status = claim["status"]
     updated["status"] = new_status
-    if new_status != "review_required":
+    if new_status == "review_required":
+        if not updated.get("review_reason"):
+            updated["review_reason"] = resolution_note or "TRANSITION_TO_REVIEW_REQUIRED"
+    else:
         updated["review_reason"] = None
 
+    ev_list = list(updated.get("evidence_refs") or [])
     if additional_evidence_refs:
-        updated["evidence_refs"] = updated["evidence_refs"] + additional_evidence_refs
+        for r in additional_evidence_refs:
+            if r not in ev_list:
+                ev_list.append(r)
+    if validated_auth and "supporting_evidence_refs" in validated_auth:
+        for r in validated_auth["supporting_evidence_refs"]:
+            if r not in ev_list:
+                ev_list.append(r)
+    updated["evidence_refs"] = ev_list
 
     prov = dict(updated.get("provenance") or {})
     transitions = list(prov.get("transitions", []))
