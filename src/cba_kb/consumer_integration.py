@@ -31,6 +31,59 @@ _FILE_URL_RE = re.compile(r"file://[^\s,;\"'\]]+")
 _POSIX_PATH_RE = re.compile(r"(?:^|[\s,;\"'\[\(=])/(?:[^\s,;\"'\]\)=]+)")
 
 
+_SCHEMA_KEYS = {
+    "statement_id",
+    "doc_id",
+    "speaker_actor_ref",
+    "subject_actor_refs",
+    "time_anchor",
+    "statement_text_or_controlled_excerpt",
+    "source_ref",
+    "evidence_ref",
+    "attribution_type",
+    "rights",
+    "provenance",
+    "extraction_status",
+    "claim_id",
+    "claim_text",
+    "status",
+    "supporting_statement_ids",
+    "evidence_refs",
+    "review_reason",
+    "relation_assertion",
+    "transitions",
+    "authority",
+    "transition_authority",
+    "latest_transition_authority",
+    "decision_ref",
+    "authority_kind",
+    "reviewer",
+    "prior_claim_id",
+    "prior_status",
+    "target_status",
+    "supporting_evidence_refs",
+    "timestamp",
+    "classification",
+    "public_export_allowed",
+    "evidence",
+    "allowed_scope",
+    "authorization_basis",
+    "frozen_at",
+    "confidence",
+    "from_actor",
+    "to_actor",
+    "relation_id",
+    "relation_type",
+    "actor_type",
+    "raw_name",
+    "canonical_id",
+    "source",
+    "turns",
+    "content_hash",
+    "normalized_document_ref",
+}
+
+
 class ConsumerSafetyError(RuntimeError):
     pass
 
@@ -41,6 +94,9 @@ def is_private_locator(text: str) -> bool:
         return False
     s = text.strip()
     if not s:
+        return False
+
+    if s in _SCHEMA_KEYS:
         return False
 
     # 1. file:// locators
@@ -65,18 +121,22 @@ def is_private_locator(text: str) -> bool:
         if s.startswith("/") or _POSIX_PATH_RE.search(s):
             return True
 
-    # 6. Raw Drive-like IDs
+    # 6. Raw Drive-like IDs / prefixes
     if not s.startswith(("doc_", "stmt_", "claim_", "rel_", "safe://", "consumer:")):
+        if s.startswith(("drive:", "google-drive:")):
+            return True
+        if ("google" in s.lower() or "drive" in s.lower()) and _RAW_DRIVE_ID_RE.search(s):
+            return True
         if _RAW_DRIVE_ID_RE.fullmatch(s):
-            return True
-        if "google" in s.lower() and _RAW_DRIVE_ID_RE.search(s):
-            return True
+            # Exclude standard multi-word snake_case identifiers / keys
+            if not (s.islower() and s.count("_") >= 2):
+                return True
 
     return False
 
 
 def find_private_locator_in_object(obj: Any) -> Optional[str]:
-    """Recursively search for any private locator string leaf in an arbitrary nested data structure.
+    """Recursively search for any private locator string leaf or dict key in an arbitrary nested data structure.
 
     Returns the first offending locator string found, or None if completely clean.
     """
@@ -85,11 +145,13 @@ def find_private_locator_in_object(obj: Any) -> Optional[str]:
             return obj
         return None
     elif isinstance(obj, dict):
-        for v in obj.values():
+        for k, v in obj.items():
+            if isinstance(k, str) and is_private_locator(k):
+                return k
             found = find_private_locator_in_object(v)
             if found is not None:
                 return found
-    elif isinstance(obj, (list, tuple, set)):
+    elif isinstance(obj, (list, tuple, set, frozenset)):
         for item in obj:
             found = find_private_locator_in_object(item)
             if found is not None:

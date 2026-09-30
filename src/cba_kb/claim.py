@@ -152,6 +152,30 @@ def _canonical_evidence_key(ref: Any) -> bytes:
     return str(ref).encode("utf-8")
 
 
+def is_semantic_non_empty_evidence(val: Any) -> bool:
+    """Check if an evidence ref is semantically non-empty.
+
+    Fails closed on:
+    - None
+    - "" or whitespace-only string
+    - Empty collections/containers: {}, [], (), set()
+    - Nested containers whose elements are all semantically empty (e.g., [{}], [[]], [None], [""], {'a': None})
+    """
+    if val is None:
+        return False
+    if isinstance(val, str):
+        return bool(val.strip())
+    if isinstance(val, (list, tuple, set, frozenset)):
+        if not val:
+            return False
+        return any(is_semantic_non_empty_evidence(item) for item in val)
+    if isinstance(val, dict):
+        if not val:
+            return False
+        return any(is_semantic_non_empty_evidence(v) for v in val.values())
+    return True
+
+
 def validate_relation_assertion(relation: Dict[str, Any]) -> Dict[str, Any]:
     """Validate evidence-bound relationship view assertion."""
     if not isinstance(relation, dict):
@@ -233,9 +257,18 @@ def validate_transition_authority(
     if auth_target != target_status:
         raise ClaimError("TARGET_STATUS_MISMATCH")
 
-    ev_refs = authority["supporting_evidence_refs"]
+    ev_refs = authority.get("supporting_evidence_refs")
     if not isinstance(ev_refs, list) or not ev_refs:
         raise ClaimError("SUPPORTING_EVIDENCE_REFS_REQUIRED")
+
+    if target_status in STRONG_CLAIM_STATUSES:
+        for ev in ev_refs:
+            if ev is None:
+                raise ClaimError("AUTHORITY_EVIDENCE_NULL_FORBIDDEN: Supporting evidence ref cannot be None")
+            if isinstance(ev, str) and not ev.strip():
+                raise ClaimError("AUTHORITY_EVIDENCE_EMPTY_FORBIDDEN: Supporting evidence ref cannot be empty string")
+            if not is_semantic_non_empty_evidence(ev):
+                raise ClaimError("AUTHORITY_EVIDENCE_SEMANTIC_EMPTY_FORBIDDEN: Supporting evidence ref must be meaningful non-empty value")
 
     timestamp = authority.get("timestamp") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -330,6 +363,8 @@ def validate_transition_chain(
                 raise ClaimError("AUTHORITY_EVIDENCE_NULL_FORBIDDEN: Supporting evidence ref cannot be None")
             if isinstance(ev, str) and not ev.strip():
                 raise ClaimError("AUTHORITY_EVIDENCE_EMPTY_FORBIDDEN: Supporting evidence ref cannot be empty string")
+            if not is_semantic_non_empty_evidence(ev):
+                raise ClaimError("AUTHORITY_EVIDENCE_SEMANTIC_EMPTY_FORBIDDEN: Supporting evidence ref must be meaningful non-empty value")
             if _canonical_evidence_key(ev) not in claim_ev_keys:
                 raise ClaimError("AUTHORITY_EVIDENCE_NOT_BOUND_TO_CLAIM: Supporting evidence ref not bound to enclosing claim evidence_refs")
 

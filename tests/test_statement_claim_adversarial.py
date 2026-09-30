@@ -32,7 +32,9 @@ from cba_kb.claim import (
 )
 from cba_kb.consumer_integration import (
     ConsumerSafetyError,
+    find_private_locator_in_object,
     is_claim_publicly_exportable,
+    is_private_locator,
     is_statement_publicly_exportable,
     project_claims_for_consumer,
     project_statements_for_consumer,
@@ -1100,6 +1102,50 @@ def test_claim_transition_chain_invariant_adversarial():
     with pytest.raises(ClaimError, match="AUTHORITY_EVIDENCE_EMPTY_FORBIDDEN"):
         validate_claim(c_empty_str_ev)
 
+    # 5a. Empty dict in authority ([{}]) -> FAIL
+    c_empty_dict_ev = dict(base_claim_dict, provenance={
+        "transitions": [{
+            "from_status": "unverified",
+            "to_status": "corroborated",
+            "authority": dict(base_auth, supporting_evidence_refs=[{}]),
+        }],
+    })
+    with pytest.raises(ClaimError, match="AUTHORITY_EVIDENCE_SEMANTIC_EMPTY_FORBIDDEN"):
+        validate_claim(c_empty_dict_ev)
+
+    # 5b. Empty nested list in authority ([[]]) -> FAIL
+    c_empty_nested_list_ev = dict(base_claim_dict, provenance={
+        "transitions": [{
+            "from_status": "unverified",
+            "to_status": "corroborated",
+            "authority": dict(base_auth, supporting_evidence_refs=[[]]),
+        }],
+    })
+    with pytest.raises(ClaimError, match="AUTHORITY_EVIDENCE_SEMANTIC_EMPTY_FORBIDDEN"):
+        validate_claim(c_empty_nested_list_ev)
+
+    # 5c. Whitespace-only string in authority (["   "]) -> FAIL
+    c_ws_ev = dict(base_claim_dict, provenance={
+        "transitions": [{
+            "from_status": "unverified",
+            "to_status": "corroborated",
+            "authority": dict(base_auth, supporting_evidence_refs=["   \t\n  "]),
+        }],
+    })
+    with pytest.raises(ClaimError, match="AUTHORITY_EVIDENCE_EMPTY_FORBIDDEN"):
+        validate_claim(c_ws_ev)
+
+    # 5d. Nested semantic-empty collections in authority -> FAIL
+    c_nested_empty_ev = dict(base_claim_dict, provenance={
+        "transitions": [{
+            "from_status": "unverified",
+            "to_status": "corroborated",
+            "authority": dict(base_auth, supporting_evidence_refs=[{"nested": [None, "", {}, []]}]),
+        }],
+    })
+    with pytest.raises(ClaimError, match="AUTHORITY_EVIDENCE_SEMANTIC_EMPTY_FORBIDDEN"):
+        validate_claim(c_nested_empty_ev)
+
     # 6. Unrelated evidence ref not bound to claim -> FAIL
     c_unrelated_ev = dict(base_claim_dict, provenance={
         "transitions": [{
@@ -1167,6 +1213,20 @@ def test_claim_transition_chain_invariant_adversarial():
     validated_multi = validate_claim(c_corroborated)
     assert validated_multi["status"] == "corroborated"
     assert len(validated_multi["provenance"]["transitions"]) == 2
+
+    # 10. Valid structured non-empty evidence bound to claim -> PASS
+    structured_ev = {"doc_id": doc_id, "turn": 1, "anchor": "L1-L5"}
+    auth_struct = dict(base_auth, supporting_evidence_refs=[structured_ev])
+    c_struct = dict(base_claim_dict, evidence_refs=[structured_ev], provenance={
+        "transitions": [{
+            "from_status": "unverified",
+            "to_status": "corroborated",
+            "authority": auth_struct,
+        }],
+    })
+    val_struct = validate_claim(c_struct)
+    assert val_struct["status"] == "corroborated"
+    assert val_struct["evidence_refs"] == [structured_ev]
 
 
 def test_consumer_locator_free_invariant_adversarial():
@@ -1266,3 +1326,52 @@ def test_consumer_locator_free_invariant_adversarial():
     })
     _, cap_nested = project_claims_for_consumer([claim_nested], [stmt], target="ChatGPT", authorizations=auth)
     assert cap_nested == "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)"
+
+    # 8. Closure B: Private locator as top-level dict key
+    assert find_private_locator_in_object({"/opt/private/key": "val"}) == "/opt/private/key"
+    assert find_private_locator_in_object({"C:\\secrets\\pass.txt": 1}) == "C:\\secrets\\pass.txt"
+    assert find_private_locator_in_object({"\\\\corp\\share\\sec": True}) == "\\\\corp\\share\\sec"
+    assert find_private_locator_in_object({"file:///var/log/secret": "ok"}) == "file:///var/log/secret"
+    assert find_private_locator_in_object({"https://docs.google.com/document/d/fake/edit": "ok"}) == "https://docs.google.com/document/d/fake/edit"
+
+    # 9. Closure B: Private locator as nested dict key
+    nested_dict_leak = {"level1": {"level2": {"/etc/shadow": "root"}}}
+    assert find_private_locator_in_object(nested_dict_leak) == "/etc/shadow"
+
+    claim_nested_key_leak = dict(claim, provenance={"/opt/private/config": "secret"})
+    _, cap_nested_key = project_claims_for_consumer([claim_nested_key_leak], [stmt], target="ChatGPT", authorizations=auth)
+    assert cap_nested_key == "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)"
+
+    # 10. Closure B: Private locator in nested list / value
+    nested_list_leak = {"items": [1, [2, {"safe": ["normal", "/Users/private/data.json"]}]]}
+    assert find_private_locator_in_object(nested_list_leak) == "/Users/private/data.json"
+
+    nested_list_tuple_set = {"data": (1, {"nested_set": {"normal", r"C:\secrets\key.pem"}})}
+    assert find_private_locator_in_object(nested_list_tuple_set) == r"C:\secrets\key.pem"
+
+    claim_nested_list_key_leak = dict(claim, provenance={"nested_list": [{"safe": 1}, {"/opt/private/path": 2}]})
+    _, cap_nested_list = project_claims_for_consumer([claim_nested_list_key_leak], [stmt], target="ChatGPT", authorizations=auth)
+    assert cap_nested_list == "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)"
+
+    # 11. Closure B: Normal Chinese and business keys are not harmed -> MATERIALIZED
+    normal_business_obj = {
+        "赛季信息": "2024-2025",
+        "球员姓名": "郭艾伦",
+        "statement_text_or_controlled_excerpt": "比赛很激烈",
+        "business_metrics": {
+            "得分": 30,
+            "助攻": 10,
+            "efficiency_rating": 25.5,
+        },
+    }
+    assert find_private_locator_in_object(normal_business_obj) is None
+
+    claim_normal_keys = dict(claim, provenance={
+        "source": "interview",
+        "赛季信息": "2024-2025",
+        "custom_business_metrics": {"得分效率": 1.25, "胜率评估": "HIGH"},
+    })
+    exp_normal, cap_normal = project_claims_for_consumer([claim_normal_keys], [stmt], target="ChatGPT", authorizations=auth)
+    assert cap_normal == "MATERIALIZED"
+    assert len(exp_normal) == 1
+    assert exp_normal[0]["provenance"]["赛季信息"] == "2024-2025"
