@@ -1557,13 +1557,24 @@ def _project_command(args, instance):
     hashes = {
         path: digest((Path.cwd() / path).read_bytes()) for path in tracked
     }
+    allocation_data = read(args.allocation) if args.allocation else None
+    targets = production["targets"]
+    if allocation_data is None:
+        active_ids = {
+            item.get("id") for item in (status.get("artifacts") or [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        targets = {
+            target_id: spec for target_id, spec in targets.items()
+            if target_id in active_ids
+        }
     projection = project_targets(
         release_id=args.release,
         engine_sha=args.engine_sha,
         status_id=production["status_id"],
         archive_id=production["archive_id"],
         previous_status=status,
-        previous_targets=production["targets"],
+        previous_targets=targets,
         manifest_rows=manifest,
         tracked=tracked,
         tracked_hashes=hashes,
@@ -1572,7 +1583,7 @@ def _project_command(args, instance):
         ],
         status_hash=digest(status_raw),
         status_meta=fingerprint(status_meta),
-        allocation=read(args.allocation) if args.allocation else None,
+        allocation=allocation_data,
     )
     save(args.output, projection)
     return projection

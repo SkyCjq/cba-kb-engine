@@ -1309,3 +1309,47 @@ def test_rollback_baseline_reentry_validation(monkeypatch):
                 type('I', (), {'read_json': lambda self, name: policy})(),
                 projection, allocation,
             )
+
+
+def test_project_command_scopes_unallocated_targets_to_active_artifacts(monkeypatch, tmp_path):
+    class FakeArgs:
+        release = "v1.9.0-1"
+        engine_sha = "a" * 40
+        allocation = None
+        output = tmp_path / "projection.json"
+
+    status_data = {
+        "artifacts": [
+            {"id": "code-old", "name": "code-old", "sha256": "s1"},
+            {"id": "readme", "name": "readme", "sha256": "s2"},
+        ]
+    }
+    production = {
+        "status_id": "status-doc",
+        "archive_id": "archive-doc",
+        "targets": {
+            "code-old": {"mime": "text/plain", "mode": "binary", "allowed_parents": ["scripts"], "publish_parent": "scripts"},
+            "readme": {"mime": DOC, "mode": "managed_doc", "allowed_parents": ["root"], "publish_parent": "root"},
+            "unreleased-staging-target": {"mime": "text/plain", "mode": "binary", "allowed_parents": ["staging"], "staging_parent": "staging"},
+        },
+    }
+    instance = type("FakeInstance", (), {
+        "read_json": lambda self, name: production if name == "production.json" else {
+            "inputs": {"manifest.csv": {"id": "manifest-id"}},
+            "parents": {"scripts": "scripts"},
+        },
+        "config_path": lambda self, name: tmp_path / name,
+    })()
+    monkeypatch.setattr(orchestration, "verify_execution_sha", lambda *a, **k: None)
+    monkeypatch.setattr(orchestration, "Drive", lambda *a, **k: type("FakeDrive", (), {
+        "get": lambda self, file_id: json.dumps(status_data).encode() if file_id == "status-doc" else b"drive_file_id,uid\ncode-old,code-old\nreadme,readme\n",
+        "meta": lambda self, file_id: {"id": file_id, "modifiedTime": "2026-09-30T00:00:00Z", "version": "1"},
+    })())
+    monkeypatch.setattr(subprocess, "check_output", lambda *a, **k: b"code-old\0readme\0")
+    monkeypatch.setattr(Path, "read_bytes", lambda self: b"fake content")
+
+    result = orchestration._project_command(FakeArgs(), instance)
+    assert result["state"] == "PROJECTED"
+    assert result["active_production_target_count"] == 2
+    assert "unreleased-staging-target" not in [t["id"] for t in result["existing_targets"]]
+
