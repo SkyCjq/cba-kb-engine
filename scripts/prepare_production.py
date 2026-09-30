@@ -7,6 +7,7 @@ import argparse
 import csv
 import io
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -16,7 +17,7 @@ import yaml
 from cba_kb.common import atomic, digest, read, save
 from cba_kb.canonical_registry import load_registry
 from cba_kb.current_state import (
-    END as CURRENT_STATE_END, generate_context_card,
+    END as CURRENT_STATE_END, clean, generate_context_card,
     current_version_document_migration, replace_current_block,
     target_metadata,
 )
@@ -24,8 +25,11 @@ from cba_kb.drive import Drive
 from cba_kb.instance import load_instance
 from cba_kb.native import wrap
 from cba_kb.release import (
-    _inventory, fingerprint, prepare as prepare_release, snapshot,
-    validate_release_infra_compatibility,
+    PreMutationAbort, ReleaseContractError, _inventory, fingerprint,
+    freeze_fingerprint, prepare as prepare_release, runtime_journal_sha256,
+    snapshot, validate_freeze_fingerprint_compatibility,
+    validate_release_infra_compatibility, validate_release_topology,
+    validate_safe_baseline_status,
 )
 
 
@@ -56,11 +60,351 @@ RELEASE_SPECS = {
 }
 
 
+def build_live_qualification_fingerprints(drive, target_ids):
+    """Construct qualification fingerprints labeled LIVE QUALIFICATION SNAPSHOT from sequential fresh Drive metadata reads."""
+    if not isinstance(target_ids, (list, set, tuple)) or not target_ids:
+        raise PreMutationAbort("RELEASE_INFRA_FINGERPRINTS_REQUIRED")
+    fingerprints = []
+    for target_id in target_ids:
+        read1 = drive.meta(target_id)
+        if not isinstance(read1, dict):
+            raise PreMutationAbort("RELEASE_INFRA_FINGERPRINT_INVALID")
+        frozen = freeze_fingerprint(read1)
+        frozen["qualification_snapshot_label"] = "LIVE QUALIFICATION SNAPSHOT"
+        frozen["qualification_authority"] = "LIVE QUALIFICATION SNAPSHOT"
+        frozen["is_candidate_freeze_authority"] = False
+
+        read2 = drive.meta(target_id)
+        if not isinstance(read2, dict):
+            raise PreMutationAbort("RELEASE_INFRA_FINGERPRINT_INVALID")
+        observed = read2
+
+        fingerprints.append({
+            "frozen": frozen,
+            "observed": observed,
+        })
+    return fingerprints
+
+
+def build_release_topology_from_production(policy, instance=None, *, release_id=None):
+    """Construct semantic release topology from production policy / instance structure."""
+    if not isinstance(policy, dict):
+        raise PreMutationAbort("RELEASE_INFRA_PRODUCTION_POLICY_INVALID")
+    if "topology" in policy and isinstance(policy["topology"], list) and policy["topology"]:
+        return policy["topology"]
+    if instance is not None and hasattr(instance, "config_path"):
+        try:
+            if instance.config_path("topology.json").is_file():
+                top = instance.read_json("topology.json")
+                if isinstance(top, list) and top:
+                    return top
+        except Exception:
+            pass
+    zones = policy.get("zones")
+    if not isinstance(zones, dict):
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
+    required_zones = {"current", "history", "staging", "evidence"}
+    if not required_zones <= set(zones) or any(
+        not isinstance(zones[k], list) or not zones[k] for k in required_zones
+    ):
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
+    root_id = policy.get("root_folder_id") or zones.get("root_folder_id")
+    if not root_id and instance is not None and hasattr(instance, "config_path"):
+        try:
+            inv = instance.read_json("import_inventory.json")
+            root_id = inv.get("parents", {}).get("root")
+        except Exception:
+            pass
+    if not root_id:
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
+
+    nodes = [{"id": root_id, "role": "ROOT", "parents": []}]
+    zone_role_map = {
+        "current": "CURRENT_ZONE",
+        "staging": "STAGING_ZONE",
+        "history": "HISTORY_ZONE",
+        "evidence": "EVIDENCE_ZONE",
+    }
+    for zkey, role in zone_role_map.items():
+        for zid in zones[zkey]:
+            nodes.append({"id": zid, "role": role, "parents": [root_id]})
+    return nodes
+
+
+def build_release_infra_compatibility_bundle(
+    *,
+    instance_root=None,
+    instance=None,
+    drive=None,
+    engine_root=None,
+    evidence_root=None,
+    plan=None,
+    plan_path=None,
+    journal=None,
+    journal_path=None,
+    consumer_manifest=None,
+    consumer_manifest_path=None,
+    identity_projection=None,
+    identity_projection_path=None,
+    platform_results=None,
+    platform_results_path=None,
+    source_registry_sha256=None,
+    safe_baseline_release_id=None,
+    topology=None,
+    topology_path=None,
+    fingerprints=None,
+    require_environmental_stability=False,
+):
+    """Construct a truthful real compatibility qualification bundle from authorized sources."""
+    if engine_root is None:
+        engine_root = Path.cwd()
+    else:
+        engine_root = Path(engine_root)
+
+    # 1. Instance and production policy
+    if instance is None:
+        if instance_root is None:
+            instance_root = os.environ.get("CBA_KB_INSTANCE_ROOT")
+        if not instance_root:
+            raise PreMutationAbort("RELEASE_INFRA_PRODUCTION_POLICY_MISSING")
+        try:
+            instance = load_instance(engine_root, instance_root)
+        except Exception as exc:
+            raise PreMutationAbort("RELEASE_INFRA_PRODUCTION_POLICY_MISSING") from exc
+
+    try:
+        policy = instance.read_json("production.json")
+    except Exception as exc:
+        raise PreMutationAbort("RELEASE_INFRA_PRODUCTION_POLICY_MISSING") from exc
+
+    if not isinstance(policy, dict) or not policy.get("enabled", True):
+        raise PreMutationAbort("RELEASE_INFRA_PRODUCTION_POLICY_INVALID")
+    status_id = policy.get("status_id")
+    if not status_id or not isinstance(status_id, str):
+        raise PreMutationAbort("RELEASE_INFRA_PRODUCTION_POLICY_MISSING")
+
+    # 2. Drive client
+    if drive is None:
+        drive = Drive(engine_root, instance)
+
+    # 3. Fresh-read live release status
+    try:
+        status_raw, status_meta = snapshot(drive, status_id)
+        clean(status_raw, "release_status.json")
+        status_doc = json.loads(
+            status_raw.decode("utf-8") if isinstance(status_raw, bytes) else status_raw
+        )
+    except Exception as exc:
+        raise PreMutationAbort("RELEASE_INFRA_SAFE_BASELINE_INVALID") from exc
+    if not isinstance(status_doc, dict):
+        raise PreMutationAbort("RELEASE_INFRA_SAFE_BASELINE_INVALID")
+
+    # 4. Safe baseline release ID
+    if safe_baseline_release_id is None:
+        safe_baseline_release_id = policy.get("safe_baseline_release_id") or status_doc.get("current_release_id")
+    if not safe_baseline_release_id or not isinstance(safe_baseline_release_id, str):
+        raise PreMutationAbort("RELEASE_INFRA_SAFE_BASELINE_INVALID")
+
+    # 5. Deterministic evidence resolution
+    if evidence_root is not None:
+        evidence_root = Path(evidence_root)
+        if not evidence_root.is_dir():
+            raise PreMutationAbort("RELEASE_INFRA_PLAN_LOCATOR_MISSING")
+        if plan is None and plan_path is None and (evidence_root / "plan.json").is_file():
+            plan_path = evidence_root / "plan.json"
+        if journal is None and journal_path is None and (evidence_root / "journal.json").is_file():
+            journal_path = evidence_root / "journal.json"
+        if consumer_manifest is None and consumer_manifest_path is None and (evidence_root / "consumer_manifest.json").is_file():
+            consumer_manifest_path = evidence_root / "consumer_manifest.json"
+        if identity_projection is None and identity_projection_path is None and (evidence_root / "identity_projection.json").is_file():
+            identity_projection_path = evidence_root / "identity_projection.json"
+        if platform_results is None and platform_results_path is None:
+            for cand in ("platform_results.json", "consumer_acceptance.json"):
+                if (evidence_root / cand).is_file():
+                    platform_results_path = evidence_root / cand
+                    break
+        if topology is None and topology_path is None and (evidence_root / "topology.json").is_file():
+            topology_path = evidence_root / "topology.json"
+
+    # Plan
+    if plan is None:
+        if plan_path is None or not Path(plan_path).is_file():
+            raise PreMutationAbort("RELEASE_INFRA_PLAN_LOCATOR_MISSING")
+        plan_raw = Path(plan_path).read_bytes()
+        clean(plan_raw, "plan.json")
+        plan = json.loads(plan_raw)
+        plan_sha256 = digest(plan_raw)
+    else:
+        if not isinstance(plan, dict):
+            raise PreMutationAbort("RELEASE_INFRA_PLAN_LOCATOR_MISSING")
+        plan_raw = json.dumps(plan, ensure_ascii=False, sort_keys=True).encode()
+        plan_sha256 = digest(plan_raw)
+
+    # Journal
+    if journal is None:
+        if journal_path is None or not Path(journal_path).is_file():
+            raise PreMutationAbort("RELEASE_INFRA_JOURNAL_LOCATOR_MISSING")
+        journal_raw = Path(journal_path).read_bytes()
+        clean(journal_raw, "journal.json")
+        journal = json.loads(journal_raw)
+    elif not isinstance(journal, dict):
+        raise PreMutationAbort("RELEASE_INFRA_JOURNAL_LOCATOR_MISSING")
+
+    current_runtime_journal_sha256 = runtime_journal_sha256(journal)
+    if journal.get("state") == "PREPARED":
+        freeze_prepared_journal_sha256 = current_runtime_journal_sha256
+    else:
+        freeze_prepared_journal_sha256 = journal.get("freeze_prepared_journal_sha256")
+        if not freeze_prepared_journal_sha256:
+            raise PreMutationAbort("RELEASE_INFRA_RUNTIME_LINEAGE_INVALID")
+
+    # Consumer manifest
+    if consumer_manifest is None:
+        if consumer_manifest_path is None or not Path(consumer_manifest_path).is_file():
+            raise PreMutationAbort("RELEASE_INFRA_CONSUMER_MANIFEST_MISSING")
+        cm_raw = Path(consumer_manifest_path).read_bytes()
+        clean(cm_raw, "consumer_manifest.json")
+        consumer_manifest = json.loads(cm_raw)
+    if not isinstance(consumer_manifest, dict):
+        raise PreMutationAbort("RELEASE_INFRA_CONSUMER_MANIFEST_MISSING")
+
+    # Identity projection
+    if identity_projection is None:
+        if identity_projection_path is None or not Path(identity_projection_path).is_file():
+            raise PreMutationAbort("RELEASE_INFRA_IDENTITY_PROJECTION_MISSING")
+        ip_raw = Path(identity_projection_path).read_bytes()
+        clean(ip_raw, "identity_projection.json")
+        identity_projection = json.loads(ip_raw)
+    if not isinstance(identity_projection, dict):
+        raise PreMutationAbort("RELEASE_INFRA_IDENTITY_PROJECTION_MISSING")
+
+    # Independent source registry binding
+    if source_registry_sha256 is None and isinstance(policy, dict):
+        source_registry_sha256 = policy.get("expected_source_registry_sha256") or policy.get("source_registry_sha256")
+    if (
+        not source_registry_sha256
+        or not isinstance(source_registry_sha256, str)
+        or not re.fullmatch("[0-9a-f]{64}", source_registry_sha256)
+    ):
+        raise PreMutationAbort("RELEASE_INFRA_SOURCE_REGISTRY_BINDING_MISSING")
+
+    # Platform results
+    if platform_results is None:
+        if platform_results_path is None or not Path(platform_results_path).is_file():
+            raise PreMutationAbort("RELEASE_INFRA_PLATFORM_RESULTS_MISSING")
+        pr_raw = Path(platform_results_path).read_bytes()
+        clean(pr_raw, "platform_results.json")
+        pr_data = json.loads(pr_raw)
+        if isinstance(pr_data, dict):
+            if "platform_results" in pr_data and isinstance(pr_data["platform_results"], dict):
+                platform_results = pr_data["platform_results"]
+            elif "targets" in pr_data and isinstance(pr_data["targets"], dict):
+                platform_results = {
+                    k: v.get("status") if isinstance(v, dict) else v
+                    for k, v in pr_data["targets"].items()
+                    if k in {"ChatGPT", "Gemini Notebook", "WorkBuddy"}
+                }
+            elif "consumer_acceptance" in pr_data and isinstance(pr_data["consumer_acceptance"], dict):
+                platform_results = {
+                    k: v
+                    for k, v in pr_data["consumer_acceptance"].items()
+                    if k in {"ChatGPT", "Gemini Notebook", "WorkBuddy"}
+                }
+            else:
+                platform_results = pr_data
+        else:
+            raise PreMutationAbort("RELEASE_INFRA_PLATFORM_RESULTS_MISSING")
+
+    if (
+        not isinstance(platform_results, dict)
+        or set(platform_results) != {"ChatGPT", "Gemini Notebook", "WorkBuddy"}
+    ):
+        raise PreMutationAbort("RELEASE_INFRA_CONSUMER_RESULTS_INVALID")
+    if any(v != "PASS" for v in platform_results.values()):
+        raise PreMutationAbort("RELEASE_INFRA_PLATFORM_NON_PASS")
+
+    # Topology
+    if topology is None:
+        if topology_path is not None and Path(topology_path).is_file():
+            top_raw = Path(topology_path).read_bytes()
+            clean(top_raw, "topology.json")
+            topology = json.loads(top_raw)
+        else:
+            topology = build_release_topology_from_production(
+                policy, instance, release_id=plan.get("release_id"),
+            )
+    if not isinstance(topology, list) or not topology:
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
+
+    # Target IDs
+    target_ids = [
+        e["id"] for e in plan.get("entries", [])
+        if isinstance(e, dict) and e.get("id")
+    ]
+    if not target_ids and "targets" in policy and isinstance(policy["targets"], dict):
+        target_ids = list(policy["targets"].keys())
+
+    # Fingerprints
+    if fingerprints is None:
+        fingerprints = build_live_qualification_fingerprints(drive, target_ids)
+    if not isinstance(fingerprints, list) or not fingerprints:
+        raise PreMutationAbort("RELEASE_INFRA_FINGERPRINTS_REQUIRED")
+
+    # Fresh parent requirement: in build_release_infra_compatibility_bundle,
+    # target node parents in topology must be fresh-read from drive.meta(target_id),
+    # never trusting local topology JSON.
+    topology = [dict(node) for node in topology]
+    by_id = {node["id"]: node for node in topology if isinstance(node, dict) and "id" in node}
+    observed_parents_by_target = {}
+    for pair in fingerprints:
+        if isinstance(pair, dict) and isinstance(pair.get("observed"), dict):
+            obs = pair["observed"]
+            if obs.get("id"):
+                observed_parents_by_target[obs["id"]] = obs.get("parents")
+
+    for tid in target_ids:
+        if tid not in by_id or by_id[tid].get("role") not in {"CURRENT_TARGET", "STAGING_TARGET"}:
+            raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
+        if tid in observed_parents_by_target:
+            fresh_parents = observed_parents_by_target[tid]
+        else:
+            meta = drive.meta(tid)
+            if not isinstance(meta, dict):
+                raise PreMutationAbort("RELEASE_INFRA_FINGERPRINT_INVALID")
+            fresh_parents = meta.get("parents")
+        if not isinstance(fresh_parents, list):
+            raise PreMutationAbort("RELEASE_INFRA_FINGERPRINT_INVALID")
+        by_id[tid]["parents"] = list(fresh_parents)
+
+    return {
+        "plan": plan,
+        "plan_sha256": plan_sha256,
+        "journal": journal,
+        "current_runtime_journal_sha256": current_runtime_journal_sha256,
+        "freeze_prepared_journal_sha256": freeze_prepared_journal_sha256,
+        "topology": topology,
+        "fingerprints": fingerprints,
+        "status_doc": status_doc,
+        "safe_baseline_release_id": safe_baseline_release_id,
+        "consumer_manifest": consumer_manifest,
+        "identity_projection": identity_projection,
+        "expected_source_registry_sha256": source_registry_sha256,
+        "platform_results": platform_results,
+        "require_environmental_stability": require_environmental_stability,
+    }
+
+
 def release_infra_compatibility_preflight(bundle):
     """Execute the release validator's qualification path without remote writes."""
     if not isinstance(bundle, dict):
         raise ProjectionError("RELEASE_INFRA_COMPATIBILITY_INPUT_REQUIRED")
     return validate_release_infra_compatibility(**bundle)
+
+
+def run_trusted_release_infra_compatibility_preflight(**kwargs):
+    """Build and execute the trusted compatibility preflight, guaranteeing zero mutations."""
+    bundle = build_release_infra_compatibility_bundle(**kwargs)
+    return release_infra_compatibility_preflight(bundle)
 FOLDER = "application/vnd.google-apps.folder"
 NATIVE_DOCUMENT = "application/vnd.google-apps.document"
 REGISTRY_KEY = "config/canonical_products.yaml"
@@ -1231,21 +1575,50 @@ def _project_command(args, instance):
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "step", choices=["project", "reserve-staging", "freeze"],
+        "step", choices=["project", "reserve-staging", "freeze", "compat-preflight"],
     )
     parser.add_argument("--release", default=RELEASE_ID)
     parser.add_argument("--instance-root", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--projection", type=Path)
     parser.add_argument("--allocation", type=Path)
     parser.add_argument("--single-writer", action="store_true")
     parser.add_argument("--engine-sha")
+    parser.add_argument("--evidence-root", type=Path)
+    parser.add_argument("--safe-baseline-release-id")
+    parser.add_argument("--source-registry-sha", "--source-registry-sha256", dest="source_registry_sha")
+    parser.add_argument("--topology", type=Path)
+    parser.add_argument("--consumer-manifest", type=Path)
+    parser.add_argument("--identity-projection", type=Path)
+    parser.add_argument("--platform-results", type=Path)
+    parser.add_argument("--require-environmental-stability", action="store_true")
     args = parser.parse_args(argv)
-    _require_release(args.release)
-    if args.step == "project" and not args.engine_sha:
-        parser.error("--engine-sha is required for project")
+    if args.step != "compat-preflight":
+        _require_release(args.release)
+        if not args.output:
+            parser.error("--output is required")
+        if args.step == "project" and not args.engine_sha:
+            parser.error("--engine-sha is required for project")
     root = Path.cwd()
     instance = load_instance(root, args.instance_root)
+    if args.step == "compat-preflight":
+        result = run_trusted_release_infra_compatibility_preflight(
+            instance=instance,
+            engine_root=root,
+            evidence_root=args.evidence_root,
+            safe_baseline_release_id=args.safe_baseline_release_id,
+            source_registry_sha256=args.source_registry_sha,
+            topology_path=args.topology,
+            consumer_manifest_path=args.consumer_manifest,
+            identity_projection_path=args.identity_projection,
+            platform_results_path=args.platform_results,
+            require_environmental_stability=args.require_environmental_stability,
+        )
+        if args.output:
+            output = _private_output(instance, args.output)
+            save(output, result)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return result
     output = _private_output(instance, args.output)
     if args.step == "project":
         result = _project_command(args, instance)
@@ -1276,6 +1649,7 @@ def main(argv=None):
                 output=output,
             )
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    return result
 
 
 if __name__ == "__main__":
