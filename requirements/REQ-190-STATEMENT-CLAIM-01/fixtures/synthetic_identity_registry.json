@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "identity_version": "v1.8",
+  "players": [
+    {
+      "schema_version": 1,
+      "player_uid": "P0265_HEXINING_0001",
+      "canonical_name": "贺希宁",
+      "status": "ACTIVE",
+      "redirect_to": null
+    },
+    {
+      "schema_version": 1,
+      "player_uid": "P0042_GUQUAN_0001",
+      "canonical_name": "顾全",
+      "status": "ACTIVE",
+      "redirect_to": null
+    },
+    {
+      "schema_version": 1,
+      "player_uid": "P0018_MENGDUO_0001",
+      "canonical_name": "孟铎",
+      "status": "ACTIVE",
+      "redirect_to": null
+    },
+    {
+      "schema_version": 1,
+      "player_uid": "P0310_SHENZIJIE_0001",
+      "canonical_name": "沈梓捷",
+      "status": "ACTIVE",
+      "redirect_to": null
+    },
+    {
+      "schema_version": 1,
+      "player_uid": "P0991_LIXIANG_0001",
+      "canonical_name": "李想",
+      "status": "ACTIVE",
+      "redirect_to": null
+    },
+    {
+      "schema_version": 1,
+      "player_uid": "P0992_LIXIANG_0002",
+      "canonical_name": "李想",
+      "status": "ACTIVE",
+      "redirect_to": null
+    }
+  ],
+  "aliases": [
+    {
+      "schema_version": 1,
+      "alias_name": "大鸟",
+      "player_uid": "P0310_SHENZIJIE_0001",
+      "alias_type": "OTHER",
+      "status": "ACTIVE",
+      "evidence_ref": "mock"
+    }
+  ]
+}

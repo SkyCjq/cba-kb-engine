@@ -244,6 +244,48 @@ def main():
     q=sub.add_parser('evidence-verify')
     q.add_argument('--ledger-root',type=Path,required=True)
     q.add_argument('--requirement-id',required=True)
+    q=sub.add_parser('source-intake')
+    q.add_argument('--input',type=Path,required=True)
+    q.add_argument('--source-provider',choices=('local_file','google_drive_doc','wechat_browser_clip','ima_file_export','synthetic_fixture'),required=True)
+    q.add_argument('--source-locator',required=True)
+    q.add_argument('--media-type',default='text/plain')
+    q.add_argument('--rights-classification',choices=('public','copyrighted','private','unknown'),default='private')
+    q.add_argument('--public-export-allowed',action='store_true',default=False)
+    q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('statement-extract')
+    q.add_argument('--input',type=Path)
+    q.add_argument('--doc-id')
+    q.add_argument('--normalized-document',type=Path)
+    q.add_argument('--allow-unnormalized-raw-input',action='store_true',default=False)
+    q.add_argument('--identity-registry',type=Path)
+    q.add_argument('--person-registry',type=Path)
+    q.add_argument('--rights-classification',choices=('public','copyrighted','private','unknown'),default='private')
+    q.add_argument('--public-export-allowed',action='store_true',default=False)
+    q.add_argument('--time-anchor',default='UNKNOWN')
+    q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('claim-extract')
+    q.add_argument('--statements',type=Path,required=True)
+    q.add_argument('--claim-text',required=True)
+    q.add_argument('--status',choices=('unverified','corroborated','contradicted','superseded','review_required'))
+    q.add_argument('--review-reason')
+    q.add_argument('--reviewed-by')
+    q.add_argument('--transition-authority',type=Path)
+    q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('verification-queue')
+    q.add_argument('--queue',type=Path,required=True)
+    q.add_argument('--object-type',choices=('claim','statement','actor','source','derived_signal'))
+    q.add_argument('--status',choices=('open','resolved'))
+    q.add_argument('--output',type=Path)
+    q=sub.add_parser('research-view')
+    q.add_argument('--player-uid')
+    q.add_argument('--name')
+    q.add_argument('--statements',type=Path)
+    q.add_argument('--claims',type=Path)
+    q.add_argument('--queue',type=Path)
+    q.add_argument('--unknown',type=Path)
+    q.add_argument('--master',type=Path)
+    q.add_argument('--format',choices=('json','markdown'),default='json')
+    q.add_argument('--output',type=Path,required=True)
     q=sub.add_parser('plan'); q.add_argument('--entries',type=Path,required=True); q.add_argument('--release-id',required=True)
     q.add_argument('--status-id',required=True); q.add_argument('--archive-id',required=True)
     q.add_argument('--dependencies',type=Path);q.add_argument('--environment',choices=['sandbox','production'],default='sandbox')
@@ -1153,6 +1195,165 @@ def main():
                                        'Native Sheet authoritative read/build/publish integration'],
                     'parser_reports':{'domestic':records.get('report'), 'foreign':foreign_records.get('report')}}
             save(a.output.with_suffix('.validation.json'),result)
+        elif a.command=='source-intake':
+            from .source_intake import normalize_source_payload
+            raw_bytes = a.input.read_bytes()
+            envelope, _ = normalize_source_payload(
+                raw_bytes,
+                source_provider=a.source_provider,
+                source_item_id_or_locator=a.source_locator,
+                media_type=a.media_type,
+                rights={
+                    'classification': a.rights_classification,
+                    'public_export_allowed': a.public_export_allowed,
+                    'evidence': [],
+                },
+                raw_ref=str(a.input),
+            )
+            save(a.output, envelope)
+            result = envelope
+        elif a.command=='statement-extract':
+            from .document_lane import doc_id as compute_doc_id
+            from .source_intake import validate_normalized_document, SourceIntakeError
+            from .statement import extract_statements_from_text, verify_document_binding
+
+            norm_artifact_path = a.normalized_document
+            if not norm_artifact_path and a.input:
+                try:
+                    loaded = json.loads(a.input.read_text(encoding='utf-8'))
+                    if isinstance(loaded, dict) and ('normalized_document' in loaded or 'doc_id' in loaded or 'normalized_text' in loaded):
+                        norm_artifact_path = a.input
+                except Exception:
+                    pass
+
+            if norm_artifact_path:
+                try:
+                    norm_data = json.loads(norm_artifact_path.read_text(encoding='utf-8'))
+                except Exception as exc:
+                    raise RuntimeError(f"NORMALIZED_DOCUMENT_JSON_INVALID: {exc}") from exc
+
+                if isinstance(norm_data, dict) and 'normalized_document' in norm_data:
+                    candidate_doc = norm_data['normalized_document']
+                elif isinstance(norm_data, dict):
+                    candidate_doc = norm_data
+                else:
+                    raise RuntimeError("NORMALIZED_DOCUMENT_FORMAT_INVALID: artifact must be a JSON object")
+
+                try:
+                    validated_doc = validate_normalized_document(candidate_doc)
+                except SourceIntakeError as exc:
+                    raise RuntimeError(f"NORMALIZED_DOCUMENT_SCHEMA_INVALID: {exc}") from exc
+
+                if a.doc_id and a.doc_id != validated_doc["doc_id"]:
+                    raise RuntimeError(f"DOC_ID_MISMATCH: CLI argument {a.doc_id} != artifact doc_id {validated_doc['doc_id']}")
+
+                target_doc_id = validated_doc["doc_id"]
+                content = validated_doc["normalized_text"]
+
+                artifact_rights = validated_doc.get('rights') or {}
+                rights_class = a.rights_classification if a.rights_classification != 'private' else artifact_rights.get('classification', a.rights_classification)
+                public_export = a.public_export_allowed if a.public_export_allowed else artifact_rights.get('public_export_allowed', False)
+                evidence = artifact_rights.get('evidence', [])
+                rights = {
+                    'classification': rights_class,
+                    'public_export_allowed': public_export,
+                    'evidence': evidence,
+                }
+                provenance = validated_doc.get('provenance') or {'source_provider': validated_doc.get('source_provider', 'unknown')}
+            elif a.allow_unnormalized_raw_input:
+                if not a.input:
+                    raise RuntimeError("INPUT_REQUIRED_FOR_LEGACY_RAW_MODE")
+                content = a.input.read_text(encoding='utf-8')
+                target_doc_id = a.doc_id or compute_doc_id(content)
+                verify_document_binding(content, target_doc_id)
+                rights = {
+                    'classification': a.rights_classification,
+                    'public_export_allowed': a.public_export_allowed,
+                    'evidence': [],
+                }
+                provenance = None
+            else:
+                raise RuntimeError("UNNORMALIZED_RAW_INPUT_FORBIDDEN: statement-extract on the v1.9 contract path requires a normalized document artifact (--normalized-document or JSON artifact input). Use source-intake first, or specify --allow-unnormalized-raw-input for legacy testing.")
+
+            id_reg = json.loads(a.identity_registry.read_text(encoding='utf-8')) if a.identity_registry else None
+            pr_reg = json.loads(a.person_registry.read_text(encoding='utf-8')) if a.person_registry else None
+            statements = extract_statements_from_text(
+                content,
+                doc_id=target_doc_id,
+                identity_registry=id_reg,
+                person_registry=pr_reg,
+                rights=rights,
+                provenance=provenance,
+                default_time_anchor=a.time_anchor,
+            )
+            save(a.output, statements)
+            result = {'statements_count': len(statements), 'output': str(a.output)}
+        elif a.command=='claim-extract':
+            from .claim import create_claim_from_statements
+            stmts = json.loads(a.statements.read_text(encoding='utf-8'))
+            auth = None
+            if a.transition_authority:
+                auth = json.loads(a.transition_authority.read_text(encoding='utf-8'))
+            elif a.status in {'corroborated', 'contradicted', 'superseded'}:
+                raise RuntimeError("CLAIM_AUTHORITY_REQUIRED: Promotion to strong status requires --transition-authority")
+            prov = {'reviewed_by': a.reviewed_by} if a.reviewed_by else None
+            claim = create_claim_from_statements(
+                a.claim_text,
+                stmts,
+                status=a.status,
+                review_reason=a.review_reason,
+                provenance=prov,
+                transition_authority=auth,
+            )
+            save(a.output, claim)
+            result = claim
+        elif a.command=='verification-queue':
+            from .verification_queue import VerificationQueue
+            vq = VerificationQueue.load(a.queue)
+            items = vq.list_items(object_type=a.object_type, status=a.status)
+            result = {'items': items, 'count': len(items)}
+            if a.output:
+                save(a.output, result)
+        elif a.command=='research-view':
+            from .research_view import ResearchView
+            stmts = json.loads(a.statements.read_text(encoding='utf-8')) if a.statements else []
+            clms = json.loads(a.claims.read_text(encoding='utf-8')) if a.claims else []
+            v_items = []
+            if a.queue:
+                from .verification_queue import VerificationQueue
+                v_items = VerificationQueue.load(a.queue).list_items()
+            u_items = []
+            if a.unknown:
+                u_data = json.loads(a.unknown.read_text(encoding='utf-8'))
+                if isinstance(u_data, list):
+                    u_items = u_data
+                elif isinstance(u_data, dict) and 'unknown_items' in u_data:
+                    u_items = u_data['unknown_items']
+            facts = []
+            if a.master:
+                import csv
+                with open(a.master, encoding='utf-8-sig') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        if a.name and (row.get('姓名') == a.name or row.get('球员姓名') == a.name):
+                            facts.append(row)
+            rv = ResearchView(
+                subject_name=a.name,
+                subject_player_uid=a.player_uid,
+                canonical_facts=facts,
+                statements=stmts,
+                claims=clms,
+                verification_items=v_items,
+                unknown_items=u_items,
+            )
+            if a.format == 'markdown':
+                md = rv.render_markdown()
+                atomic(a.output, md.encode('utf-8'))
+                result = {'output': str(a.output), 'format': 'markdown'}
+            else:
+                d = rv.to_dict()
+                save(a.output, d)
+                result = d
         elif a.command=='plan':
             from .current_state import clean
             def read_plan_input(path):
