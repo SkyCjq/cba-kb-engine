@@ -49,6 +49,22 @@ def sanitize_locator_string(
     return cleaned
 
 
+def sanitize_locator_value(value: Any, doc_id: str, target_slug: str) -> Any:
+    """Sanitize locator value (string, dict, or list) removing private paths/Drive locators."""
+    if isinstance(value, str):
+        return sanitize_locator_string(value, doc_id, target_slug)
+    elif isinstance(value, dict):
+        sanitized = {}
+        for k, v in value.items():
+            if k in {"private_path", "raw_ref", "credentials", "token", "file_id", "drive_id"}:
+                continue
+            sanitized[k] = sanitize_locator_value(v, doc_id, target_slug)
+        return sanitized
+    elif isinstance(value, list):
+        return [sanitize_locator_value(x, doc_id, target_slug) for x in value]
+    return value
+
+
 def is_statement_publicly_exportable(statement: Dict[str, Any]) -> bool:
     """Check if statement satisfies fail-closed public export rules."""
     rights = statement.get("rights") or {}
@@ -218,33 +234,66 @@ def project_claims_for_consumer(
 
         clean_c = dict(validated)
 
-        # Sanitize supporting evidence refs
-        raw_evidence_refs = clean_c.get("supporting_evidence_refs") or []
-        clean_c["supporting_evidence_refs"] = [
-            sanitize_locator_string(str(ref), "claim", target_slug)
+        # 1. Sanitize actual Claim evidence_refs field (G4-R1)
+        raw_evidence_refs = clean_c.get("evidence_refs") or []
+        clean_c["evidence_refs"] = [
+            sanitize_locator_value(ref, "claim", target_slug)
             for ref in raw_evidence_refs
         ]
 
-        clean_c["provenance"] = sanitize_provenance(clean_c.get("provenance"), doc_id="claim", target_slug=target_slug)
+        # 2. Sanitize relation_assertion evidence_refs if present
+        if "relation_assertion" in clean_c and isinstance(clean_c["relation_assertion"], dict):
+            rel = dict(clean_c["relation_assertion"])
+            if "evidence_refs" in rel and isinstance(rel["evidence_refs"], list):
+                rel["evidence_refs"] = [
+                    sanitize_locator_value(r, "relation", target_slug)
+                    for r in rel["evidence_refs"]
+                ]
+            clean_c["relation_assertion"] = rel
 
-        # Sanitize status history
-        if "status_history" in clean_c:
-            cleaned_history = []
-            for h in clean_c["status_history"]:
-                if isinstance(h, dict):
-                    ch = dict(h)
-                    if "transition_authority" in ch and isinstance(ch["transition_authority"], dict):
-                        auth = dict(ch["transition_authority"])
-                        if "supporting_evidence_refs" in auth:
+        # 3. Sanitize provenance and transition history authority
+        prov = dict(clean_c.get("provenance") or {})
+        if "transitions" in prov and isinstance(prov["transitions"], list):
+            cleaned_transitions = []
+            for t in prov["transitions"]:
+                if isinstance(t, dict):
+                    ct = dict(t)
+                    if "authority" in ct and isinstance(ct["authority"], dict):
+                        auth = dict(ct["authority"])
+                        if "supporting_evidence_refs" in auth and isinstance(auth["supporting_evidence_refs"], list):
                             auth["supporting_evidence_refs"] = [
-                                sanitize_locator_string(str(r), "claim", target_slug)
-                                for r in auth.get("supporting_evidence_refs", [])
+                                sanitize_locator_value(r, "claim", target_slug)
+                                for r in auth["supporting_evidence_refs"]
                             ]
-                        ch["transition_authority"] = auth
-                    cleaned_history.append(ch)
+                        ct["authority"] = auth
+                    cleaned_transitions.append(ct)
                 else:
-                    cleaned_history.append(h)
-            clean_c["status_history"] = cleaned_history
+                    cleaned_transitions.append(t)
+            prov["transitions"] = cleaned_transitions
+
+        if "latest_transition_authority" in prov and isinstance(prov["latest_transition_authority"], dict):
+            auth = dict(prov["latest_transition_authority"])
+            if "supporting_evidence_refs" in auth and isinstance(auth["supporting_evidence_refs"], list):
+                auth["supporting_evidence_refs"] = [
+                    sanitize_locator_value(r, "claim", target_slug)
+                    for r in auth["supporting_evidence_refs"]
+                ]
+            prov["latest_transition_authority"] = auth
+
+        if "transition_authority" in prov and isinstance(prov["transition_authority"], dict):
+            auth = dict(prov["transition_authority"])
+            if "supporting_evidence_refs" in auth and isinstance(auth["supporting_evidence_refs"], list):
+                auth["supporting_evidence_refs"] = [
+                    sanitize_locator_value(r, "claim", target_slug)
+                    for r in auth["supporting_evidence_refs"]
+                ]
+            prov["transition_authority"] = auth
+
+        clean_c["provenance"] = sanitize_provenance(prov, doc_id="claim", target_slug=target_slug)
+
+        # 4. Remove any non-contract fields if present
+        clean_c.pop("supporting_evidence_refs", None)
+        clean_c.pop("status_history", None)
 
         exported.append(clean_c)
 

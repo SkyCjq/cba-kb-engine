@@ -2,10 +2,11 @@
 
 Tests:
 - source-intake
-- statement-extract
+- statement-extract with normalized-document mandatory binding (G4-R3)
 - claim-extract
 - verification-queue
 - research-view
+- negative bypass tests for G4-R3
 """
 from __future__ import annotations
 
@@ -58,39 +59,110 @@ def test_cli_source_intake(tmp_path):
     assert envelope["source_provider"] == "local_file"
     assert envelope["intake_status"] == "accepted"
     assert envelope["normalized_document_ref"].startswith("doc_")
+    assert "顾全" in envelope["normalized_document"]["normalized_text"]
+    assert "顶住了很大压力" in envelope["normalized_document"]["normalized_text"]
 
 
-def test_cli_statement_extract(tmp_path):
-    input_file = FIXTURES_DIR / "synthetic_interview_turns.txt"
+def test_cli_source_intake_to_statement_extract_e2e(tmp_path):
+    """G4-R3: True E2E test from source-intake envelope -> statement-extract."""
+    raw_input = FIXTURES_DIR / "synthetic_interview_turns.txt"
     id_reg_file = FIXTURES_DIR / "synthetic_identity_registry.json"
-    out_file = tmp_path / "statements.json"
-    doc_id = compute_doc_id(input_file.read_text(encoding="utf-8"))
+    envelope_file = tmp_path / "envelope.json"
+    stmts_file = tmp_path / "statements.json"
 
-    res = run_cli(
-        "statement-extract",
-        "--input", str(input_file),
-        "--doc-id", doc_id,
-        "--identity-registry", str(id_reg_file),
-        "--output", str(out_file),
+    # 1. Intake
+    intake_res = run_cli(
+        "source-intake",
+        "--input", str(raw_input),
+        "--source-provider", "wechat_browser_clip",
+        "--source-locator", "interview_turns.txt",
+        "--output", str(envelope_file),
     )
-    assert res.returncode == 0, res.stderr
-    statements = json.loads(out_file.read_text(encoding="utf-8"))
+    assert intake_res.returncode == 0, intake_res.stderr
+
+    # 2. Extract using --normalized-document
+    extract_res = run_cli(
+        "statement-extract",
+        "--normalized-document", str(envelope_file),
+        "--identity-registry", str(id_reg_file),
+        "--output", str(stmts_file),
+    )
+    assert extract_res.returncode == 0, extract_res.stderr
+    statements = json.loads(stmts_file.read_text(encoding="utf-8"))
     assert len(statements) == 4
     assert statements[0]["speaker_actor_ref"]["raw_name"] == "孟铎"
     assert statements[1]["speaker_actor_ref"]["raw_name"] == "顾全"
 
 
+def test_cli_statement_extract_mandatory_binding_and_bypasses(tmp_path):
+    """G4-R3: Verify that arbitrary unnormalized raw input fails closed without legacy flag."""
+    raw_input = FIXTURES_DIR / "synthetic_interview_turns.txt"
+    id_reg_file = FIXTURES_DIR / "synthetic_identity_registry.json"
+    doc_id = compute_doc_id(raw_input.read_text(encoding="utf-8"))
+    stmts_file = tmp_path / "statements.json"
+
+    # 1. Calling statement-extract with raw text and without --normalized-document or legacy flag must fail
+    res_fail = run_cli(
+        "statement-extract",
+        "--input", str(raw_input),
+        "--doc-id", doc_id,
+        "--identity-registry", str(id_reg_file),
+        "--output", str(stmts_file),
+    )
+    assert res_fail.returncode != 0
+    assert "UNNORMALIZED_RAW_INPUT_FORBIDDEN" in res_fail.stderr
+
+    # 2. Calling with explicit --allow-unnormalized-raw-input succeeds
+    res_legacy = run_cli(
+        "statement-extract",
+        "--allow-unnormalized-raw-input",
+        "--input", str(raw_input),
+        "--doc-id", doc_id,
+        "--identity-registry", str(id_reg_file),
+        "--output", str(stmts_file),
+    )
+    assert res_legacy.returncode == 0, res_legacy.stderr
+
+    # 3. Tampered content_hash in normalized artifact fails
+    envelope_file = tmp_path / "tampered_envelope.json"
+    run_cli(
+        "source-intake",
+        "--input", str(raw_input),
+        "--source-provider", "local_file",
+        "--source-locator", "test.txt",
+        "--output", str(envelope_file),
+    )
+    env_data = json.loads(envelope_file.read_text(encoding="utf-8"))
+    env_data["normalized_document"]["content_hash"] = "0" * 64
+    envelope_file.write_text(json.dumps(env_data), encoding="utf-8")
+
+    res_tamper = run_cli(
+        "statement-extract",
+        "--normalized-document", str(envelope_file),
+        "--identity-registry", str(id_reg_file),
+        "--output", str(stmts_file),
+    )
+    assert res_tamper.returncode != 0
+    assert "CONTENT_HASH_MISMATCH" in res_tamper.stderr
+
+
 def test_cli_claim_extract(tmp_path):
     input_file = FIXTURES_DIR / "synthetic_interview_turns.txt"
     id_reg_file = FIXTURES_DIR / "synthetic_identity_registry.json"
+    envelope_file = tmp_path / "envelope.json"
     stmts_file = tmp_path / "statements.json"
-    doc_id = compute_doc_id(input_file.read_text(encoding="utf-8"))
 
-    # Extract statements first
+    # Intake -> Statement extract
+    run_cli(
+        "source-intake",
+        "--input", str(input_file),
+        "--source-provider", "wechat_browser_clip",
+        "--source-locator", "turns.txt",
+        "--output", str(envelope_file),
+    )
     run_cli(
         "statement-extract",
-        "--input", str(input_file),
-        "--doc-id", doc_id,
+        "--normalized-document", str(envelope_file),
         "--identity-registry", str(id_reg_file),
         "--output", str(stmts_file),
     )
@@ -138,13 +210,19 @@ def test_cli_verification_queue(tmp_path):
 def test_cli_research_view(tmp_path):
     input_file = FIXTURES_DIR / "synthetic_interview_turns.txt"
     id_reg_file = FIXTURES_DIR / "synthetic_identity_registry.json"
+    envelope_file = tmp_path / "envelope.json"
     stmts_file = tmp_path / "statements.json"
-    doc_id = compute_doc_id(input_file.read_text(encoding="utf-8"))
 
     run_cli(
-        "statement-extract",
+        "source-intake",
         "--input", str(input_file),
-        "--doc-id", doc_id,
+        "--source-provider", "wechat_browser_clip",
+        "--source-locator", "turns.txt",
+        "--output", str(envelope_file),
+    )
+    run_cli(
+        "statement-extract",
+        "--normalized-document", str(envelope_file),
         "--identity-registry", str(id_reg_file),
         "--output", str(stmts_file),
     )

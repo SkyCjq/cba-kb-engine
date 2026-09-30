@@ -288,6 +288,24 @@ def validate_claim(claim: Dict[str, Any]) -> Dict[str, Any]:
     if provenance in (None, "", {}):
         raise ClaimError("CLAIM_PROVENANCE_REQUIRED")
 
+    if status in STRONG_CLAIM_STATUSES:
+        if not isinstance(provenance, dict):
+            raise ClaimError("CLAIM_PROVENANCE_OBJECT_REQUIRED_FOR_STRONG_STATUS")
+        transitions = provenance.get("transitions")
+        latest_auth = provenance.get("latest_transition_authority") or provenance.get("transition_authority")
+        if not transitions and not latest_auth:
+            raise ClaimError(f"STRONG_STATUS_{status.upper()}_REQUIRES_PERSISTED_TRANSITION_AUTHORITY")
+        found_target = False
+        if isinstance(transitions, list):
+            for t in transitions:
+                if isinstance(t, dict) and t.get("to_status") == status and isinstance(t.get("authority"), dict):
+                    found_target = True
+                    break
+        if not found_target and isinstance(latest_auth, dict) and latest_auth.get("target_status") == status:
+            found_target = True
+        if not found_target:
+            raise ClaimError(f"STRONG_STATUS_{status.upper()}_TRANSITION_AUTHORITY_CHAIN_INVALID")
+
     rel_assertion = None
     if "relation_assertion" in claim and claim["relation_assertion"] is not None:
         rel_assertion = validate_relation_assertion(claim["relation_assertion"])
@@ -326,6 +344,7 @@ def create_claim_from_statements(
       evidence-bound transition authority object.
     - Free-form reviewer text or LLM self-assertion fails closed.
     - Claim ID is stable across lifecycle (R8).
+    - Persists auditable transition authority in provenance (G4-R2).
     """
     if not statements:
         raise ClaimError("STATEMENTS_REQUIRED_FOR_CLAIM")
@@ -340,6 +359,10 @@ def create_claim_from_statements(
 
     # Stable claim_id independent of mutable status (R8)
     cid = generate_claim_id(stmt_ids, claim_text)
+
+    prov: Dict[str, Any] = dict(provenance) if isinstance(provenance, dict) else {}
+    prov.setdefault("generated_at", "1970-01-01T00:00:00Z")
+    prov.setdefault("statement_count", len(statements))
 
     if status is None:
         if has_review_req:
@@ -356,19 +379,16 @@ def create_claim_from_statements(
             "status": "unverified",
         }
         val_auth = validate_transition_authority(transition_authority, prior_state, status)
-        prov = provenance or {}
-        if isinstance(prov, dict):
-            prov["transition_authority"] = val_auth
-            prov["transitions"] = [{
-                "from_status": "unverified",
-                "to_status": status,
-                "authority": val_auth,
-            }]
-
-    prov = provenance or {
-        "generated_at": "1970-01-01T00:00:00Z",
-        "statement_count": len(statements),
-    }
+        prov["transition_authority"] = val_auth
+        prov["latest_transition_authority"] = val_auth
+        transitions = list(prov.get("transitions", []))
+        transitions.append({
+            "from_status": "unverified",
+            "to_status": status,
+            "authority": val_auth,
+        })
+        prov["transitions"] = transitions
+        prov["reviewed_by"] = val_auth.get("reviewer")
 
     claim_dict: Dict[str, Any] = {
         "claim_id": cid,
@@ -426,6 +446,7 @@ def transition_claim_status(
     })
     prov["transitions"] = transitions
     prov["latest_transition_authority"] = validated_auth
+    prov["transition_authority"] = validated_auth
     prov["reviewed_by"] = reviewed_by or validated_auth.get("reviewer")
     if resolution_note:
         prov["resolution_note"] = resolution_note
