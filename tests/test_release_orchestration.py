@@ -241,6 +241,54 @@ def test_v181_execution_sha_requires_clean_product_descendant(tmp_path):
         orchestration.verify_execution_sha(checkout, pre_product, baseline)
 
 
+def test_v190_release_spec_uses_product_merge_floor():
+    baseline = "1e8c78019ef30a91c3bd0f98e96ce476326c6c25"
+    assert orchestration._release_spec("v1.9.0-1") == {
+        "product_baseline_sha": baseline,
+    }
+    with pytest.raises(orchestration.ProjectionError, match="RELEASE_ID_FORBIDDEN"):
+        orchestration._release_spec("v1.9.0-2")
+    inputs = projection_inputs()
+    inputs["release_id"] = "v1.9.0-1"
+    assert orchestration.project_targets(**inputs)["release_id"] == "v1.9.0-1"
+    repo = Path(__file__).resolve().parents[1]
+    head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+    ).strip()
+    assert subprocess.run(
+        ["git", "merge-base", "--is-ancestor", baseline, head],
+        cwd=repo, check=False,
+    ).returncode == 0
+
+
+def test_v190_execution_sha_requires_clean_product_descendant(tmp_path):
+    repo = Path(__file__).resolve().parents[1]
+    checkout = tmp_path / "checkout"
+    subprocess.run(
+        ["git", "clone", "--quiet", "--no-hardlinks", str(repo), str(checkout)],
+        check=True,
+    )
+    head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=checkout, text=True,
+    ).strip()
+    baseline = orchestration._release_spec("v1.9.0-1")["product_baseline_sha"]
+    assert orchestration.verify_execution_sha(
+        checkout, head, baseline,
+    )["baseline_is_ancestor"]
+    with pytest.raises(orchestration.ProjectionError, match="CODE_PROVENANCE"):
+        orchestration.verify_execution_sha(checkout, "a" * 40, baseline)
+    (checkout / "README.md").write_text("dirty worktree\n")
+    with pytest.raises(orchestration.ProjectionError, match="CODE_PROVENANCE"):
+        orchestration.verify_execution_sha(checkout, head, baseline)
+    subprocess.run(["git", "checkout", "--quiet", "--", "README.md"],
+                   cwd=checkout, check=True)
+    pre_product = "81bd581fafbccb602f9ecaf9aaefca4533be69a4"
+    subprocess.run(["git", "checkout", "--quiet", pre_product],
+                   cwd=checkout, check=True)
+    with pytest.raises(orchestration.ProjectionError, match="CODE_PROVENANCE"):
+        orchestration.verify_execution_sha(checkout, pre_product, baseline)
+
+
 def test_v180_projection_is_accepted_and_deterministic():
     inputs = projection_inputs()
     inputs["release_id"] = "v1.8.0-1"
@@ -1261,3 +1309,47 @@ def test_rollback_baseline_reentry_validation(monkeypatch):
                 type('I', (), {'read_json': lambda self, name: policy})(),
                 projection, allocation,
             )
+
+
+def test_project_command_scopes_unallocated_targets_to_active_artifacts(monkeypatch, tmp_path):
+    class FakeArgs:
+        release = "v1.9.0-1"
+        engine_sha = "a" * 40
+        allocation = None
+        output = tmp_path / "projection.json"
+
+    status_data = {
+        "artifacts": [
+            {"id": "code-old", "name": "code-old", "sha256": "s1"},
+            {"id": "readme", "name": "readme", "sha256": "s2"},
+        ]
+    }
+    production = {
+        "status_id": "status-doc",
+        "archive_id": "archive-doc",
+        "targets": {
+            "code-old": {"mime": "text/plain", "mode": "binary", "allowed_parents": ["scripts"], "publish_parent": "scripts"},
+            "readme": {"mime": DOC, "mode": "managed_doc", "allowed_parents": ["root"], "publish_parent": "root"},
+            "unreleased-staging-target": {"mime": "text/plain", "mode": "binary", "allowed_parents": ["staging"], "staging_parent": "staging"},
+        },
+    }
+    instance = type("FakeInstance", (), {
+        "read_json": lambda self, name: production if name == "production.json" else {
+            "inputs": {"manifest.csv": {"id": "manifest-id"}},
+            "parents": {"scripts": "scripts"},
+        },
+        "config_path": lambda self, name: tmp_path / name,
+    })()
+    monkeypatch.setattr(orchestration, "verify_execution_sha", lambda *a, **k: None)
+    monkeypatch.setattr(orchestration, "Drive", lambda *a, **k: type("FakeDrive", (), {
+        "get": lambda self, file_id: json.dumps(status_data).encode() if file_id == "status-doc" else b"drive_file_id,uid\ncode-old,code-old\nreadme,readme\n",
+        "meta": lambda self, file_id: {"id": file_id, "modifiedTime": "2026-09-30T00:00:00Z", "version": "1"},
+    })())
+    monkeypatch.setattr(subprocess, "check_output", lambda *a, **k: b"code-old\0readme\0")
+    monkeypatch.setattr(Path, "read_bytes", lambda self: b"fake content")
+
+    result = orchestration._project_command(FakeArgs(), instance)
+    assert result["state"] == "PROJECTED"
+    assert result["active_production_target_count"] == 2
+    assert "unreleased-staging-target" not in [t["id"] for t in result["existing_targets"]]
+
