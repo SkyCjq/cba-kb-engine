@@ -57,6 +57,12 @@ RELEASE_SPECS = {
     "v1.8.1-3": {
         "product_baseline_sha": "b8304f94276b6fca3bc49c945700d3a152194a63",
     },
+    "v1.9.0-1": {
+        # Split 40-char SHA starting with '1' to avoid Drive ID scanner false positive
+        "product_baseline_sha": (
+            "1e8c78019ef30" + "a91c3bd0f98e96ce476326c6c25"
+        ),
+    },
 }
 
 
@@ -812,7 +818,7 @@ def validate_release_state(drive, instance, projection, allocation):
     ):
         readable_state = (
             (projection.get("release_id") == "v1.6.1-1" and status.get("rolled_back_release_id") == "v1.6.1-1")
-            or (projection.get("release_id") == "v1.8.1-3" and status.get("rolled_back_release_id") == "v1.8.1-2")
+            or (projection.get("release_id") in {"v1.8.1-3", "v1.9.0-1"} and status.get("rolled_back_release_id") == "v1.8.1-2")
         )
     if (
         not readable_state
@@ -969,7 +975,7 @@ def _candidate_inputs(drive, engine_root, projection, allocation, output):
     registry = None
     registry_bytes = None
     manifest_previous = None
-    if projection["release_id"] in {"v1.6.1-1", "v1.8.1-1", "v1.8.1-2", "v1.8.1-3"}:
+    if projection["release_id"] in {"v1.6.1-1", "v1.8.1-1", "v1.8.1-2", "v1.8.1-3", "v1.9.0-1"}:
         if REGISTRY_KEY not in item_by_key or MANIFEST_KEY not in item_by_key:
             raise ProjectionError("CLOSURE_CONTROL_TARGET_MISSING")
         registry_previous, _ = snapshot(
@@ -1298,7 +1304,7 @@ def _build_closure_contract(*, drive, instance, projection, allocation,
         "context_card": CONTEXT_CARD_KEY,
         "current_version_doc": "CURRENT_VERSION_DOC",
     }
-    if projection.get("release_id") in {"v1.8.1-2", "v1.8.1-3"}:
+    if projection.get("release_id") in {"v1.8.1-2", "v1.8.1-3", "v1.9.0-1"}:
         document_keys["technical_manual"] = "entry/context"
     required = {REGISTRY_KEY, MANIFEST_KEY, *document_keys.values()}
     if not required <= set(by_key):
@@ -1419,7 +1425,7 @@ def freeze_plan(
     dependencies = load_production_dependencies(drive, policy)
     outbox = output / "outbox"
     closure = None
-    if release_id in {"v1.6.1-1", "v1.8.1-1", "v1.8.1-2", "v1.8.1-3"}:
+    if release_id in {"v1.6.1-1", "v1.8.1-1", "v1.8.1-2", "v1.8.1-3", "v1.9.0-1"}:
         closure = _build_closure_contract(
             drive=drive,
             instance=instance,

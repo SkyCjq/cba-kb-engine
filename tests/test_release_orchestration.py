@@ -241,6 +241,54 @@ def test_v181_execution_sha_requires_clean_product_descendant(tmp_path):
         orchestration.verify_execution_sha(checkout, pre_product, baseline)
 
 
+def test_v190_release_spec_uses_product_merge_floor():
+    baseline = "1e8c78019ef30a91c3bd0f98e96ce476326c6c25"
+    assert orchestration._release_spec("v1.9.0-1") == {
+        "product_baseline_sha": baseline,
+    }
+    with pytest.raises(orchestration.ProjectionError, match="RELEASE_ID_FORBIDDEN"):
+        orchestration._release_spec("v1.9.0-2")
+    inputs = projection_inputs()
+    inputs["release_id"] = "v1.9.0-1"
+    assert orchestration.project_targets(**inputs)["release_id"] == "v1.9.0-1"
+    repo = Path(__file__).resolve().parents[1]
+    head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+    ).strip()
+    assert subprocess.run(
+        ["git", "merge-base", "--is-ancestor", baseline, head],
+        cwd=repo, check=False,
+    ).returncode == 0
+
+
+def test_v190_execution_sha_requires_clean_product_descendant(tmp_path):
+    repo = Path(__file__).resolve().parents[1]
+    checkout = tmp_path / "checkout"
+    subprocess.run(
+        ["git", "clone", "--quiet", "--no-hardlinks", str(repo), str(checkout)],
+        check=True,
+    )
+    head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=checkout, text=True,
+    ).strip()
+    baseline = orchestration._release_spec("v1.9.0-1")["product_baseline_sha"]
+    assert orchestration.verify_execution_sha(
+        checkout, head, baseline,
+    )["baseline_is_ancestor"]
+    with pytest.raises(orchestration.ProjectionError, match="CODE_PROVENANCE"):
+        orchestration.verify_execution_sha(checkout, "a" * 40, baseline)
+    (checkout / "README.md").write_text("dirty worktree\n")
+    with pytest.raises(orchestration.ProjectionError, match="CODE_PROVENANCE"):
+        orchestration.verify_execution_sha(checkout, head, baseline)
+    subprocess.run(["git", "checkout", "--quiet", "--", "README.md"],
+                   cwd=checkout, check=True)
+    pre_product = "81bd581fafbccb602f9ecaf9aaefca4533be69a4"
+    subprocess.run(["git", "checkout", "--quiet", pre_product],
+                   cwd=checkout, check=True)
+    with pytest.raises(orchestration.ProjectionError, match="CODE_PROVENANCE"):
+        orchestration.verify_execution_sha(checkout, pre_product, baseline)
+
+
 def test_v180_projection_is_accepted_and_deterministic():
     inputs = projection_inputs()
     inputs["release_id"] = "v1.8.0-1"
