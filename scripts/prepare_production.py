@@ -1344,41 +1344,94 @@ def _build_closure_contract(*, drive, instance, projection, allocation,
             "mode": entry.get("mode", "binary"),
             "kind": kind,
         })
-    parents = instance.read_json("import_inventory.json")["parents"]
-    current = {
-        parents["root"], parents["ai"], parents["scripts"],
-        parents["config"], parents["data"],
-    }
-    evidence_keys = {
-        logical_key for logical_key, kind in protected_specs
-        if kind == "evidence"
-    }
-    for logical_key in required | (
-        {item[0] for item in protected_specs} - evidence_keys
-    ):
-        parent = by_key[logical_key].get("publish_parent")
-        if parent and parent != parents["archive"]:
-            current.add(parent)
-    history = {parents["archive"]}
-    evidence = {
-        by_key[logical_key].get("publish_parent")
-        for logical_key in evidence_keys
-        if by_key[logical_key].get("publish_parent")
-    }
-    if not evidence:
-        raise ProjectionError("CLOSURE_EVIDENCE_ZONE_MISSING")
+    policy = None
+    if instance is not None and hasattr(instance, "read_json"):
+        try:
+            policy = instance.read_json("production.json")
+        except Exception:
+            policy = None
+
+    has_explicit_topology = False
+    if isinstance(policy, dict):
+        if ("topology" in policy and isinstance(policy["topology"], list) and policy["topology"]) or (
+            "zones" in policy and isinstance(policy["zones"], dict) and policy["zones"]
+        ):
+            has_explicit_topology = True
+    if not has_explicit_topology and instance is not None and hasattr(instance, "config_path"):
+        try:
+            if instance.config_path("topology.json").is_file():
+                has_explicit_topology = True
+        except Exception:
+            pass
+
+    if has_explicit_topology:
+        planned_target_ids = [
+            e["id"] for e in entries
+            if isinstance(e, dict) and e.get("id")
+        ]
+        try:
+            nodes = build_release_topology_from_production(
+                policy, instance=instance, release_id=projection.get("release_id"),
+            )
+            validate_release_topology(
+                nodes,
+                release_id=projection.get("release_id"),
+                planned_target_ids=planned_target_ids,
+            )
+        except Exception as exc:
+            raise ProjectionError(f"CLOSURE_TOPOLOGY_INVALID: {exc}") from exc
+
+        current = {node["id"] for node in nodes if node.get("role") == "CURRENT_ZONE"}
+        history = {node["id"] for node in nodes if node.get("role") == "HISTORY_ZONE"}
+        staging = {node["id"] for node in nodes if node.get("role") == "STAGING_ZONE"}
+        evidence = {node["id"] for node in nodes if node.get("role") == "EVIDENCE_ZONE"}
+
+        if not current or not history or not staging or not evidence:
+            raise ProjectionError("CLOSURE_ZONE_INCOMPLETE")
+
+        staging_id = allocation.get("staging_id")
+        if not staging_id or staging_id not in staging:
+            raise ProjectionError("CLOSURE_STAGING_ZONE_MISMATCH")
+
+        groups = [current, history, evidence, staging]
+        if sum(len(group) for group in groups) != len(set().union(*groups)):
+            raise ProjectionError("CLOSURE_ZONE_OVERLAP")
+    else:
+        parents = instance.read_json("import_inventory.json")["parents"]
+        current = {
+            parents["root"], parents["ai"], parents["scripts"],
+            parents["config"], parents["data"],
+        }
+        evidence_keys = {
+            logical_key for logical_key, kind in protected_specs
+            if kind == "evidence"
+        }
+        for logical_key in required | (
+            {item[0] for item in protected_specs} - evidence_keys
+        ):
+            parent = by_key[logical_key].get("publish_parent")
+            if parent and parent != parents["archive"]:
+                current.add(parent)
+        history = {parents["archive"]}
+        evidence = {
+            by_key[logical_key].get("publish_parent")
+            for logical_key in evidence_keys
+            if by_key[logical_key].get("publish_parent")
+        }
+        if not evidence:
+            raise ProjectionError("CLOSURE_EVIDENCE_ZONE_MISSING")
+        staging = {
+            entry.get("staging_parent") for entry in entries
+            if entry.get("staging_parent")
+        }
+        staging.add(allocation["staging_id"])
+        groups = [current, history, evidence, staging]
+        if sum(len(group) for group in groups) != len(set().union(*groups)):
+            raise ProjectionError("CLOSURE_ZONE_OVERLAP")
     protected_by_id = {item["id"]: item for item in protected}
     for item in _evidence_baseline(drive, evidence):
         protected_by_id.setdefault(item["id"], item)
     protected = list(protected_by_id.values())
-    staging = {
-        entry.get("staging_parent") for entry in entries
-        if entry.get("staging_parent")
-    }
-    staging.add(allocation["staging_id"])
-    groups = [current, history, evidence, staging]
-    if sum(len(group) for group in groups) != len(set().union(*groups)):
-        raise ProjectionError("CLOSURE_ZONE_OVERLAP")
     return {
         "code_commit": projection["engine_sha"],
         "previous_code_commit": previous_code_commit,

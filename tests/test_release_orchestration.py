@@ -1353,3 +1353,224 @@ def test_project_command_scopes_unallocated_targets_to_active_artifacts(monkeypa
     assert result["active_production_target_count"] == 2
     assert "unreleased-staging-target" not in [t["id"] for t in result["existing_targets"]]
 
+
+def _build_test_topology(entries, staging_id="staging"):
+    nodes = [
+        {"id": "root-folder", "role": "ROOT", "parents": []},
+        {"id": "current-zone-1", "role": "CURRENT_ZONE", "parents": ["root-folder"]},
+        {"id": "current-zone-2", "role": "CURRENT_ZONE", "parents": ["root-folder"]},
+        {"id": "history-zone", "role": "HISTORY_ZONE", "parents": ["root-folder"]},
+        {"id": staging_id, "role": "STAGING_ZONE", "parents": ["root-folder"]},
+        {"id": "evidence-zone", "role": "EVIDENCE_ZONE", "parents": ["root-folder"]},
+    ]
+    for e in entries:
+        nodes.append({"id": e["id"], "role": "CURRENT_TARGET", "parents": ["current-zone-1"]})
+    return nodes
+
+
+def _v190_closure_entries():
+    rows = _closure_entries()
+    rows.append({
+        "logical_key": "entry/context", "id": "id-context", "name": "technical_manual.md",
+        "mime": "text/markdown", "mode": "binary",
+        "before_hash": "f" * 64,
+        "publish_parent": "root",
+        "staging_parent": "staging",
+    })
+    return rows
+
+
+def test_closure_contract_uses_explicit_topology_zones(monkeypatch):
+    entries = _v190_closure_entries()
+    staging_id = "staging"
+    top = _build_test_topology(entries, staging_id=staging_id)
+    policy = {"topology": top}
+
+    class TopInstance:
+        def read_json(self, name):
+            if name == "production.json":
+                return policy
+            return {"parents": {"root": "root-folder", "archive": "history-zone"}}
+
+    monkeypatch.setattr(orchestration, "_evidence_baseline", lambda drive, roots: [])
+    closure = orchestration._build_closure_contract(
+        drive=ClosureDrive(),
+        instance=TopInstance(),
+        projection={"release_id": "v1.9.0-1", "engine_sha": "a" * 40},
+        allocation={"staging_id": staging_id},
+        entries=entries,
+        state={"status": {
+            "state": "ROLLED_BACK", "current_release_id": "v1.8.1-1",
+            "rolled_back_release_id": "v1.8.1-2", "code_commit": "b" * 40,
+        }},
+    )
+    assert closure["zones"]["current"] == ["current-zone-1", "current-zone-2"]
+    assert closure["zones"]["history"] == ["history-zone"]
+    assert closure["zones"]["staging"] == [staging_id]
+    assert closure["zones"]["evidence"] == ["evidence-zone"]
+    assert "root-folder" not in closure["zones"]["current"]
+
+
+def test_closure_contract_excludes_root_from_current(monkeypatch):
+    entries = _v190_closure_entries()
+    top = _build_test_topology(entries, staging_id="staging")
+    policy = {"topology": top}
+
+    class TopInstance:
+        def read_json(self, name):
+            if name == "production.json":
+                return policy
+            return {"parents": {"root": "root-folder", "archive": "history-zone"}}
+
+    monkeypatch.setattr(orchestration, "_evidence_baseline", lambda drive, roots: [])
+    closure = orchestration._build_closure_contract(
+        drive=ClosureDrive(),
+        instance=TopInstance(),
+        projection={"release_id": "v1.9.0-1", "engine_sha": "a" * 40},
+        allocation={"staging_id": "staging"},
+        entries=entries,
+        state={"status": {
+            "state": "ROLLED_BACK", "current_release_id": "v1.8.1-1",
+            "rolled_back_release_id": "v1.8.1-2", "code_commit": "b" * 40,
+        }},
+    )
+    assert "root-folder" not in closure["zones"]["current"]
+
+
+def test_closure_contract_fails_closed_when_topology_missing_required_zone_role(monkeypatch):
+    entries = _v190_closure_entries()
+    top = [n for n in _build_test_topology(entries) if n.get("role") != "EVIDENCE_ZONE"]
+    policy = {"topology": top}
+
+    class TopInstance:
+        def read_json(self, name):
+            if name == "production.json":
+                return policy
+            return {}
+
+    with pytest.raises(orchestration.ProjectionError, match="CLOSURE_"):
+        orchestration._build_closure_contract(
+            drive=ClosureDrive(),
+            instance=TopInstance(),
+            projection={"release_id": "v1.9.0-1", "engine_sha": "a" * 40},
+            allocation={"staging_id": "staging"},
+            entries=entries,
+            state={"status": {"state": "COMPLETE", "current_release_id": "v1.8.1-1", "code_commit": "b" * 40}},
+        )
+
+
+def test_closure_contract_fails_closed_when_allocation_staging_id_missing_from_staging_zone(monkeypatch):
+    entries = _v190_closure_entries()
+    top = _build_test_topology(entries, staging_id="staging-zone-1")
+    policy = {"topology": top}
+
+    class TopInstance:
+        def read_json(self, name):
+            if name == "production.json":
+                return policy
+            return {}
+
+    with pytest.raises(orchestration.ProjectionError, match="CLOSURE_STAGING_ZONE_MISMATCH"):
+        orchestration._build_closure_contract(
+            drive=ClosureDrive(),
+            instance=TopInstance(),
+            projection={"release_id": "v1.9.0-1", "engine_sha": "a" * 40},
+            allocation={"staging_id": "different-staging-id"},
+            entries=entries,
+            state={"status": {"state": "COMPLETE", "current_release_id": "v1.8.1-1", "code_commit": "b" * 40}},
+        )
+
+
+def test_closure_contract_fails_closed_on_topology_target_mismatch(monkeypatch):
+    entries = _v190_closure_entries()
+    # Missing entry id-0 in topology
+    top = [n for n in _build_test_topology(entries) if n.get("id") != "id-0"]
+    policy = {"topology": top}
+
+    class TopInstance:
+        def read_json(self, name):
+            if name == "production.json":
+                return policy
+            return {}
+
+    with pytest.raises(orchestration.ProjectionError, match="CLOSURE_TOPOLOGY_INVALID"):
+        orchestration._build_closure_contract(
+            drive=ClosureDrive(),
+            instance=TopInstance(),
+            projection={"release_id": "v1.9.0-1", "engine_sha": "a" * 40},
+            allocation={"staging_id": "staging"},
+            entries=entries,
+            state={"status": {"state": "COMPLETE", "current_release_id": "v1.8.1-1", "code_commit": "b" * 40}},
+        )
+
+
+def test_closure_contract_fails_closed_on_topology_overlap(monkeypatch):
+    entries = _v190_closure_entries()
+    top = _build_test_topology(entries, staging_id="current-zone-1")  # Overlap staging with current
+    policy = {"topology": top}
+
+    class TopInstance:
+        def read_json(self, name):
+            if name == "production.json":
+                return policy
+            return {}
+
+    with pytest.raises(orchestration.ProjectionError, match="CLOSURE_TOPOLOGY_INVALID|CLOSURE_ZONE_OVERLAP"):
+        orchestration._build_closure_contract(
+            drive=ClosureDrive(),
+            instance=TopInstance(),
+            projection={"release_id": "v1.9.0-1", "engine_sha": "a" * 40},
+            allocation={"staging_id": "current-zone-1"},
+            entries=entries,
+            state={"status": {"state": "COMPLETE", "current_release_id": "v1.8.1-1", "code_commit": "b" * 40}},
+        )
+
+
+def test_historical_under_declared_current_zone_still_fails_audit_current_history():
+    from cba_kb.current_state import audit_current_history
+    from test_canonical_registry import manifest, registry
+    zones = {
+        "current": ["current-zone-1"],
+        "history": ["history-zone"],
+        "staging": ["staging-zone"],
+        "evidence": ["evidence-zone"],
+        "folders": {},
+    }
+    items = [
+        {"id": "doc-hist", "name": "historical_registrations_2017.txt", "parents": ["current-zone-1"]},
+    ]
+    with pytest.raises(ValueError, match="CURRENT_HISTORY_VIOLATION"):
+        audit_current_history(items, zones, manifest(), registry())
+
+
+def test_historical_subtree_elsewhere_under_root_not_pulled_into_current_inventory():
+    from cba_kb.release import _inventory
+    # A Drive mock with root-folder containing current-zone-1 and an unrelated evidence/doc tree
+    folders = {
+        "current-zone-1": [
+            {"id": "f-curr-1", "name": "active.md", "mimeType": "text/markdown", "parents": ["current-zone-1"]},
+        ],
+        "evidence-zone": [
+            {"id": "f-ev-1", "name": "evidence.md", "mimeType": "text/markdown", "parents": ["evidence-zone"]},
+        ],
+        "other-subtree": [
+            {"id": "f-hist-other", "name": "historical_stuff.md", "mimeType": "text/markdown", "parents": ["other-subtree"]},
+        ],
+    }
+    class MockDrive:
+        def list(self, folder):
+            return folders.get(folder, [])
+
+    zones = {
+        "current": ["current-zone-1"],
+        "history": ["history-zone"],
+        "staging": ["staging-zone"],
+        "evidence": ["evidence-zone"],
+    }
+    items, zones_with_folders = _inventory(MockDrive(), zones)
+    item_ids = {it["id"] for it in items}
+    assert "f-curr-1" in item_ids
+    assert "f-ev-1" in item_ids
+    assert "f-hist-other" not in item_ids
+
+
