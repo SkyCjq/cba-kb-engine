@@ -356,9 +356,8 @@ def build_release_infra_compatibility_bundle(
     if not isinstance(fingerprints, list) or not fingerprints:
         raise PreMutationAbort("RELEASE_INFRA_FINGERPRINTS_REQUIRED")
 
-    # Fresh parent requirement: in build_release_infra_compatibility_bundle,
-    # target node parents in topology must be fresh-read from drive.meta(target_id),
-    # never trusting local topology JSON.
+    # Semantic topology is the frozen planned location; the fresh Drive parent is
+    # a separate observation. Never overwrite the authoritative semantic parent.
     topology = [dict(node) for node in topology]
     by_id = {node["id"]: node for node in topology if isinstance(node, dict) and "id" in node}
     observed_parents_by_target = {}
@@ -368,6 +367,7 @@ def build_release_infra_compatibility_bundle(
             if obs.get("id"):
                 observed_parents_by_target[obs["id"]] = obs.get("parents")
 
+    observed_target_parents = {}
     for tid in target_ids:
         if tid not in by_id or by_id[tid].get("role") not in {"CURRENT_TARGET", "STAGING_TARGET"}:
             raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
@@ -378,9 +378,15 @@ def build_release_infra_compatibility_bundle(
             if not isinstance(meta, dict):
                 raise PreMutationAbort("RELEASE_INFRA_FINGERPRINT_INVALID")
             fresh_parents = meta.get("parents")
-        if not isinstance(fresh_parents, list):
+        if (
+            not isinstance(fresh_parents, list)
+            or any(
+                not isinstance(parent, str) or not parent
+                for parent in fresh_parents
+            )
+        ):
             raise PreMutationAbort("RELEASE_INFRA_FINGERPRINT_INVALID")
-        by_id[tid]["parents"] = list(fresh_parents)
+        observed_target_parents[tid] = list(fresh_parents)
 
     return {
         "plan": plan,
@@ -390,6 +396,7 @@ def build_release_infra_compatibility_bundle(
         "freeze_prepared_journal_sha256": freeze_prepared_journal_sha256,
         "topology": topology,
         "fingerprints": fingerprints,
+        "observed_target_parents": observed_target_parents,
         "status_doc": status_doc,
         "safe_baseline_release_id": safe_baseline_release_id,
         "consumer_manifest": consumer_manifest,

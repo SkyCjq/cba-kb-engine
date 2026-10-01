@@ -631,11 +631,66 @@ def validate_safe_baseline_status(status_doc, safe_baseline_release_id):
     raise PreMutationAbort('RELEASE_INFRA_SAFE_BASELINE_INVALID')
 
 
+def classify_planned_target_relocation(
+        node, entry, observed_parents, *, topology_index):
+    """Bind a fresh Drive parent to the frozen semantic target location.
+
+    The semantic topology records the frozen post-release location; the fresh
+    Drive parent records the pre-publish observed environment. A mismatch is
+    only legal when the plan explicitly records the relocation for that entry.
+    """
+    if (not isinstance(node, dict) or not isinstance(entry, dict)
+            or not isinstance(topology_index, dict)):
+        raise PreMutationAbort('RELEASE_INFRA_EXPLICIT_RELOCATION_INVALID')
+    semantic = node.get('parents')
+    observed = observed_parents
+    if (not isinstance(semantic, list) or not isinstance(observed, list)
+            or any(not isinstance(parent, str) or not parent
+                   for parent in observed)):
+        raise PreMutationAbort('RELEASE_INFRA_EXPLICIT_RELOCATION_INVALID')
+    if observed == semantic:
+        return {
+            'status': 'PASS',
+            'classification': 'UNCHANGED',
+            'target_id': node.get('id'),
+            'semantic_parents': list(semantic),
+            'observed_parents': list(observed),
+        }
+    staging_parent = entry.get('staging_parent')
+    publish_parent = entry.get('publish_parent')
+    publish_node = (
+        topology_index.get(publish_parent)
+        if isinstance(publish_parent, str) and publish_parent else None
+    )
+    if (
+        node.get('role') == 'CURRENT_TARGET'
+        and len(observed) == 1
+        and isinstance(staging_parent, str) and bool(staging_parent)
+        and isinstance(publish_parent, str) and bool(publish_parent)
+        and observed == [staging_parent]
+        and semantic == [publish_parent]
+        and staging_parent != publish_parent
+        and isinstance(publish_node, dict)
+        and publish_node.get('role') == 'CURRENT_ZONE'
+    ):
+        return {
+            'status': 'PASS',
+            'classification': 'EXPLICIT_RELOCATION',
+            'target_id': node.get('id'),
+            'semantic_parents': list(semantic),
+            'observed_parents': list(observed),
+            'staging_parent': staging_parent,
+            'publish_parent': publish_parent,
+        }
+    raise PreMutationAbort('RELEASE_INFRA_EXPLICIT_RELOCATION_INVALID')
+
+
 def validate_release_infra_compatibility(
         *, plan, plan_sha256, journal, current_runtime_journal_sha256,
         freeze_prepared_journal_sha256, topology, fingerprints,
         status_doc, safe_baseline_release_id, consumer_manifest,
         identity_projection, platform_results,
+        observed_target_parents=None,
         expected_source_registry_sha256=None,
         require_environmental_stability=False):
     """Run the real release contracts as a side-effect-free qualification gate."""
@@ -656,6 +711,42 @@ def validate_release_infra_compatibility(
     topology_result = validate_release_topology(
         topology, release_id=plan['release_id'], planned_target_ids=planned_target_ids,
     )
+    topology_index = {
+        node['id']: node for node in topology
+        if isinstance(node, dict) and isinstance(node.get('id'), str)
+    }
+    entry_index = {
+        entry['id']: entry for entry in plan.get('entries', [])
+        if isinstance(entry, dict) and isinstance(entry.get('id'), str)
+        and entry.get('id')
+    }
+    if (not isinstance(observed_target_parents, dict)
+            or set(observed_target_parents) != set(planned_target_ids)):
+        raise PreMutationAbort('RELEASE_INFRA_TARGET_PARENT_OBSERVATION_REQUIRED')
+    relocation_results = []
+    for target_id in planned_target_ids:
+        node = topology_index.get(target_id)
+        entry = entry_index.get(target_id)
+        if node is None or entry is None:
+            raise PreMutationAbort(
+                'RELEASE_INFRA_EXPLICIT_RELOCATION_INVALID'
+            )
+        relocation_results.append(classify_planned_target_relocation(
+            node, entry, observed_target_parents[target_id],
+            topology_index=topology_index,
+        ))
+    relocation_result = {
+        'status': 'PASS',
+        'unchanged': sum(
+            1 for result in relocation_results
+            if result['classification'] == 'UNCHANGED'
+        ),
+        'explicit_relocation': sum(
+            1 for result in relocation_results
+            if result['classification'] == 'EXPLICIT_RELOCATION'
+        ),
+        'targets': relocation_results,
+    }
     fingerprint_results = []
     if not isinstance(fingerprints, list) or not fingerprints:
         raise PreMutationAbort('RELEASE_INFRA_FINGERPRINTS_REQUIRED')
@@ -735,6 +826,7 @@ def validate_release_infra_compatibility(
         'safe_baseline_live_state': safe_baseline_live_state,
         'acceptance_status_normalization': acceptance_status_normalization,
         'topology': topology_result,
+        'relocations': relocation_result,
         'fingerprints': fingerprint_results,
         'runtime_lineage': lineage_result,
         'consumer_manifest': manifest_result,
