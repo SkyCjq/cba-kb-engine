@@ -8,6 +8,7 @@ from cba_kb.consumer_projection import build_player_identity_consumer_projection
 from cba_kb.release import (
     PreMutationAbort,
     ReleaseContractError,
+    classify_planned_target_relocation,
     freeze_fingerprint,
     runtime_journal_sha256,
     validate_freeze_fingerprint_compatibility,
@@ -102,6 +103,7 @@ def preflight_bundle():
         "current_runtime_journal_sha256": prepared_sha,
         "freeze_prepared_journal_sha256": prepared_sha,
         "topology": topology(),
+        "observed_target_parents": {"target-random": ["current-random"]},
         "fingerprints": [{"frozen": freeze_fingerprint(frozen_meta), "observed": observed}],
         "status_doc": {"state": "COMPLETE", "current_release_id": RELEASE_ID,
                        "code_commit": SHA},
@@ -918,15 +920,19 @@ def test_blocker_b_semantic_target_role_current_target_in_history_zone_fails(tmp
     bundle = build_release_infra_compatibility_bundle(
         instance=instance, drive=drive, evidence_root=evidence_root,
     )
-    # Role remains CURRENT_TARGET, only parent is updated to history-random
+    # Semantic role and semantic parent stay frozen, the fresh parent is separate
     bundled_target = next(n for n in bundle["topology"] if n["id"] == "target-random")
     assert bundled_target["role"] == "CURRENT_TARGET"
-    assert bundled_target["parents"] == ["history-random"]
-    with pytest.raises(ReleaseContractError, match="RELEASE_TOPOLOGY_ANCESTOR_INVALID"):
+    assert bundled_target["parents"] == ["current-random"]
+    assert bundle["observed_target_parents"]["target-random"] == ["history-random"]
+    # No explicit relocation record for this entry -> fail closed
+    with pytest.raises(
+        PreMutationAbort, match="RELEASE_INFRA_EXPLICIT_RELOCATION_INVALID"
+    ):
         release_infra_compatibility_preflight(bundle)
 
 
-def test_blocker_b_fresh_parent_observation_changes_only_parent_never_role(tmp_path):
+def test_blocker_b_fresh_parent_observation_never_overwrites_semantic_topology(tmp_path):
     evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
     top = topology(release_id=RELEASE_ID)
     (evidence_root / "topology.json").write_text(json.dumps(top))
@@ -948,10 +954,13 @@ def test_blocker_b_fresh_parent_observation_changes_only_parent_never_role(tmp_p
         instance=instance, drive=drive, evidence_root=evidence_root,
     )
     bundled_target = next(n for n in bundle["topology"] if n["id"] == "target-random")
-    # Semantic role must still be CURRENT_TARGET from authoritative topology, NOT STAGING_TARGET
+    # Semantic role and semantic parent are authoritative and must not be overwritten
     assert bundled_target["role"] == "CURRENT_TARGET"
-    assert bundled_target["parents"] == ["staging-random"]
-    with pytest.raises(ReleaseContractError, match="RELEASE_TOPOLOGY_ANCESTOR_INVALID"):
+    assert bundled_target["parents"] == ["current-random"]
+    assert bundle["observed_target_parents"]["target-random"] == ["staging-random"]
+    with pytest.raises(
+        PreMutationAbort, match="RELEASE_INFRA_EXPLICIT_RELOCATION_INVALID"
+    ):
         release_infra_compatibility_preflight(bundle)
 
 
@@ -1008,21 +1017,25 @@ def test_retired_target_remaining_in_planned_topology_fails_exact_set_validation
         )
 
 
-def test_bundle_builder_fresh_reads_target_parents_ignoring_local_topology_json(tmp_path):
-    evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
+def _relocation_target_drive(fresh_parent):
     status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
-    spoofed_topology = topology()
-    target_node = next(n for n in spoofed_topology if n["id"] == "target-random")
-    target_node["parents"] = ["staging-random"]
-    (evidence_root / "topology.json").write_text(json.dumps(spoofed_topology))
-
-    drive = MockDrive(
+    return MockDrive(
         files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
         metas={
             "status-drive-id": {"id": "status-drive-id", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["root-random"]},
-            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["current-random"]},
+            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": [fresh_parent]},
         },
     )
+
+
+def test_bundle_builder_preserves_semantic_parent_and_accepts_explicit_relocation(tmp_path):
+    evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
+    plan["entries"][0].update({
+        "staging_parent": "staging-random",
+        "publish_parent": "current-random",
+    })
+    (evidence_root / "plan.json").write_text(json.dumps(plan))
+    drive = _relocation_target_drive("staging-random")
     policy = {"enabled": True, "status_id": "status-drive-id", "safe_baseline_release_id": RELEASE_ID}
     instance = MockInstance(configs={"production.json": policy})
 
@@ -1031,23 +1044,181 @@ def test_bundle_builder_fresh_reads_target_parents_ignoring_local_topology_json(
         source_registry_sha256=projection["source_registry_sha256"],
     )
     target_in_bundle = next(n for n in bundle["topology"] if n["id"] == "target-random")
+    # The semantic parent is never overwritten by the fresh observation
     assert target_in_bundle["parents"] == ["current-random"]
-    res = release_infra_compatibility_preflight(bundle)
-    assert res["status"] == "PASS"
+    assert bundle["observed_target_parents"]["target-random"] == ["staging-random"]
+    result = release_infra_compatibility_preflight(bundle)
+    assert result["status"] == "PASS"
+    assert result["relocations"]["unchanged"] == 0
+    assert result["relocations"]["explicit_relocation"] == 1
+    assert result["relocations"]["targets"] == [{
+        "status": "PASS",
+        "classification": "EXPLICIT_RELOCATION",
+        "target_id": "target-random",
+        "semantic_parents": ["current-random"],
+        "observed_parents": ["staging-random"],
+        "staging_parent": "staging-random",
+        "publish_parent": "current-random",
+    }]
 
-    drive_bad = MockDrive(
-        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
-        metas={
-            "status-drive-id": {"id": "status-drive-id", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["root-random"]},
-            "target-random": {"id": "target-random", "version": "1", "modifiedTime": "t0", "mimeType": "application/json", "parents": ["history-random"]},
+
+@pytest.mark.parametrize("spoofed_parent", [
+    "staging-random",
+    "history-random",
+])
+def test_spoofed_semantic_topology_parent_fails_closed(tmp_path, spoofed_parent):
+    evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
+    plan["entries"][0].update({
+        "staging_parent": "staging-random",
+        "publish_parent": "current-random",
+    })
+    (evidence_root / "plan.json").write_text(json.dumps(plan))
+    spoofed_topology = topology()
+    target_node = next(n for n in spoofed_topology if n["id"] == "target-random")
+    target_node["parents"] = [spoofed_parent]
+    (evidence_root / "topology.json").write_text(json.dumps(spoofed_topology))
+
+    instance = MockInstance(configs={
+        "production.json": {
+            "enabled": True, "status_id": "status-drive-id",
+            "safe_baseline_release_id": RELEASE_ID,
         },
-    )
-    bundle_bad = build_release_infra_compatibility_bundle(
-        instance=instance, drive=drive_bad, evidence_root=evidence_root,
+    })
+    bundle = build_release_infra_compatibility_bundle(
+        instance=instance, drive=_relocation_target_drive("staging-random"),
+        evidence_root=evidence_root,
         source_registry_sha256=projection["source_registry_sha256"],
     )
-    with pytest.raises(ReleaseContractError, match="RELEASE_TOPOLOGY_ANCESTOR_INVALID"):
-        release_infra_compatibility_preflight(bundle_bad)
+    target_in_bundle = next(n for n in bundle["topology"] if n["id"] == "target-random")
+    assert target_in_bundle["parents"] == [spoofed_parent]
+    with pytest.raises(ReleaseContractError):
+        release_infra_compatibility_preflight(bundle)
+
+
+def _relocation_verdict(*, node=None, entry=None, observed=None, index=None):
+    default_node = {
+        "id": "target-random", "role": "CURRENT_TARGET",
+        "parents": ["current-random"],
+    }
+    default_entry = {
+        "id": "target-random", "staging_parent": "staging-random",
+        "publish_parent": "current-random",
+    }
+    default_index = {
+        "target-random": default_node,
+        "current-random": {
+            "id": "current-random", "role": "CURRENT_ZONE",
+            "parents": ["root-random"],
+        },
+        "staging-random": {
+            "id": "staging-random", "role": "STAGING_ZONE",
+            "parents": ["root-random"],
+        },
+    }
+    return classify_planned_target_relocation(
+        default_node if node is None else node,
+        default_entry if entry is None else entry,
+        ["staging-random"] if observed is None else observed,
+        topology_index=default_index if index is None else index,
+    )
+
+
+def test_section18_positive_oracles_unchanged_and_explicit_relocation():
+    unchanged = _relocation_verdict(observed=["current-random"])
+    assert unchanged["classification"] == "UNCHANGED"
+    assert unchanged["semantic_parents"] == ["current-random"]
+    relocation = _relocation_verdict()
+    assert relocation["classification"] == "EXPLICIT_RELOCATION"
+    assert relocation["staging_parent"] == "staging-random"
+    assert relocation["publish_parent"] == "current-random"
+
+
+@pytest.mark.parametrize("case", [
+    "two_observed_parents",
+    "no_observed_parent",
+    "missing_staging_parent",
+    "missing_publish_parent",
+    "observed_not_staging_parent",
+    "semantic_not_publish_parent",
+    "staging_equals_publish",
+    "publish_parent_not_in_topology",
+    "publish_parent_not_current_zone",
+    "node_role_not_current_target",
+])
+def test_section18_negative_oracles_fail_closed(case):
+    node = {
+        "id": "target-random", "role": "CURRENT_TARGET",
+        "parents": ["current-random"],
+    }
+    entry = {
+        "id": "target-random", "staging_parent": "staging-random",
+        "publish_parent": "current-random",
+    }
+    observed = ["staging-random"]
+    index = {
+        "target-random": node,
+        "current-random": {
+            "id": "current-random", "role": "CURRENT_ZONE",
+            "parents": ["root-random"],
+        },
+        "staging-random": {
+            "id": "staging-random", "role": "STAGING_ZONE",
+            "parents": ["root-random"],
+        },
+    }
+    if case == "two_observed_parents":
+        observed = ["staging-random", "current-random"]
+    elif case == "no_observed_parent":
+        observed = []
+    elif case == "missing_staging_parent":
+        entry = {"id": "target-random", "publish_parent": "current-random"}
+    elif case == "missing_publish_parent":
+        entry = {"id": "target-random", "staging_parent": "staging-random"}
+    elif case == "observed_not_staging_parent":
+        observed = ["history-random"]
+    elif case == "semantic_not_publish_parent":
+        node = dict(node, parents=["other-random"])
+    elif case == "staging_equals_publish":
+        entry = {
+            "id": "target-random", "staging_parent": "current-random",
+            "publish_parent": "current-random",
+        }
+    elif case == "publish_parent_not_in_topology":
+        entry = {
+            "id": "target-random", "staging_parent": "staging-random",
+            "publish_parent": "missing-zone",
+        }
+    elif case == "publish_parent_not_current_zone":
+        index = dict(index, **{
+            "current-random": {
+                "id": "current-random", "role": "HISTORY_ZONE",
+                "parents": ["root-random"],
+            },
+        })
+    elif case == "node_role_not_current_target":
+        node = dict(node, role="STAGING_TARGET")
+    with pytest.raises(
+        PreMutationAbort, match="RELEASE_INFRA_EXPLICIT_RELOCATION_INVALID"
+    ):
+        classify_planned_target_relocation(
+            node, entry, observed, topology_index=index,
+        )
+
+
+def test_preflight_requires_fresh_parent_observation_for_every_planned_target():
+    bundle = preflight_bundle()
+    missing = dict(bundle)
+    missing["observed_target_parents"] = {}
+    with pytest.raises(
+        PreMutationAbort, match="RELEASE_INFRA_TARGET_PARENT_OBSERVATION_REQUIRED"
+    ):
+        release_infra_compatibility_preflight(missing)
+    absent = dict(bundle)
+    absent.pop("observed_target_parents")
+    with pytest.raises(
+        PreMutationAbort, match="RELEASE_INFRA_TARGET_PARENT_OBSERVATION_REQUIRED"
+    ):
+        release_infra_compatibility_preflight(absent)
 
 
 class SequentialMockDrive:
