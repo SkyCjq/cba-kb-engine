@@ -763,6 +763,7 @@ def prepare(
     status_id,
     dependencies=None,
     carry_forward_artifacts=False,
+    retired_artifacts=None,
     closure=None,
     environment='sandbox',
     code_commit=None,
@@ -810,6 +811,8 @@ def prepare(
             if not isinstance(previous_code_commit, str) or not re.fullmatch('[0-9a-f]{40}', previous_code_commit):
                 raise RuntimeError('PREVIOUS_CODE_COMMIT_REQUIRED')
             plan['previous_code_commit'] = previous_code_commit
+        if retired_artifacts and not (carry_forward_artifacts or closure is not None):
+            raise RuntimeError('RETIREMENT_REQUIRES_CARRY_FORWARD')
         if carry_forward_artifacts or closure is not None:
             carried=status.get('artifacts')
             if not isinstance(carried,list) or not carried:
@@ -817,9 +820,36 @@ def prepare(
             ids=[item.get('id') for item in carried]
             if any(not item_id for item_id in ids) or len(ids)!=len(set(ids)):
                 raise RuntimeError('Previous status artifact list is invalid')
+            retired_artifacts = retired_artifacts or []
+            if (not isinstance(retired_artifacts, list)
+                    or any(not isinstance(item, dict) for item in retired_artifacts)):
+                raise RuntimeError('RETIRED_ARTIFACTS_INVALID')
+            retired_by_id = {}
+            carried_by_id = {item['id']: item for item in carried}
+            entry_ids = {entry['id'] for entry in entries}
+            for item in retired_artifacts:
+                item_id = item.get('id')
+                previous = carried_by_id.get(item_id)
+                if (not item_id or item_id in retired_by_id or item_id in entry_ids
+                        or previous is None
+                        or item.get('name') != previous.get('name')
+                        or item.get('sha256') != previous.get('sha256')
+                        or not isinstance(item.get('logical_key'), str)
+                        or not item['logical_key']):
+                    raise RuntimeError('RETIRED_ARTIFACTS_INVALID')
+                retired_by_id[item_id] = {
+                    'id': item_id,
+                    'logical_key': item['logical_key'],
+                    'name': previous['name'],
+                    'sha256': previous['sha256'],
+                    'disposition': 'RETIRED_FROM_CURRENT',
+                }
+            plan['retired_artifacts'] = [
+                retired_by_id[item_id] for item_id in sorted(retired_by_id)
+            ]
             plan['carry_forward_artifacts']=[
                 {'id':item['id'],'name':item['name'],'sha256':item['sha256']}
-                for item in carried
+                for item in carried if item['id'] not in retired_by_id
             ]
         for i, entry in enumerate(entries):
             name=entry['name']
@@ -991,6 +1021,13 @@ def set_status(drive, plan, state, previous_snapshot, release_execution_sha=None
         item['id']:dict(item)
         for item in plan.get('carry_forward_artifacts',[])
     }
+    if state != 'COMPLETE':
+        artifacts.update({
+            item['id']: {
+                'id': item['id'], 'name': item['name'], 'sha256': item['sha256'],
+            }
+            for item in plan.get('retired_artifacts', [])
+        })
     artifacts.update({
         e['id']:{'id':e['id'],'name':e['name'],'sha256':e['after_hash']}
         for e in plan['entries']
