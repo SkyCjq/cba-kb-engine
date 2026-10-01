@@ -1624,6 +1624,85 @@ def test_rollback_baseline_reentry_validation(monkeypatch):
             )
 
 
+def _retirement_policy_case(*, projected_marker=None, live_marker=None):
+    raw, meta, projection, allocation, policy = _rollback_state_case()
+    if projected_marker is not None:
+        projection['existing_targets'][0]['retire_in_release'] = (
+            projected_marker
+        )
+    if live_marker is not None:
+        policy['targets']['a']['retire_in_release'] = live_marker
+    return raw, meta, projection, allocation, policy
+
+
+def test_policy_reconciliation_fresh_binds_retirement_presence_and_value():
+    raw, meta, projection, allocation, policy = _retirement_policy_case()
+    assert orchestration.validate_policy_reconciliation(
+        projection, allocation, policy,
+    ) == {
+        'active_production_targets': ['a'],
+        'reserved_staging_targets': [],
+        'retirement_bound_targets': [],
+    }
+    raw, meta, projection, allocation, policy = _retirement_policy_case(
+        projected_marker=RELEASE, live_marker=RELEASE,
+    )
+    assert orchestration.validate_policy_reconciliation(
+        projection, allocation, policy,
+    ) == {
+        'active_production_targets': ['a'],
+        'reserved_staging_targets': [],
+        'retirement_bound_targets': ['a'],
+    }
+
+
+@pytest.mark.parametrize('projected_marker,live_marker,scenario', [
+    (RELEASE, None, 'removed_after_projection'),
+    (RELEASE, 'v1.5.4-1', 'changed_after_projection'),
+    (None, RELEASE, 'added_after_projection'),
+    (RELEASE, '', 'invalidated_after_projection'),
+])
+def test_policy_reconciliation_rejects_retirement_marker_drift(
+        projected_marker, live_marker, scenario):
+    raw, meta, projection, allocation, policy = _retirement_policy_case(
+        projected_marker=projected_marker, live_marker=live_marker,
+    )
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match='ACTIVE_PRODUCTION_TARGET_RETIREMENT_CHANGED',
+    ):
+        orchestration.validate_policy_reconciliation(
+            projection, allocation, policy,
+        )
+
+
+def test_stage4_revalidation_fresh_binds_retirement_marker(monkeypatch):
+    raw, meta, projection, allocation, policy = _retirement_policy_case(
+        projected_marker=RELEASE, live_marker=RELEASE,
+    )
+    monkeypatch.setattr(
+        orchestration, 'snapshot', lambda *args, **kwargs: (raw, meta),
+    )
+    result = orchestration.validate_release_state(
+        object(),
+        type('I', (), {'read_json': lambda self, name: policy})(),
+        projection, allocation,
+    )
+    assert result['retirement_bound_targets'] == ['a']
+
+    live_policy = json.loads(json.dumps(policy))
+    del live_policy['targets']['a']['retire_in_release']
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match='ACTIVE_PRODUCTION_TARGET_RETIREMENT_CHANGED',
+    ):
+        orchestration.validate_release_state(
+            object(),
+            type('I', (), {'read_json': lambda self, name: live_policy})(),
+            projection, allocation,
+        )
+
+
 def test_project_command_scopes_unallocated_targets_to_active_artifacts(monkeypatch, tmp_path):
     class FakeArgs:
         release = "v1.9.0-1"

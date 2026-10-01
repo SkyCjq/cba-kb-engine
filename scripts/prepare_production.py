@@ -872,10 +872,40 @@ def validate_policy_reconciliation(projection, allocation, policy):
             expected["staging_parent"] = item["staging_parent"]
         if any(current.get(key) != value for key, value in expected.items()):
             raise ProjectionError("ACTIVE_PRODUCTION_TARGET_CHANGED")
+        _validate_retirement_binding(item, current)
     return {
         "active_production_targets": sorted(active_ids),
         "reserved_staging_targets": sorted(reserved_ids),
+        "retirement_bound_targets": sorted(
+            item["id"] for item in projection["existing_targets"]
+            if "retire_in_release" in item
+        ),
     }
+
+
+def _validate_retirement_binding(item, current):
+    """Fresh-bind the projected retirement policy to the live production policy.
+
+    The retirement marker is authority, so its presence and exact value must
+    still match the live policy at validation time. A marker that disappeared,
+    changed release, or appeared after the projection invalidates the plan.
+    """
+    projected_bound = "retire_in_release" in item
+    if projected_bound != ("retire_in_release" in current):
+        raise ProjectionError(
+            "ACTIVE_PRODUCTION_TARGET_RETIREMENT_CHANGED",
+        )
+    if not projected_bound:
+        return
+    live_marker = current["retire_in_release"]
+    if (
+        not isinstance(live_marker, str)
+        or not live_marker
+        or live_marker != item["retire_in_release"]
+    ):
+        raise ProjectionError(
+            "ACTIVE_PRODUCTION_TARGET_RETIREMENT_CHANGED",
+        )
 
 
 def validate_release_state(drive, instance, projection, allocation):
