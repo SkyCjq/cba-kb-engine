@@ -556,6 +556,26 @@ def project_targets(
     if set(status_by_id) - set(logical_by_id):
         raise ProjectionError("MANIFEST_MAPPING_MISSING")
     active_ids = set(status_by_id)
+    retirement_markers = {}
+    for file_id, policy in previous_targets.items():
+        if not isinstance(policy, dict):
+            raise ProjectionError("PRIVATE_PRODUCTION_TARGET_INVALID")
+        if "retire_in_release" not in policy:
+            continue
+        marker = policy["retire_in_release"]
+        if not isinstance(marker, str) or not marker:
+            raise ProjectionError("RETIREMENT_POLICY_INVALID")
+        retirement_markers[file_id] = marker
+    scheduled_retirement_ids = {
+        file_id for file_id, marker in retirement_markers.items()
+        if marker == release_id
+    }
+    if scheduled_retirement_ids - active_ids:
+        raise ProjectionError("RETIREMENT_TARGET_NOT_IN_PREVIOUS_STATUS")
+    historical_retired_ids = {
+        file_id for file_id, marker in retirement_markers.items()
+        if file_id not in active_ids and marker != release_id
+    }
     reserved_ids = set()
     reserved_keys = {}
     if allocation is not None:
@@ -569,9 +589,10 @@ def project_targets(
             raise ProjectionError("RESERVATION_ID_DUPLICATE")
     policy_ids = set(previous_targets)
     extra_policy_ids = policy_ids - active_ids
-    if not extra_policy_ids and reserved_ids:
+    reservation_policy_ids = extra_policy_ids - historical_retired_ids
+    if not reservation_policy_ids and reserved_ids:
         raise ProjectionError("RESERVATION_POLICY_TARGETS_MISSING")
-    if extra_policy_ids != reserved_ids:
+    if reservation_policy_ids != reserved_ids:
         raise ProjectionError("UNEXPLAINED_RESERVED_POLICY_TARGET")
     reserved_by_id = {file_id: key for key, file_id in reserved_keys.items()}
 
@@ -593,6 +614,10 @@ def project_targets(
             "allowed_parents": list(policy.get("allowed_parents") or []),
             "publish_parent": policy.get("publish_parent"),
             "staging_parent": policy.get("staging_parent"),
+            **(
+                {"retire_in_release": policy["retire_in_release"]}
+                if "retire_in_release" in policy else {}
+            ),
         }
     if set(reserved_by_id) & set(existing):
         raise ProjectionError("RESERVATION_REUSES_EXISTING_TARGET")
@@ -618,6 +643,22 @@ def project_targets(
     non_code_keys = set(existing) - existing_code_keys
     control_keys = non_code_keys & CONTROL_KEYS
     business_keys = non_code_keys - CONTROL_KEYS
+    retiring_keys = {
+        logical_by_id[file_id] for file_id in scheduled_retirement_ids
+    }
+    retiring_code_keys = sorted(
+        key for key in retiring_keys if key.startswith("code/")
+    )
+    if retiring_code_keys:
+        raise ProjectionError(
+            "RETIREMENT_CODE_TARGET_FORBIDDEN:" + ",".join(retiring_code_keys)
+        )
+    retiring_control_keys = sorted(retiring_keys & CONTROL_KEYS)
+    if retiring_control_keys:
+        raise ProjectionError(
+            "RETIREMENT_CONTROL_TARGET_FORBIDDEN:"
+            + ",".join(retiring_control_keys)
+        )
     removed_code_keys = sorted(
         key for key in existing_code_keys if key not in current_code
     )
@@ -668,13 +709,26 @@ def project_targets(
             )
         elif logical_key in control_keys:
             item["disposition"] = "metadata_update"
+        elif logical_key in retiring_keys:
+            item["disposition"] = "RETIRED_FROM_CURRENT"
         else:
             item["disposition"] = "carried_forward"
         existing_targets.append(item)
 
-    final_keys = sorted(non_code_keys | set(current_code))
+    final_keys = sorted((non_code_keys - retiring_keys) | set(current_code))
+    legacy_reservation_keys = sorted(non_code_keys | set(current_code))
     if len(final_keys) != len(set(final_keys)):
         raise ProjectionError("LOGICAL_KEY_COLLISION")
+    retiring_targets = [
+        {
+            "id": existing[logical_key]["id"],
+            "logical_key": logical_key,
+            "name": existing[logical_key]["name"],
+            "sha256": existing[logical_key]["previous_sha256"],
+            "disposition": "RETIRED_FROM_CURRENT",
+        }
+        for logical_key in sorted(retiring_keys)
+    ]
     projection = {
         "schema_version": 1,
         "state": "PROJECTED",
@@ -683,21 +737,26 @@ def project_targets(
         "status_id": status_id,
         "archive_id": archive_id,
         "previous_artifact_count": len(previous_status["artifacts"]),
-        "reused_target_count": len(reused) + len(non_code_keys),
+        "reused_target_count": len(reused) + len(non_code_keys - retiring_keys),
         "new_target_count": len(new_targets),
         "removed_target_count": len(removed_code_keys),
-        "carried_forward_count": len(business_keys),
+        "retired_target_count": len(retiring_targets),
+        "carried_forward_count": len(business_keys - retiring_keys),
         "final_artifact_count": len(final_keys),
+        "final_current_artifact_count": len(final_keys),
+        "final_current_logical_keys": final_keys,
         "existing_targets": existing_targets,
         "new_targets": new_targets,
+        "retiring_targets": retiring_targets,
         "removed_targets": removed_code_keys,
         "modified_content_targets": modified,
         "unchanged_targets": unchanged,
-        "carried_forward_artifacts": sorted(business_keys),
+        "carried_forward_artifacts": sorted(business_keys - retiring_keys),
         "active_target_ids": sorted(active_ids),
         "active_production_target_count": len(active_ids),
         "reserved_policy_target_ids": sorted(reserved_ids),
         "reserved_staging_target_count": len(reserved_ids),
+        "historical_retired_policy_target_ids": sorted(historical_retired_ids),
         "release_status_unchanged": True,
         "control_target_migrations": (
             [] if migration["report"]["status"] == "NOT_APPLICABLE"
@@ -712,9 +771,20 @@ def project_targets(
         "new": new_keys,
         "modified": modified,
         "removed": removed_code_keys,
+        **({"retired": sorted(retiring_keys)} if retiring_keys else {}),
         "counts": {
             "previous": projection["previous_artifact_count"],
             "final": projection["final_artifact_count"],
+        },
+    })
+    projection["reservation_compatibility_signature"] = _json_hash({
+        "keys": legacy_reservation_keys,
+        "new": new_keys,
+        "modified": modified,
+        "removed": removed_code_keys,
+        "counts": {
+            "previous": projection["previous_artifact_count"],
+            "final": len(legacy_reservation_keys),
         },
     })
     return projection
@@ -749,9 +819,25 @@ def validate_reservation(projection, allocation):
     """Prove a reservation only covers projected NEW keys."""
     if projection.get("release_id") != allocation.get("release_id"):
         raise ProjectionError("RESERVATION_RELEASE_MISMATCH")
-    if projection.get("semantic_delta_signature") != allocation.get(
-        "semantic_delta_signature",
-    ):
+    if projection.get("status_id") != allocation.get("status_id"):
+        raise ProjectionError("RESERVATION_STATUS_MISMATCH")
+    semantic_matches = projection.get("semantic_delta_signature") == allocation.get(
+        "semantic_delta_signature"
+    )
+    retirement_compatible = (
+        bool(projection.get("retiring_targets"))
+        and allocation.get("semantic_delta_signature")
+        == projection.get("reservation_compatibility_signature")
+        and allocation.get("status_before_hash")
+        == projection.get("status_before_hash")
+        and allocation.get("status_before_meta")
+        == projection.get("status_before_meta")
+        and allocation.get("active_release_id")
+        == projection.get("active_release_id")
+        and set(allocation.get("active_production_targets") or [])
+        == set(projection.get("active_target_ids") or [])
+    )
+    if not semantic_matches and not retirement_compatible:
         raise ProjectionError("RESERVATION_PROJECTION_DRIFT")
     expected = {item["logical_key"] for item in projection["new_targets"]}
     reserved = allocation.get("reservations")
@@ -786,10 +872,40 @@ def validate_policy_reconciliation(projection, allocation, policy):
             expected["staging_parent"] = item["staging_parent"]
         if any(current.get(key) != value for key, value in expected.items()):
             raise ProjectionError("ACTIVE_PRODUCTION_TARGET_CHANGED")
+        _validate_retirement_binding(item, current)
     return {
         "active_production_targets": sorted(active_ids),
         "reserved_staging_targets": sorted(reserved_ids),
+        "retirement_bound_targets": sorted(
+            item["id"] for item in projection["existing_targets"]
+            if "retire_in_release" in item
+        ),
     }
+
+
+def _validate_retirement_binding(item, current):
+    """Fresh-bind the projected retirement policy to the live production policy.
+
+    The retirement marker is authority, so its presence and exact value must
+    still match the live policy at validation time. A marker that disappeared,
+    changed release, or appeared after the projection invalidates the plan.
+    """
+    projected_bound = "retire_in_release" in item
+    if projected_bound != ("retire_in_release" in current):
+        raise ProjectionError(
+            "ACTIVE_PRODUCTION_TARGET_RETIREMENT_CHANGED",
+        )
+    if not projected_bound:
+        return
+    live_marker = current["retire_in_release"]
+    if (
+        not isinstance(live_marker, str)
+        or not live_marker
+        or live_marker != item["retire_in_release"]
+    ):
+        raise ProjectionError(
+            "ACTIVE_PRODUCTION_TARGET_RETIREMENT_CHANGED",
+        )
 
 
 def validate_release_state(drive, instance, projection, allocation):
@@ -946,15 +1062,19 @@ def _candidate_inputs(drive, engine_root, projection, allocation, output):
     candidates = output / "candidate-inputs"
     candidates.mkdir()
     entries = []
+    retiring_keys = {
+        item["logical_key"] for item in projection.get("retiring_targets", [])
+    }
     existing_by_key = {
         item["logical_key"]: item for item in projection["existing_targets"]
+        if item["logical_key"] not in retiring_keys
     }
     new_by_key = {
         item["logical_key"]: item for item in projection["new_targets"]
     }
     id_by_key = {
         item["logical_key"]: item["id"]
-        for item in projection["existing_targets"]
+        for item in existing_by_key.values()
     }
     id_by_key.update({
         key: file_id for key, file_id in allocation["reservations"].items()
@@ -1496,6 +1616,7 @@ def freeze_plan(
         allocation["status_id"],
         dependencies,
         carry_forward_artifacts=True,
+        retired_artifacts=projection.get("retiring_targets", []),
         **({"closure": closure} if closure is not None else {}),
         environment="production",
         code_commit=projection["engine_sha"],
@@ -1508,9 +1629,14 @@ def freeze_plan(
     if closure is not None:
         save(output / "closure.json", closure)
     save(output / "entries.json", plan["entries"])
-    save(output / "target_classification.json", {
+    classification = {
         entry["logical_key"]: entry["change_class"] for entry in entries
+    }
+    classification.update({
+        item["logical_key"]: "RETIRED_FROM_CURRENT"
+        for item in projection.get("retiring_targets", [])
     })
+    save(output / "target_classification.json", classification)
     save(output / "dependencies.json", dependencies)
     save(output / "release_state_reconciliation.json", state)
     rollback = {

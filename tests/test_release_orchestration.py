@@ -9,6 +9,7 @@ from cba_kb.current_state import (
     read_current_block, render_current_state, target_metadata,
     validate_current_state,
 )
+from cba_kb import release as release_module
 from cba_kb.release import ReleaseContractError, publish
 from scripts import prepare_production as orchestration
 from test_canonical_registry import manifest as canonical_manifest, registry as canonical_registry
@@ -126,6 +127,34 @@ def projection():
     return orchestration.project_targets(**projection_inputs())
 
 
+def retirement_projection_inputs(marker=RELEASE):
+    inputs = projection_inputs()
+    inputs["previous_targets"] = {
+        file_id: dict(policy)
+        for file_id, policy in inputs["previous_targets"].items()
+    }
+    inputs["previous_targets"]["master"]["retire_in_release"] = marker
+    return inputs
+
+
+def allocation_for(projected):
+    reservations = {
+        item["logical_key"]: f"reserved-{index}"
+        for index, item in enumerate(projected["new_targets"])
+    }
+    return {
+        "release_id": projected["release_id"],
+        "status_id": projected["status_id"],
+        "semantic_delta_signature": projected["semantic_delta_signature"],
+        "status_before_hash": projected["status_before_hash"],
+        "status_before_meta": projected["status_before_meta"],
+        "active_release_id": projected["active_release_id"],
+        "active_production_targets": projected["active_target_ids"],
+        "reserved_staging_targets": sorted(reservations.values()),
+        "reservations": reservations,
+    }
+
+
 def test_projection_is_read_only_deterministic_and_exact():
     first = orchestration.project_targets(**projection_inputs())
     second = orchestration.project_targets(**projection_inputs())
@@ -139,6 +168,288 @@ def test_projection_is_read_only_deterministic_and_exact():
     assert first["new_targets"][0]["logical_key"] == "code/src/new.py"
     assert first["modified_content_targets"] == []
     assert first["unchanged_targets"] == ["code/Makefile"]
+
+
+def test_explicit_artifact_retirement_projection_and_legacy_reservation_basis():
+    legacy = projection()
+    retired = orchestration.project_targets(**retirement_projection_inputs())
+    assert retired["active_target_ids"] == legacy["active_target_ids"]
+    assert retired["retired_target_count"] == 1
+    assert retired["final_current_artifact_count"] == 8
+    assert retired["retiring_targets"] == [{
+        "id": "master",
+        "logical_key": "input/MASTER.xlsx",
+        "name": "MASTER.xlsx",
+        "sha256": "old-master",
+        "disposition": "RETIRED_FROM_CURRENT",
+    }]
+    assert "input/MASTER.xlsx" not in retired["final_current_logical_keys"]
+    assert retired["reservation_compatibility_signature"] == (
+        legacy["semantic_delta_signature"]
+    )
+    assert retired["semantic_delta_signature"] != legacy["semantic_delta_signature"]
+
+
+def test_artifact_retirement_reuses_exact_existing_reservation():
+    legacy = projection()
+    allocation = allocation_for(legacy)
+    inputs = retirement_projection_inputs()
+    for item in legacy["new_targets"]:
+        inputs["previous_targets"][
+            allocation["reservations"][item["logical_key"]]
+        ] = {
+            "mime": item["mime"],
+            "mode": item["mode"],
+            "allowed_parents": [item["publish_parent"], "staging"],
+            "staging_parent": "staging",
+            "publish_parent": item["publish_parent"],
+        }
+    inputs["allocation"] = allocation
+    retired = orchestration.project_targets(**inputs)
+    assert orchestration.validate_reservation(retired, allocation)
+    rebound = orchestration.reproject_targets(retired, allocation)
+    assert rebound["reservation_state"] == "RESERVED"
+    assert rebound["reserved_target_ids"] == sorted(
+        allocation["reservations"].values()
+    )
+
+
+def test_historical_retirement_policy_record_is_not_a_reservation():
+    inputs = projection_inputs()
+    inputs["previous_targets"] = dict(inputs["previous_targets"])
+    inputs["previous_targets"]["historical-retired"] = {
+        "mime": "application/json",
+        "mode": "binary",
+        "allowed_parents": ["archive"],
+        "publish_parent": "archive",
+        "retire_in_release": "v1.5.4-1",
+    }
+    projected = orchestration.project_targets(**inputs)
+    assert projected["historical_retired_policy_target_ids"] == [
+        "historical-retired"
+    ]
+    assert projected["reserved_policy_target_ids"] == []
+
+
+@pytest.mark.parametrize("scenario", [
+    "different_release",
+    "code",
+    "control",
+    "not_in_previous_status",
+])
+def test_artifact_retirement_policy_negative_oracles(scenario):
+    if scenario == "different_release":
+        projected = orchestration.project_targets(
+            **retirement_projection_inputs("v1.6.0-1")
+        )
+        master = next(
+            item for item in projected["existing_targets"]
+            if item["id"] == "master"
+        )
+        assert master["disposition"] == "carried_forward"
+        assert projected["retiring_targets"] == []
+        return
+    inputs = projection_inputs()
+    inputs["previous_targets"] = {
+        file_id: dict(policy)
+        for file_id, policy in inputs["previous_targets"].items()
+    }
+    if scenario == "code":
+        inputs["previous_targets"]["code-old"]["retire_in_release"] = RELEASE
+        error = "RETIREMENT_CODE_TARGET_FORBIDDEN"
+    elif scenario == "control":
+        inputs["previous_targets"]["manifest"]["retire_in_release"] = RELEASE
+        error = "RETIREMENT_CONTROL_TARGET_FORBIDDEN"
+    else:
+        inputs["previous_targets"]["not-current"] = {
+            "mime": "application/json", "mode": "binary",
+            "allowed_parents": ["archive"], "publish_parent": "archive",
+            "retire_in_release": RELEASE,
+        }
+        error = "RETIREMENT_TARGET_NOT_IN_PREVIOUS_STATUS"
+    with pytest.raises(orchestration.ProjectionError, match=error):
+        orchestration.project_targets(**inputs)
+
+
+def test_artifact_retirement_reservation_mismatch_fails_closed():
+    legacy = projection()
+    allocation = allocation_for(legacy)
+    retired = orchestration.project_targets(**retirement_projection_inputs())
+
+    wrong_signature = dict(allocation, semantic_delta_signature="wrong")
+    with pytest.raises(
+        orchestration.ProjectionError, match="RESERVATION_PROJECTION_DRIFT"
+    ):
+        orchestration.validate_reservation(retired, wrong_signature)
+
+    wrong_keys = dict(allocation, reservations={"code/other.py": "reserved-0"})
+    with pytest.raises(
+        orchestration.ProjectionError, match="RESERVATION_KEY_SET_MISMATCH"
+    ):
+        orchestration.validate_reservation(retired, wrong_keys)
+
+
+def test_retired_artifact_omitted_from_candidates_manifest_and_current_mapping(
+        monkeypatch, tmp_path):
+    projection_value = {
+        "release_id": RELEASE,
+        "engine_sha": ENGINE_SHA,
+        "active_release_id": "v1.5.4-1",
+        "existing_targets": [
+            {"logical_key": "facts/keep.json", "id": "keep", "name": "keep.json",
+             "mime": "application/json", "mode": "binary"},
+            {"logical_key": "facts/retire.json", "id": "retire", "name": "retire.json",
+             "mime": "application/json", "mode": "binary",
+             "disposition": "RETIRED_FROM_CURRENT"},
+            {"logical_key": "control/drive_map.yaml", "id": "drive-map",
+             "name": "drive_map.yaml", "mime": "text/yaml", "mode": "binary"},
+            {"logical_key": "input/manifest.csv", "id": "manifest",
+             "name": "manifest.csv", "mime": "text/csv", "mode": "binary"},
+        ],
+        "new_targets": [],
+        "retiring_targets": [{
+            "id": "retire", "logical_key": "facts/retire.json",
+            "name": "retire.json", "sha256": "retire-sha",
+            "disposition": "RETIRED_FROM_CURRENT",
+        }],
+    }
+    previous = {
+        "keep": b"keep-bytes",
+        "drive-map": b"version: 1\nroot: {}\nfolders: {}\n",
+        "manifest": (
+            b"drive_file_id,uid,content_hash\n"
+            b"keep,facts/keep.json,old\n"
+            b"retire,facts/retire.json,old\n"
+            b"drive-map,control/drive_map.yaml,old\n"
+            b"manifest,input/manifest.csv,old\n"
+        ),
+    }
+    reads = []
+
+    def fake_snapshot(_drive, file_id, _mode="binary"):
+        reads.append(file_id)
+        if file_id == "retire":
+            raise AssertionError("retired Drive object must not be read or written")
+        return previous[file_id], {"id": file_id}
+
+    monkeypatch.setattr(orchestration, "snapshot", fake_snapshot)
+    entries = orchestration._candidate_inputs(
+        object(), tmp_path, projection_value,
+        {"status_id": "status", "reservations": {}}, tmp_path / "candidate",
+    )
+    assert "retire" not in reads
+    assert {entry["id"] for entry in entries} == {"keep", "drive-map", "manifest"}
+    by_key = {entry["logical_key"]: Path(entry["path"]).read_bytes()
+              for entry in entries}
+    manifest = list(orchestration.csv.DictReader(orchestration.io.StringIO(
+        by_key["input/manifest.csv"].decode("utf-8-sig")
+    )))
+    assert {row["drive_file_id"] for row in manifest} == {
+        "keep", "drive-map", "manifest"
+    }
+    drive_map = orchestration.yaml.safe_load(by_key["control/drive_map.yaml"])
+    assert "facts/retire.json" not in drive_map["v1_5_release"]["targets"]
+
+
+def test_retirement_complete_excludes_and_rollback_restores_membership():
+    class StatusDrive:
+        def __init__(self):
+            self.files = {"status": b""}
+            self.put_ids = []
+
+        def put(self, file_id, content, mime):
+            assert mime == "application/json"
+            self.put_ids.append(file_id)
+            self.files[file_id] = content
+
+        def get(self, file_id):
+            return self.files[file_id]
+
+    drive = StatusDrive()
+    plan = {
+        "release_id": RELEASE,
+        "previous_release_id": "v1.5.4-1",
+        "status_id": "status",
+        "entries": [],
+        "carry_forward_artifacts": [
+            {"id": "keep", "name": "keep", "sha256": "keep-sha"},
+        ],
+        "retired_artifacts": [{
+            "id": "retire", "logical_key": "facts/retire.json",
+            "name": "retire", "sha256": "retire-sha",
+            "disposition": "RETIRED_FROM_CURRENT",
+        }],
+    }
+    release_module.set_status(drive, plan, "COMPLETE", [])
+    complete = json.loads(drive.get("status"))
+    assert {item["id"] for item in complete["artifacts"]} == {"keep"}
+    release_module.set_status(drive, plan, "ROLLED_BACK", [])
+    rolled_back = json.loads(drive.get("status"))
+    assert {item["id"] for item in rolled_back["artifacts"]} == {
+        "keep", "retire"
+    }
+    assert drive.put_ids == ["status", "status"]
+
+
+def test_prepare_freezes_retirement_evidence_without_touching_retired_object(
+        tmp_path):
+    class ReadOnlyPrepareDrive:
+        def __init__(self):
+            self.read_ids = []
+            self.data = {
+                "status": json.dumps({
+                    "state": "COMPLETE",
+                    "current_release_id": "v1.5.4-1",
+                    "artifacts": [
+                        {"id": "update", "name": "update", "sha256": "old-update"},
+                        {"id": "retire", "name": "retire", "sha256": "retire-sha"},
+                    ],
+                }).encode(),
+                "update": b"old-update",
+            }
+
+        def meta(self, file_id):
+            self.read_ids.append(file_id)
+            return {
+                "id": file_id, "version": "1", "modifiedTime": "t",
+                "mimeType": "application/json" if file_id == "status" else "text/plain",
+                "parents": ["current"],
+            }
+
+        def get(self, file_id):
+            self.read_ids.append(file_id)
+            if file_id == "retire":
+                raise AssertionError("retired artifact must not be read")
+            return self.data[file_id]
+
+        def document_json(self, file_id):
+            raise AssertionError(file_id)
+
+    drive = ReadOnlyPrepareDrive()
+    candidate = tmp_path / "candidate"
+    candidate.write_bytes(b"new-update")
+    plan = release_module.prepare(
+        drive, tmp_path / "outbox", RELEASE,
+        [{
+            "id": "update", "name": "update", "mime": "text/plain",
+            "path": str(candidate), "logical_key": "facts/update.json",
+        }],
+        "archive", "status", carry_forward_artifacts=True,
+        retired_artifacts=[{
+            "id": "retire", "logical_key": "facts/retire.json",
+            "name": "retire", "sha256": "retire-sha",
+            "disposition": "RETIRED_FROM_CURRENT",
+        }],
+    )
+    assert plan["retired_artifacts"] == [{
+        "id": "retire", "logical_key": "facts/retire.json",
+        "name": "retire", "sha256": "retire-sha",
+        "disposition": "RETIRED_FROM_CURRENT",
+    }]
+    assert {item["id"] for item in plan["carry_forward_artifacts"]} == {
+        "update"
+    }
+    assert "retire" not in drive.read_ids
 
 
 def test_projection_binds_exact_release_id_and_fails_closed():
@@ -176,6 +487,7 @@ def test_v161_release_spec_and_reprojection_contract():
     assert projected["state"] == "PROJECTED"
     allocation = {
         "release_id": "v1.6.1-1",
+        "status_id": projected["status_id"],
         "semantic_delta_signature": projected["semantic_delta_signature"],
         "reservations": {
             item["logical_key"]: "reserved-" + str(index)
@@ -1259,6 +1571,7 @@ def _rollback_state_case():
             'mimeType': 'application/json', 'parents': ['root']}
     projection = {
         'release_id': 'v1.6.1-1',
+        'status_id': 'status',
         'semantic_delta_signature': 'sig',
         'existing_targets': [{
             'logical_key': 'input/MASTER.xlsx', 'id': 'a',
@@ -1309,6 +1622,85 @@ def test_rollback_baseline_reentry_validation(monkeypatch):
                 type('I', (), {'read_json': lambda self, name: policy})(),
                 projection, allocation,
             )
+
+
+def _retirement_policy_case(*, projected_marker=None, live_marker=None):
+    raw, meta, projection, allocation, policy = _rollback_state_case()
+    if projected_marker is not None:
+        projection['existing_targets'][0]['retire_in_release'] = (
+            projected_marker
+        )
+    if live_marker is not None:
+        policy['targets']['a']['retire_in_release'] = live_marker
+    return raw, meta, projection, allocation, policy
+
+
+def test_policy_reconciliation_fresh_binds_retirement_presence_and_value():
+    raw, meta, projection, allocation, policy = _retirement_policy_case()
+    assert orchestration.validate_policy_reconciliation(
+        projection, allocation, policy,
+    ) == {
+        'active_production_targets': ['a'],
+        'reserved_staging_targets': [],
+        'retirement_bound_targets': [],
+    }
+    raw, meta, projection, allocation, policy = _retirement_policy_case(
+        projected_marker=RELEASE, live_marker=RELEASE,
+    )
+    assert orchestration.validate_policy_reconciliation(
+        projection, allocation, policy,
+    ) == {
+        'active_production_targets': ['a'],
+        'reserved_staging_targets': [],
+        'retirement_bound_targets': ['a'],
+    }
+
+
+@pytest.mark.parametrize('projected_marker,live_marker,scenario', [
+    (RELEASE, None, 'removed_after_projection'),
+    (RELEASE, 'v1.5.4-1', 'changed_after_projection'),
+    (None, RELEASE, 'added_after_projection'),
+    (RELEASE, '', 'invalidated_after_projection'),
+])
+def test_policy_reconciliation_rejects_retirement_marker_drift(
+        projected_marker, live_marker, scenario):
+    raw, meta, projection, allocation, policy = _retirement_policy_case(
+        projected_marker=projected_marker, live_marker=live_marker,
+    )
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match='ACTIVE_PRODUCTION_TARGET_RETIREMENT_CHANGED',
+    ):
+        orchestration.validate_policy_reconciliation(
+            projection, allocation, policy,
+        )
+
+
+def test_stage4_revalidation_fresh_binds_retirement_marker(monkeypatch):
+    raw, meta, projection, allocation, policy = _retirement_policy_case(
+        projected_marker=RELEASE, live_marker=RELEASE,
+    )
+    monkeypatch.setattr(
+        orchestration, 'snapshot', lambda *args, **kwargs: (raw, meta),
+    )
+    result = orchestration.validate_release_state(
+        object(),
+        type('I', (), {'read_json': lambda self, name: policy})(),
+        projection, allocation,
+    )
+    assert result['retirement_bound_targets'] == ['a']
+
+    live_policy = json.loads(json.dumps(policy))
+    del live_policy['targets']['a']['retire_in_release']
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match='ACTIVE_PRODUCTION_TARGET_RETIREMENT_CHANGED',
+    ):
+        orchestration.validate_release_state(
+            object(),
+            type('I', (), {'read_json': lambda self, name: live_policy})(),
+            projection, allocation,
+        )
 
 
 def test_project_command_scopes_unallocated_targets_to_active_artifacts(monkeypatch, tmp_path):
@@ -1572,5 +1964,3 @@ def test_historical_subtree_elsewhere_under_root_not_pulled_into_current_invento
     assert "f-curr-1" in item_ids
     assert "f-ev-1" in item_ids
     assert "f-hist-other" not in item_ids
-
-

@@ -999,6 +999,15 @@ def test_topology_planned_targets_coverage_diagnostics(scenario):
             validate_release_topology(nodes, release_id=release_id, planned_target_ids=["target-random"])
 
 
+def test_retired_target_remaining_in_planned_topology_fails_exact_set_validation():
+    with pytest.raises(
+        ReleaseContractError, match="RELEASE_TOPOLOGY_TARGET_UNEXPECTED"
+    ):
+        validate_release_topology(
+            topology(), release_id=RELEASE_ID, planned_target_ids=[]
+        )
+
+
 def test_bundle_builder_fresh_reads_target_parents_ignoring_local_topology_json(tmp_path):
     evidence_root, plan, journal, manifest, projection, platform_results = _setup_evidence_root(tmp_path)
     status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
@@ -1145,4 +1154,3 @@ def test_rollback_acceptance_normalization_reporting(tmp_path):
         "ROLLED_BACK_SAFE_BASELINE_AS_COMPLETE_FOR_BASELINE_ACCEPTANCE_ONLY"
     )
     assert bundle_rb["status_doc"] == before_status_doc
-
