@@ -1,93 +1,219 @@
-# CBA-KB Engine v1.5.4 production release
+# CBA-KB Engine
 
-v1.5.5 开发引入 Engine / Private Instance 边界。公开 Engine 只包含代码、schema、
-adapter、validator、synthetic fixture 和 public-safe 配置示例；真实 Drive IDs、source
-registry、production allowlist、凭据、真实 fixture、人工修正与 watcher 原始证据由调用方
-在独立 Private Instance 中维护。需要实例数据的命令通过 `INSTANCE_ROOT` 显式传入，缺失时
-fail closed。官方注册 watcher 只生成 `snapshot → diff → candidate → validation` 复核证据，
-不会把 observed change 自动提升为 business event 或写入 canonical facts。
+[中文](README.zh-CN.md)
 
-当前生产发布为 **v1.5.4-1 / COMPLETE**，发布代码提交
-`e0dea09ccb020b2918cefa311365e8563348f293`。171 个生产目标已逐项回读通过；
-`release_status`、README、INDEX、version、Context Card 与
-`canonical_products.yaml` 已统一到同一 release metadata。
+**CBA-KB** is an evidence-first data and research engine for the Chinese Basketball Association (CBA). It turns heterogeneous source material into traceable structured facts, identity-aware document evidence, statements, claims, verification queues, and read-only research views that can be consumed by humans and AI systems without collapsing evidence into fact.
 
-本版收口 canonical authority、current/history 边界、secret hard gates 与 legacy
-compatibility lineage。六表事实字节保持不变，仍为
-`46 / 10 / 131 / 244 / 227 / 7`，workbook SHA-256
-`0c9812e5e49f0824b74966f3f3941d8eee3711fdafc19d88774084a83742e66c`。
-legacy EVENTS 与 SNAPSHOTS 分别 73 行，兼容投影全部匹配，unexplained drift 为 0。
-详见 [v1.5.4 生产收尾](docs/v1.5.4-production-closeout-20260912.md)。
+Current production release: **v1.9.0-1 — COMPLETE**.
 
-读取事实时，赛季登记状态读 MASTER / Snapshot；“什么时候发生什么”读 canonical
-`registration_status_events`；证据追溯读 `10_sources_原始证据`；人工判断读
-`30_notes_人工知识`；AI 导航先读 Context Card 与 manifest。旧
-`CBA_球员注册_EVENTS.xlsx` 只用于兼容与历史审计，不是 current truth。不同 event
-domain 不得直接相加。
+> Core rule: **Statement ≠ Fact. Evidence ≠ Fact. Unknown ≠ 0.**
 
-历史 v1.5.3 开发与生产记录保留在 [v1.5.3 文档](docs/CBA-KB_v1.5.3.md)。
+## Why this project exists
 
-以下内容记录 v1.5.2 已实现范围的生产发布：
+CBA research data is fragmented across registration lists, spreadsheets, documents, articles, historical records, and manually reviewed evidence. CBA-KB provides a reproducible pipeline for organizing those materials while preserving provenance, uncertainty, semantic grain, and data-rights boundaries.
 
-## CBA-KB Engine v1.5.2 (implemented-scope production release)
+The public repository contains the reusable **Engine**: code, schemas, adapters, validators, deterministic processing logic, synthetic/public-safe fixtures, and public-safe configuration examples.
 
-2026-09-11 用户确认收尾后冻结代码，PNG OCR 不再需要。当前版本按已实现范围使用，未实现功能和 Gemini 未复验结论保留；[最终收尾说明与数据读取规则](docs/v1.5.2-final-closeout-20260911.md) 为本轮收尾入口。该决定不提升为完整 DRAFT-2 或 STABLE。
+Real data, credentials, Google Drive object IDs, production allowlists, private source registries, human corrections, and private evidence belong in a separate **Private Instance** and are intentionally not committed to this repository.
 
-本地执行，GitHub 管理代码，Drive 保存已发布知识库。实际部署目录为 `/Users/skychengneo/Agent/CBA_kb`，分支 `codex/v1.5.2-deploy`。生产事实现为 **v1.5.2-1**（`release_status` COMPLETE，125 个产出物逐项回读通过），上一版本为 `v1.5.1-2`。
+## What v1.9.0 adds
 
-本发布增加了 [CBA_注册领域_六表.xlsx](https://docs.google.com/spreadsheets/d/1_dgbWXOkJeEjGRtEeZ0oOC9e-lqbXZeW/edit)（600 条，SHA-256 `4124c4e6f8e3f62d7353180a5bbd4baca51e3196e2b7fac6b06148042fce2849`），并保留 MASTER、SNAPSHOTS、EVENTS。两张 PNG 按用户决定不在本轮纳入，保持 `DISCOVERED / ocr_deferred`。这是已实现六表范围的正式发布，不是完整 DRAFT-2 或 STABLE；未完成边界见 [实施记录](docs/CBA-KB_v1.5.2.md)。
+v1.9.0 extends the project from registration facts, document evidence, and player identity into an evidence-aware research layer:
 
-v1.5.0 已封板并发布（Git tag `v1.5.0`，提交 c4bebec，release_status COMPLETE，76 个产出物回读通过）。v1.5.1 的注册事实扩展继续保留；v1.5.2 已按明确的部分范围完成生产切换。发布记录见 [docs/v1.5.2-deployment-20260911.md](docs/v1.5.2-deployment-20260911.md)。
+- **Source Intake Contract v1** — normalizes inputs from local files, Google Drive documents, browser-captured WeChat material, ima-derived exports, and synthetic fixtures while preserving provenance and rights metadata.
+- **Statement model** — extracts attributable statements while keeping source references, controlled excerpts, actor references, attribution type, and extraction status.
+- **Claim MVP** — represents research claims separately from facts and supports explicit states such as unverified, corroborated, contradicted, superseded, and review-required.
+- **Actor / identity references** — reuses stable player identities where available and supports person-ready or unresolved actors without inventing identities.
+- **Verification Queue v1** — routes unresolved actors, ambiguous attribution, uncertain sources, claims, and derived signals into a deterministic review queue instead of silently guessing or dropping them.
+- **Research View v0** — produces a read-only synthesis that explicitly separates canonical facts, documents, statements, claims, actor identity state, open verification items, and unknown/evidence gaps.
+- **Rights-aware consumer materialization** — keeps private or restricted evidence from being treated as public-safe consumer output.
+- **Fail-closed release and provenance controls** — maintains explicit release state, source bindings, readback, rollback/recovery, and current-world/consumer closeout checks.
 
-## v1.5.1 新增
+v1.9.0 does **not** turn statements or claims into canonical facts automatically, ship a complete person registry, provide a complete statistics layer, or make private production data public.
 
-- 赛季感知 club 别名解析（`config/club_aliases.yaml`），未知冠名商在 strict 模式 fail-closed。
-- 三个来源适配器：`midseason_md`、`foreign_xlsx`、`foreign_image`；外援英文名 raw/normalized 双列，球衣号按文本保留，取消注册事件按赛季边界补年份并标记 `date_year_inferred`。
-- 三种 grain 分离的事实产品：国内注册关系 MASTER、`CBA_外籍球员注册_SNAPSHOTS.xlsx`、`CBA_球员注册_EVENTS.xlsx`。
-- CLI `extract` / `facts`，真实来源验收 `make accept`，来源登记提案 `make registry`。
-- 只读 Drive 调用的脱敏诊断、阶段日志与有界重试；`doctor` 输出真实 `production_enabled` 与版本 `1.5.1.dev0`。
-- 生产发布走 `scripts/prepare_v1_5_1.py reserve|freeze` + v1.5 的 `plan → publish --single-writer → verify`；只读依赖已改为冻结输入副本，使 live MASTER/registry 可在同一发布内合法更新。
+## Data model at a glance
 
-## 已发布产物（20_data）
+```text
+Raw sources
+   │
+   ▼
+Source Intake + provenance + rights
+   │
+   ├──────────────► Documents / evidence
+   │
+   ▼
+Statements ───────► Claims
+   │                  │
+   ▼                  ▼
+Actor / Identity   Verification Queue
+   │                  │
+   └──────────┬───────┘
+              ▼
+        Research View
+              │
+              ▼
+   Rights-aware consumer outputs
 
-- `CBA_2017-2027_国内球员注册_MASTER.xlsx`：3,465 条 = 3,451 基线 + 14 条八一中转关系。
-- [CBA_外籍球员注册_SNAPSHOTS.xlsx](https://drive.google.com/file/d/1avAxhNUTgm14MIdkgkHhia6_adSDGwLD/view)：73 条快照（2024-2025）。
-- [CBA_球员注册_EVENTS.xlsx](https://drive.google.com/file/d/1WtE63GIQxYPUBsfcRlhKCH8lJgyTZeGF/view)：73 条事件（59 条外援取消注册 + 14 条八一中转）。
-- [CBA_注册领域_六表.xlsx](https://docs.google.com/spreadsheets/d/1_dgbWXOkJeEjGRtEeZ0oOC9e-lqbXZeW/edit)：600 条，六标签页，覆盖已实现注册域范围。
-- 发布状态：https://drive.google.com/file/d/1FQmbZIJxCkTkpr6ovKh5-CoBbpT0YMwV/view ；当前为 `v1.5.2-1 / COMPLETE`。
+Canonical registration facts remain a separate truth layer.
+```
 
-## 已实现
+The separation is deliberate. A quoted statement can be valid evidence without being a verified fact, and an unresolved person can remain unresolved without being forced into an identity record.
 
-- 导入 Drive 现有脚本、真实 parser fixture 和 9 项既有回归，保留 legacy 同步保护。
-- 只读 MASTER 校验、十个赛季阅读版、完整 CSV/JSONL 派生导出。
-- 独立本地 OAuth、按 ID 拉取及变更检测。
-- 普通文件和受控原生 Docs 沙盒发布器：冻结包、备份、逐文件回读、journal、幂等重试、原 ID 回退。
-- 全部依赖锁定在 requirements.lock，Python 3.11。
+## Project architecture
 
-## 初始化
+| Layer | Responsibility |
+| --- | --- |
+| Engine | Public reusable code, schemas, adapters, validators, CLI, release logic, synthetic/public-safe fixtures |
+| Private Instance | Real source registry, credentials, Drive mappings, real fixtures, human corrections, production policy, private evidence |
+| Canonical facts | Structured registration/event products with explicit source lineage |
+| Document evidence | Captured source material and document-level provenance |
+| Identity | Stable player identity plus bounded unresolved/person-ready actor references |
+| Statement / Claim | Evidence-aware research semantics introduced in v1.9.0 |
+| Verification Queue | Explicit unresolved/review-required work |
+| Research View | Read-only multi-grain synthesis for research and AI consumption |
+| Consumer outputs | Rights-aware derived packages; not an authority over upstream facts |
 
-```sh
-/opt/homebrew/bin/python3.11 -m venv .venv
-.venv/bin/python -m pip install -r requirements.lock
+GitHub is the code truth for the Engine. Production data is not stored in this repository.
+
+## Repository layout
+
+```text
+src/cba_kb/          Engine modules
+tests/               Offline regression and contract tests
+config/              Public-safe configuration and taxonomy
+scripts/             Deterministic build/release utilities
+docs/                Historical design, operations, release and requirement records
+requirements/        Requirement contracts used by the development workflow
+legacy/              Preserved legacy tooling and compatibility tests
+```
+
+Key v1.9 modules include:
+
+```text
+src/cba_kb/source_intake.py
+src/cba_kb/statement.py
+src/cba_kb/claim.py
+src/cba_kb/actor.py
+src/cba_kb/verification_queue.py
+src/cba_kb/research_view.py
+```
+
+## Requirements
+
+- Python **3.11+**
+- Dependencies pinned in `requirements.lock`
+- Git for reproducible candidate builds
+- A Private Instance only when working with real/private inputs or production Google Drive
+
+## Quick start
+
+```bash
+python3.11 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.lock
+
 make doctor
 make test
 ```
 
-生产数据不进 Git。部署时 bootstrap 数据位于 workspace/inputs/bootstrap；新机器需完成授权后 make pull。
+The package exposes the `cba-kb` CLI:
 
-```sh
-make auth
-make pull OUTPUT=workspace/inputs/run-001
-make validate MASTER=workspace/inputs/run-001/MASTER.xlsx
-make build MASTER=workspace/inputs/run-001/MASTER.xlsx OUTPUT=workspace/candidates/run-001 RELEASE_ID=run-001
+```bash
+cba-kb --help
 ```
 
-build 要求代码已提交且工作树干净，输出目录必须是新目录。未同步候选、outbox 和 journal 不可随意删除。
+Representative command families include:
 
-## 部署门禁
+```text
+validate / build / extract / facts
+document-ingest / document-batch
+identity-* / mention-*
+source-intake
+statement-extract
+claim-extract
+verification-queue
+research-view
+consumer-*
+plan / publish / verify / restore
+```
 
-生产写入只能通过 `config/production.json` 的完整白名单、冻结依赖、`plan --environment production`、`publish --single-writer` 和独立 `verify` 执行。
-低层普通文件发布器不接受 native Docs/Sheets。CLI 只允许 runtime.json 中配置的沙盒直接子对象，不能靠填写生产 ID 绕过。
-不要直接运行 legacy/upload_drive.py；旧按名上传流程不是 v1.5 发布通道。
+Commands that require private configuration must receive a Private Instance via `--instance-root` or `CBA_KB_INSTANCE_ROOT`. Missing required private state is designed to fail closed.
 
-完整方案见 docs/CBA-KB_v1.5.md；授权步骤见 docs/SETUP_AUTH.md；实施状态见 docs/DEPLOYMENT_STATUS.md。
+## v1.9 research workflow
+
+A typical research-oriented flow is:
+
+```text
+1. Normalize a source with source-intake
+2. Preserve provenance and rights metadata
+3. Extract statements
+4. Reuse a known player identity or keep the actor unresolved
+5. Build claims only as a separate semantic layer
+6. Route ambiguity to the verification queue
+7. Render a read-only research view
+8. Materialize only rights-safe consumer outputs
+```
+
+This repository intentionally does not provide a shortcut that converts document text directly into canonical facts.
+
+## Testing
+
+The normal offline regression suite is:
+
+```bash
+make test
+```
+
+Focused tests live under `tests/`. Production credentials are not required for ordinary offline regression.
+
+The project favors deterministic validation, explicit semantic contracts, exact source/provenance bindings, and fail-closed behavior over silent repair.
+
+## Data and rights
+
+This is a **public Engine repository**, not a public dump of the private CBA-KB knowledge base.
+
+You should assume that:
+
+- some upstream documents and media are copyrighted;
+- private source locators, Drive IDs, credentials, evidence, or manual corrections may not be redistributable;
+- derived consumer outputs must respect their source-rights classification;
+- absence of evidence is not evidence of zero;
+- AI-generated summaries or classifications are derived information, not primary evidence.
+
+Before redistributing any data produced with the Engine, verify the rights and provenance of the underlying sources.
+
+## Production and release safety
+
+Production writes are intentionally separated from ordinary development. The release path uses explicit production policy, frozen inputs, single-writer execution, immutable evidence, readback verification, and rollback/recovery controls.
+
+Do not treat a successful local build or CI run as permission to publish production data.
+
+## Project status and roadmap
+
+**v1.9.0-1** is the current completed production release and includes the Statement/Claim research layer, source intake contract, verification queue, research view, and associated consumer-closure controls.
+
+Likely future directions include deeper person modeling, statistics, richer claims/research workflows, and additional automation, but those are not implied to be implemented until they appear in code and a completed release.
+
+## Contributing
+
+Issues and pull requests should keep the Engine / Private Instance boundary intact.
+
+When contributing:
+
+1. do not commit credentials, real private fixtures, private Drive mappings, or private evidence;
+2. keep semantic grains explicit instead of merging facts, documents, statements, claims, and unknowns;
+3. add or update tests for contract changes;
+4. preserve deterministic and fail-closed behavior for ambiguous or unsafe states;
+5. use a feature branch and pull request for repository changes.
+
+## Documentation
+
+- `docs/` contains historical architecture, migration, operations, and release material.
+- The CLI is the best source for currently implemented command surfaces: `cba-kb --help`.
+- The repository code and tests are the authoritative description of implemented Engine behavior.
+
+## License and reuse
+
+No open-source license file is currently published in this repository. Public visibility alone does not grant an open-source license.
+
+If you plan to reuse or redistribute the code, add or confirm an explicit software license first. Data and source-material rights must be evaluated separately from the code license.
