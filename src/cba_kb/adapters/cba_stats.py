@@ -483,15 +483,18 @@ class CBAStatsAdapter:
             "free_throws_percentage_rate": _parse_float("freeThrowsPercentageSort", required=False),
         }
 
-        provenance = {
+        provenance: Dict[str, Any] = {
             "source_uri": provenance_base.get("url", f"{self.base_url}/api/player-base-list"),
             "endpoint": provenance_base.get("endpoint", "/api/player-base-list"),
             "request_contract": provenance_base.get("request_payload", {}),
             "raw_response_sha256": provenance_base["raw_sha256"],
             "decoded_sha256": provenance_base["decoded_sha256"],
-            "captured_at": provenance_base.get("captured_at", datetime.datetime.now(datetime.timezone.utc).isoformat()),
+            "season": season,
+            "match_type": match_type,
             "provider_version": "cba_data_server_2026",
         }
+        if "captured_at" in provenance_base and provenance_base["captured_at"] is not None:
+            provenance["captured_at"] = provenance_base["captured_at"]
 
         # Default fail-closed rights
         rights = {

@@ -21,6 +21,7 @@ from .consumer_package import (
 )
 from .statement import validate_statement
 from .stats import (
+    ALLOWED_TOP_LEVEL_FIELDS,
     CANONICAL_METRIC_MVP_ALLOWLIST,
     RAW_METRICS_MVP_ALLOWLIST,
     validate_stats_record,
@@ -555,7 +556,8 @@ def project_stats_for_consumer(
         if not is_stats_publicly_exportable(validated):
             continue
 
-        clean_st = dict(validated)
+        # Allowlist-based top-level projection: only authoritative MVP fields
+        clean_st = {k: v for k, v in validated.items() if k in ALLOWED_TOP_LEVEL_FIELDS}
 
         # Sanitize provenance
         clean_st["provenance"] = sanitize_provenance(

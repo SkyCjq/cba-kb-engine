@@ -13,6 +13,7 @@ Conforms to REQ-200-PLAYER-STATS-01 FROZEN r1:
 """
 from __future__ import annotations
 
+import datetime
 import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -24,6 +25,30 @@ SEMANTIC_GRAIN = "PLAYER_SEASON_STATS"
 RESEARCH_VIEW_GRAIN = "STATS"
 PROVIDER_CBA_OFFICIAL = "CBA_OFFICIAL"
 DEFAULT_COMPETITION = "CBA"
+
+# Exact authoritative top-level schema allowlist
+ALLOWED_TOP_LEVEL_FIELDS = frozenset({
+    "record_id",
+    "semantic_grain",
+    "schema_version",
+    "player_uid",
+    "identity_status",
+    "identity_resolution",
+    "provider",
+    "provider_player_id",
+    "player_name",
+    "season",
+    "competition",
+    "match_type",
+    "match_type_label",
+    "scope",
+    "team_id",
+    "team_name",
+    "metrics",
+    "raw_metrics",
+    "provenance",
+    "rights",
+})
 
 SCOPES = frozenset({"WHOLE_SEASON", "TEAM_SPLIT"})
 IDENTITY_STATUSES = frozenset({"RESOLVED", "REVIEW_REQUIRED", "UNRESOLVED"})
@@ -138,6 +163,13 @@ def validate_stats_record(record: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(record, dict):
         raise StatsValidationError("STATS_RECORD_OBJECT_REQUIRED")
 
+    # Reject unknown top-level fields
+    unknown_top = set(record.keys()) - ALLOWED_TOP_LEVEL_FIELDS
+    if unknown_top:
+        raise StatsValidationError(
+            f"UNKNOWN_TOP_LEVEL_FIELDS:{','.join(sorted(unknown_top))}"
+        )
+
     # Required top-level keys
     required_keys = {
         "record_id",
@@ -172,49 +204,76 @@ def validate_stats_record(record: Dict[str, Any]) -> Dict[str, Any]:
             f"INVALID_SCHEMA_VERSION:{record['schema_version']}!= {STATS_SCHEMA_VERSION}"
         )
 
-    # Provider and provider player ID
-    if not str(record["provider"]).strip():
-        raise StatsValidationError("PROVIDER_REQUIRED")
-    if not str(record["provider_player_id"]).strip():
-        raise StatsValidationError("PROVIDER_PLAYER_ID_REQUIRED")
-    if not str(record["player_name"]).strip():
-        raise StatsValidationError("PLAYER_NAME_REQUIRED")
-    if not str(record["season"]).strip():
-        raise StatsValidationError("SEASON_REQUIRED")
+    # Strictly CBA_OFFICIAL provider and CBA competition
+    if record.get("provider") != PROVIDER_CBA_OFFICIAL:
+        raise StatsValidationError(f"INVALID_PROVIDER:{record.get('provider')}")
 
-    # Scope
+    if record.get("competition") != DEFAULT_COMPETITION:
+        raise StatsValidationError(f"INVALID_COMPETITION:{record.get('competition')}")
+
+    # Scalar non-empty checks for core identifiers
+    for fld in ("provider_player_id", "season", "match_type"):
+        val = record.get(fld)
+        if val is None or isinstance(val, bool) or not isinstance(val, (str, int)) or not str(val).strip():
+            raise StatsValidationError(f"INVALID_{fld.upper()}:{val!r}")
+
+    player_name = record.get("player_name")
+    if not isinstance(player_name, str) or not player_name.strip():
+        raise StatsValidationError("PLAYER_NAME_REQUIRED")
+
+    # Scope and team context
     scope = str(record["scope"]).upper()
     if scope not in SCOPES:
         raise StatsValidationError(f"INVALID_SCOPE:{scope}")
     if scope == "TEAM_SPLIT":
         team_id = record.get("team_id")
-        team_name = record.get("team_name")
-        if not team_id and not team_name:
-            raise StatsValidationError("TEAM_SPLIT_REQUIRES_TEAM_ID_OR_NAME")
+        if team_id is None or isinstance(team_id, bool) or not isinstance(team_id, (str, int)) or not str(team_id).strip():
+            raise StatsValidationError("TEAM_SPLIT_REQUIRES_TEAM_ID")
+
+    # Validate deterministic record_id recomputation
+    expected_record_id = build_record_id(
+        provider=record["provider"],
+        season=record["season"],
+        match_type=record["match_type"],
+        scope=scope,
+        provider_player_id=record["provider_player_id"],
+        team_id=record.get("team_id") if scope == "TEAM_SPLIT" else None,
+    )
+    if record["record_id"] != expected_record_id:
+        raise StatsValidationError(
+            f"RECORD_ID_MISMATCH:got={record['record_id']},expected={expected_record_id}"
+        )
 
     # Identity status and player_uid rule
     identity_status = record["identity_status"]
     if identity_status not in IDENTITY_STATUSES:
         raise StatsValidationError(f"INVALID_IDENTITY_STATUS:{identity_status}")
 
-    player_uid = record.get("player_uid")
-    if identity_status == "RESOLVED":
-        if not player_uid or not isinstance(player_uid, str) or not player_uid.strip():
-            raise StatsValidationError("RESOLVED_RECORD_REQUIRES_PLAYER_UID")
-    else:
-        if player_uid is not None:
-            raise StatsValidationError(
-                f"UNRESOLVED_RECORD_CANNOT_HAVE_PLAYER_UID:status={identity_status},player_uid={player_uid}"
-            )
-
-    # Validate identity_resolution block
     id_res = record.get("identity_resolution")
     if not isinstance(id_res, dict):
         raise StatsValidationError("IDENTITY_RESOLUTION_DICT_REQUIRED")
     if id_res.get("status") != identity_status:
         raise StatsValidationError("IDENTITY_RESOLUTION_STATUS_MISMATCH")
 
-    # Validate metrics
+    player_uid = record.get("player_uid")
+    if identity_status == "RESOLVED":
+        if not player_uid or not isinstance(player_uid, str) or not player_uid.strip():
+            raise StatsValidationError("RESOLVED_RECORD_REQUIRES_PLAYER_UID")
+        res_method = str(id_res.get("resolution_method") or id_res.get("reason") or "")
+        trusted_markers = ("EXTERNAL_IDENTIFIER", "SOURCE_DECLARED", "TRUSTED_PROVIDER_LINK", "TRUSTED_EXTERNAL_ID_LINK")
+        if not any(m in res_method for m in trusted_markers):
+            raise StatsValidationError(f"RESOLVED_IDENTITY_REQUIRES_TRUSTED_LINK_METHOD:{res_method}")
+        candidates = id_res.get("candidate_player_uids")
+        if candidates is not None and isinstance(candidates, list) and candidates:
+            if player_uid not in candidates:
+                raise StatsValidationError(f"RESOLVED_PLAYER_UID_NOT_IN_CANDIDATE_UIDS:{player_uid}")
+    else:
+        if player_uid is not None:
+            raise StatsValidationError(
+                f"UNRESOLVED_RECORD_CANNOT_HAVE_PLAYER_UID:status={identity_status},player_uid={player_uid}"
+            )
+
+    # Validate metrics against authoritative MVP allowlist
     metrics = record.get("metrics")
     if not isinstance(metrics, dict):
         raise StatsValidationError("METRICS_DICT_REQUIRED")
@@ -225,29 +284,25 @@ def validate_stats_record(record: Dict[str, Any]) -> Dict[str, Any]:
             f"UNKNOWN_CANONICAL_METRIC_KEYS:{','.join(sorted(unknown_metrics))}"
         )
 
-    # Invariant: games_played must be non-negative if present
-    games_played = metrics.get("games_played")
-    if games_played is not None:
-        if not isinstance(games_played, (int, float)) or games_played < 0:
-            raise StatsValidationError("INVALID_GAMES_PLAYED")
-
-    # Invariant: percentage strings must match XX.X% if present, or None
-    for pct_key in ("field_goals_percentage", "three_point_percentage", "free_throws_percentage"):
-        pct_val = metrics.get(pct_key)
-        if pct_val is not None:
-            if not isinstance(pct_val, str) or not _PERCENTAGE_RE.match(pct_val):
-                raise StatsValidationError(f"INVALID_PERCENTAGE_FORMAT:{pct_key}={pct_val}")
-
-    # Invariant: percentage rates must be between 0.0 and 1.0 (or None)
-    for rate_key in (
-        "field_goals_percentage_rate",
-        "three_point_percentage_rate",
-        "free_throws_percentage_rate",
-    ):
-        rate_val = metrics.get(rate_key)
-        if rate_val is not None:
-            if not isinstance(rate_val, (int, float)) or not (0.0 <= float(rate_val) <= 1.0):
-                raise StatsValidationError(f"INVALID_PERCENTAGE_RATE_RANGE:{rate_key}={rate_val}")
+    for k, v in metrics.items():
+        if v is None:
+            continue
+        if isinstance(v, bool):
+            raise StatsValidationError(f"INVALID_METRIC_TYPE:{k}={v!r}(bool)")
+        if k in ("field_goals_percentage", "three_point_percentage", "free_throws_percentage"):
+            if not isinstance(v, str) or not _PERCENTAGE_RE.match(v):
+                raise StatsValidationError(f"INVALID_PERCENTAGE_FORMAT:{k}={v}")
+        elif k in ("field_goals_percentage_rate", "three_point_percentage_rate", "free_throws_percentage_rate"):
+            if not isinstance(v, (int, float)) or not (0.0 <= float(v) <= 1.0):
+                raise StatsValidationError(f"INVALID_PERCENTAGE_RATE_RANGE:{k}={v}")
+        elif k == "games_started":
+            if not isinstance(v, int) or v < 0:
+                raise StatsValidationError(f"INVALID_GAMES_STARTED:{k}={v}")
+        else:
+            if not isinstance(v, (int, float)):
+                raise StatsValidationError(f"INVALID_METRIC_TYPE:{k}={v!r}")
+            if v < 0:
+                raise StatsValidationError(f"NEGATIVE_METRIC_VALUE:{k}={v}")
 
     # Validate raw_metrics against authoritative provider MVP allowlist if present
     raw_metrics = record.get("raw_metrics")
@@ -259,6 +314,9 @@ def validate_stats_record(record: Dict[str, Any]) -> Dict[str, Any]:
             raise StatsValidationError(
                 f"UNKNOWN_RAW_PROVIDER_KEYS:{','.join(sorted(unknown_raw))}"
             )
+        for rk, rv in raw_metrics.items():
+            if rv is not None and not isinstance(rv, (str, int, float, bool)):
+                raise StatsValidationError(f"RAW_METRICS_NON_SCALAR_VALUE:{rk}={type(rv).__name__}")
 
     # Validate rights
     rights = record.get("rights")
@@ -269,6 +327,11 @@ def validate_stats_record(record: Dict[str, Any]) -> Dict[str, Any]:
         raise StatsValidationError(f"INVALID_RIGHTS_CLASSIFICATION:{classification}")
     if not isinstance(rights.get("public_export_allowed"), bool):
         raise StatsValidationError("PUBLIC_EXPORT_ALLOWED_BOOL_REQUIRED")
+    if rights.get("private_ai_consumption") != "TARGET_SPECIFIC":
+        raise StatsValidationError(f"INVALID_PRIVATE_AI_CONSUMPTION:{rights.get('private_ai_consumption')}")
+    if "materialization_authorized" in rights:
+        if not isinstance(rights["materialization_authorized"], bool):
+            raise StatsValidationError("MATERIALIZATION_AUTHORIZED_BOOL_REQUIRED")
 
     # Validate provenance
     provenance = record.get("provenance")
@@ -282,6 +345,20 @@ def validate_stats_record(record: Dict[str, Any]) -> Dict[str, Any]:
     decoded_hash = provenance.get("decoded_sha256")
     if not decoded_hash or not _SHA256_HEX_RE.match(str(decoded_hash)):
         raise StatsValidationError("PROVENANCE_DECODED_SHA256_REQUIRED")
+
+    captured_at = provenance.get("captured_at")
+    if captured_at is not None:
+        if not isinstance(captured_at, str):
+            raise StatsValidationError("PROVENANCE_CAPTURED_AT_STR_REQUIRED")
+        try:
+            datetime.datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise StatsValidationError(f"INVALID_PROVENANCE_CAPTURED_AT:{captured_at}") from exc
+
+    if "season" in provenance and str(provenance["season"]) != str(record["season"]):
+        raise StatsValidationError("PROVENANCE_SEASON_MISMATCH")
+    if "match_type" in provenance and str(provenance["match_type"]) != str(record["match_type"]):
+        raise StatsValidationError("PROVENANCE_MATCH_TYPE_MISMATCH")
 
     return record
 
@@ -403,6 +480,7 @@ def deduplicate_and_reconcile_stats(records: List[Dict[str, Any]]) -> List[Dict[
     by_key: Dict[str, Dict[str, Any]] = {}
 
     for rec in records:
+        validate_stats_record(rec)
         rec_id = rec["record_id"]
         if rec_id not in by_key:
             by_key[rec_id] = rec
@@ -418,13 +496,36 @@ def deduplicate_and_reconcile_stats(records: List[Dict[str, Any]]) -> List[Dict[
             continue
 
         # Differing metrics: check provenance supersession timestamp if available
-        t_exist = existing.get("provenance", {}).get("captured_at", "")
-        t_rec = rec.get("provenance", {}).get("captured_at", "")
-        if t_rec and t_exist and t_rec > t_exist:
-            # Newer explicit observation supersedes prior observation
-            by_key[rec_id] = rec
-        elif t_exist and t_rec and t_exist > t_rec:
-            pass  # keep existing newer record
+        t_exist_raw = existing.get("provenance", {}).get("captured_at")
+        t_rec_raw = rec.get("provenance", {}).get("captured_at")
+
+        dt_exist: Optional[datetime.datetime] = None
+        dt_rec: Optional[datetime.datetime] = None
+
+        if t_exist_raw and isinstance(t_exist_raw, str):
+            try:
+                dt = datetime.datetime.fromisoformat(t_exist_raw.replace("Z", "+00:00"))
+                dt_exist = dt if dt.tzinfo is not None else dt.replace(tzinfo=datetime.timezone.utc)
+            except ValueError:
+                dt_exist = None
+
+        if t_rec_raw and isinstance(t_rec_raw, str):
+            try:
+                dt = datetime.datetime.fromisoformat(t_rec_raw.replace("Z", "+00:00"))
+                dt_rec = dt if dt.tzinfo is not None else dt.replace(tzinfo=datetime.timezone.utc)
+            except ValueError:
+                dt_rec = None
+
+        if dt_rec is not None and dt_exist is not None:
+            if dt_rec > dt_exist:
+                # Newer explicit observation supersedes prior observation
+                by_key[rec_id] = rec
+            elif dt_exist > dt_rec:
+                pass  # keep existing newer record
+            else:
+                raise StatsError(
+                    f"AMBIGUOUS_CONFLICTING_STATS_DUPLICATE:{rec_id}: conflicting metrics without temporal supersession"
+                )
         else:
             raise StatsError(
                 f"AMBIGUOUS_CONFLICTING_STATS_DUPLICATE:{rec_id}: conflicting metrics without temporal supersession"
