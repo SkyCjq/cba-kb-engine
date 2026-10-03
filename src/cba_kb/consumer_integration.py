@@ -25,6 +25,17 @@ from .stats import validate_stats_record
 CONSUMER_CAPABILITY_STATEMENT_CLAIM = "statement_claim_research"
 CONSUMER_CAPABILITY_PLAYER_STATS = "player_performance_stats"
 
+OUT_OF_SCOPE_ADVANCED_METRICS = frozenset({
+    "rim_made",
+    "rim_attempted",
+    "mid_range_made",
+    "mid_range_attempted",
+    "fieldGoalsAtRimMade",
+    "fieldGoalsAtRimAttempted",
+    "fieldGoalsMidRangeMade",
+    "fieldGoalsMidRangeAttempted",
+})
+
 _DRIVE_LOCATOR_RE = re.compile(r"https?://(?:docs|drive)\.google\.com/[^\s,;\"'\]]+")
 _RAW_DRIVE_ID_RE = re.compile(r"\b[0-9a-zA-Z_-]{28,50}\b")
 _WIN_DRIVE_PATH_RE = re.compile(r"(?:^|[\s,;\"'\[\(=])[a-zA-Z]:[/\\]")
@@ -557,6 +568,18 @@ def project_stats_for_consumer(
         clean_st["provenance"] = sanitize_provenance(
             clean_st.get("provenance"), doc_id=rec_id, target_slug=target_slug
         )
+
+        # Ensure out-of-scope advanced provider metrics are never exposed to consumers
+        if "metrics" in clean_st and isinstance(clean_st["metrics"], dict):
+            clean_st["metrics"] = {
+                k: v for k, v in clean_st["metrics"].items()
+                if k not in OUT_OF_SCOPE_ADVANCED_METRICS
+            }
+        if "raw_metrics" in clean_st and isinstance(clean_st["raw_metrics"], dict):
+            clean_st["raw_metrics"] = {
+                k: v for k, v in clean_st["raw_metrics"].items()
+                if k not in OUT_OF_SCOPE_ADVANCED_METRICS
+            }
 
         exported.append(clean_st)
 

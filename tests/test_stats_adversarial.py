@@ -207,3 +207,45 @@ def test_a15_zero_diff_on_identity_registry():
     registry_after = serialize_registry(registry)
     # Invariant A15: Exact zero diff on identity registry
     assert registry_before == registry_after
+
+
+def test_adversarial_advanced_metrics_exclusion_and_stripping():
+    """Adversarial test: verify advanced rim/mid-range fields cannot be sneaked into consumer projection."""
+    # Construct an adversarial record where caller injected advanced keys into metrics and raw_metrics
+    sneaked_record = copy.deepcopy(SAMPLE_VALID_STATS)
+    sneaked_record["rights"]["classification"] = "PUBLIC"
+    sneaked_record["rights"]["public_export_allowed"] = True
+    sneaked_record["metrics"]["rim_made"] = 100.0
+    sneaked_record["metrics"]["mid_range_made"] = 50.0
+    sneaked_record["raw_metrics"]["fieldGoalsAtRimMade"] = 100.0
+    sneaked_record["raw_metrics"]["fieldGoalsMidRangeAttempted"] = 200.0
+
+    auths = [
+        {
+            "target": "ChatGPT",
+            "doc_id": sneaked_record["record_id"],
+            "allowed_scope": CONSUMER_CAPABILITY_PLAYER_STATS,
+            "authorization_basis": "PUBLIC",
+            "frozen_at": "2026-10-03T10:00:00Z",
+        }
+    ]
+
+    exported, cap = project_stats_for_consumer([sneaked_record], target="ChatGPT", authorizations=auths)
+    assert cap == "MATERIALIZED"
+    assert len(exported) == 1
+    exp = exported[0]
+
+    out_of_scope = {
+        "rim_made",
+        "rim_attempted",
+        "mid_range_made",
+        "mid_range_attempted",
+        "fieldGoalsAtRimMade",
+        "fieldGoalsAtRimAttempted",
+        "fieldGoalsMidRangeMade",
+        "fieldGoalsMidRangeAttempted",
+    }
+    for k in out_of_scope:
+        assert k not in exp["metrics"]
+        assert k not in exp["raw_metrics"]
+

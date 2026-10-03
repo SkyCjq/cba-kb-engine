@@ -760,3 +760,68 @@ def test_validate_consumer_manifest_with_stats_surface():
             expected_release_id="REL-20261003-01",
             artifact_resolver=unreadable_resolver,
         )
+
+
+def test_advanced_metrics_excluded_from_canonical_and_consumer():
+    """Assert advanced rim/mid-range metrics do not leak into canonical metrics, raw_metrics, or consumer projection."""
+    adapter = CBAStatsAdapter(key=SAMPLE_AES_KEY)
+    prov = {
+        "url": "https://data-server.cbaleague.com/api/player-base-list",
+        "endpoint": "/api/player-base-list",
+        "raw_sha256": "1" * 64,
+        "decoded_sha256": "2" * 64,
+        "season": "2024",
+        "match_type_id": "1",
+    }
+
+    # Input fixture explicitly containing advanced rim and mid-range provider metrics
+    advanced_input = copy.deepcopy(RAW_2024_RECORD)
+    advanced_input["fieldGoalsAtRimAttempted"] = 280.0
+    advanced_input["fieldGoalsAtRimMade"] = 171.0
+    advanced_input["fieldGoalsMidRangeAttempted"] = 135.0
+    advanced_input["fieldGoalsMidRangeMade"] = 42.0
+    advanced_input["foulsDefensive"] = 67.0
+
+    rec = adapter.transform_provider_record(advanced_input, prov)
+
+    out_of_scope_keys = {
+        "rim_made",
+        "rim_attempted",
+        "mid_range_made",
+        "mid_range_attempted",
+        "fieldGoalsAtRimMade",
+        "fieldGoalsAtRimAttempted",
+        "fieldGoalsMidRangeMade",
+        "fieldGoalsMidRangeAttempted",
+    }
+
+    # 1. Canonical metrics must NOT contain advanced fields
+    for k in out_of_scope_keys:
+        assert k not in rec["metrics"], f"Out-of-scope metric {k} leaked into canonical metrics!"
+
+    # 2. Product-facing raw_metrics must NOT contain advanced fields or unapproved provider keys
+    for k in out_of_scope_keys:
+        assert k not in rec["raw_metrics"], f"Out-of-scope metric {k} leaked into raw_metrics!"
+    assert "foulsDefensive" not in rec["raw_metrics"]
+
+    # 3. Consumer projection must NOT expose advanced fields
+    rec_auth = copy.deepcopy(rec)
+    rec_auth["rights"]["classification"] = "PUBLIC"
+    rec_auth["rights"]["public_export_allowed"] = True
+    auths = [
+        {
+            "target": "ChatGPT",
+            "doc_id": rec_auth["record_id"],
+            "allowed_scope": CONSUMER_CAPABILITY_PLAYER_STATS,
+            "authorization_basis": "PUBLIC",
+            "frozen_at": "2026-10-03T10:00:00Z",
+        }
+    ]
+    exported, cap = project_stats_for_consumer([rec_auth], target="ChatGPT", authorizations=auths)
+    assert cap == "MATERIALIZED"
+    assert len(exported) == 1
+    exp_st = exported[0]
+    for k in out_of_scope_keys:
+        assert k not in exp_st["metrics"], f"Out-of-scope metric {k} leaked into consumer projected metrics!"
+        assert k not in exp_st["raw_metrics"], f"Out-of-scope metric {k} leaked into consumer projected raw_metrics!"
+

@@ -37,6 +37,40 @@ from ..stats import (
 DEFAULT_DATA_SERVER = "https://data-server.cbaleague.com"
 DEFAULT_PORTAL_URL = "https://www.cbaleague.com/data/"
 
+# Minimal MVP allowlist of provider fields needed for frozen base Stats semantics
+RAW_METRICS_MVP_FIELDS = frozenset({
+    "playerId",
+    "cnAlias",
+    "season",
+    "teamId",
+    "teamCnAlias",
+    "playerTimes",
+    "gameStartNum",
+    "minutes",
+    "seconds",
+    "points",
+    "rebounds",
+    "reboundsOffensive",
+    "reboundsDefensive",
+    "assists",
+    "steals",
+    "blocked",
+    "turnovers",
+    "fouls",
+    "fieldGoals",
+    "fieldGoalsAttempted",
+    "fieldGoalsPercentage",
+    "fieldGoalsPercentageSort",
+    "threePointGoals",
+    "threePointAttempted",
+    "threePointPercentage",
+    "threePointPercentageSort",
+    "freeThrows",
+    "freeThrowsAttempted",
+    "freeThrowsPercentage",
+    "freeThrowsPercentageSort",
+})
+
 _AES_KEY_REGEX = re.compile(
     r'(?:const|var|let)\s+[a-zA-Z0-9_$]+\s*=\s*["\']([A-Za-z0-9]{16})["\'];\s*(?:const|var|let)\s+[a-zA-Z0-9_$]+\s*=\s*[a-zA-Z0-9_$.]+\.enc\.Utf8\.parse'
 )
@@ -477,11 +511,6 @@ class CBAStatsAdapter:
             "free_throws_attempted_per_game": _parse_float("freeThrowsAttempted", required=False),
             "free_throws_percentage": _parse_pct_str("freeThrowsPercentage"),
             "free_throws_percentage_rate": _parse_float("freeThrowsPercentageSort", required=False),
-            # Advanced context fields preserved as secondary metrics
-            "rim_made": _parse_float("fieldGoalsAtRimMade", required=False),
-            "rim_attempted": _parse_float("fieldGoalsAtRimAttempted", required=False),
-            "mid_range_made": _parse_float("fieldGoalsMidRangeMade", required=False),
-            "mid_range_attempted": _parse_float("fieldGoalsMidRangeAttempted", required=False),
         }
 
         provenance = {
@@ -500,6 +529,10 @@ class CBAStatsAdapter:
             "public_export_allowed": False,
             "private_ai_consumption": "TARGET_SPECIFIC",
             "materialization_authorized": False,
+        }
+
+        raw_metrics_mvp = {
+            k: record[k] for k in sorted(RAW_METRICS_MVP_FIELDS) if k in record
         }
 
         canonical_record = {
@@ -525,7 +558,7 @@ class CBAStatsAdapter:
             "team_id": team_id,
             "team_name": team_name,
             "metrics": metrics,
-            "raw_metrics": record,
+            "raw_metrics": raw_metrics_mvp,
             "provenance": provenance,
             "rights": rights,
         }
