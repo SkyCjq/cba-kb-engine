@@ -8,13 +8,22 @@ from pathlib import Path
 import pytest
 
 
+import os
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     cmd = [sys.executable, "-m", "cba_kb.cli", *args]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = f"{REPO_ROOT / 'src'}:{env.get('PYTHONPATH', '')}"
     return subprocess.run(
         cmd,
+        cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
 
 
