@@ -224,6 +224,10 @@ def validate_consumer_manifest(
         missing = sorted(REQUIRED_IDENTITY_KEYS - set(identity or {}))
         raise ConsumerManifestError(f"CONSUMER_MANIFEST_MISSING_IDENTITY:{','.join(missing)}")
 
+    stats = surfaces.get("stats")
+    if stats is not None and not isinstance(stats, dict):
+        raise ConsumerManifestError("CONSUMER_MANIFEST_STATS_INVALID")
+
     # Verify self-hash
     stored_sha = manifest_data.get("manifest_sha256")
     without_hash = {k: v for k, v in manifest_data.items() if k != "manifest_sha256"}
@@ -232,8 +236,12 @@ def validate_consumer_manifest(
     if stored_sha not in {computed_sha, computed_without}:
         raise ConsumerManifestError("CONSUMER_MANIFEST_HASH_MISMATCH")
 
+    categories = [("control", control), ("facts", facts), ("identity", identity)]
+    if stats:
+        categories.append(("stats", stats))
+
     all_entries = {}
-    for cat_name, cat_dict in [("control", control), ("facts", facts), ("identity", identity)]:
+    for cat_name, cat_dict in categories:
         for key, entry in cat_dict.items():
             _validate_entry(key, entry, category=cat_name)
             all_entries[key] = entry

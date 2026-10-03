@@ -138,7 +138,7 @@ def test_adversarial_private_locator_in_projection():
     bad_prov_record = copy.deepcopy(SAMPLE_VALID_STATS)
     bad_prov_record["rights"]["classification"] = "PUBLIC"
     bad_prov_record["rights"]["public_export_allowed"] = True
-    bad_prov_record["raw_metrics"]["local_debug_file"] = "/Users/skychengneo/Agent/secret_debug.log"
+    bad_prov_record["raw_metrics"]["local_debug_file"] = "/Users/example/secret_debug.log"
 
     auth_list = [
         {
@@ -181,7 +181,7 @@ def test_a15_zero_diff_on_identity_registry():
     registry_before = serialize_registry(registry)
 
     # Perform stats transformations and resolution
-    adapter = CBAStatsAdapter()
+    adapter = CBAStatsAdapter(key=b"test_key_16_byte")
     prov = {
         "url": "https://data-server.cbaleague.com/api/player-base-list",
         "endpoint": "/api/player-base-list",
@@ -191,7 +191,15 @@ def test_a15_zero_diff_on_identity_registry():
         "match_type_id": "1",
     }
     _ = adapter.transform_provider_record(
-        {"season": 2024, "playerId": 100098118, "cnAlias": "萨姆纳", "points": "36.0"},
+        {
+            "season": 2024,
+            "playerId": 100098118,
+            "cnAlias": "萨姆纳",
+            "playerTimes": 26.0,
+            "points": "36.0",
+            "rebounds": 6.6,
+            "assists": 6.8,
+        },
         prov,
         registry=registry,
     )

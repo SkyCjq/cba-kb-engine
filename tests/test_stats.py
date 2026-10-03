@@ -31,8 +31,11 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cba_kb.adapters.cba_stats import (
     CBAStatsAdapter,
     CBAStatsEnvelopeError,
+    KeyDiscoveryError,
+    StatsProviderContractError,
     decrypt_cba_envelope,
     discover_client_key_from_bundle,
+    discover_key_from_portal,
 )
 from cba_kb.common import digest
 from cba_kb.consumer_integration import (
@@ -41,8 +44,14 @@ from cba_kb.consumer_integration import (
     is_private_locator,
     project_stats_for_consumer,
 )
+from cba_kb.consumer_manifest import (
+    ConsumerManifestError,
+    build_consumer_manifest,
+    validate_consumer_manifest,
+)
 from cba_kb.player_identity import new_registry
 from cba_kb.stats import (
+    DEFAULT_COMPETITION,
     PROVIDER_CBA_OFFICIAL,
     SEMANTIC_GRAIN,
     StatsError,
@@ -54,7 +63,7 @@ from cba_kb.stats import (
     validate_stats_record,
 )
 
-SAMPLE_AES_KEY = b"uVayqL4ONKjFbVzQ"
+SAMPLE_AES_KEY = b"synth_key_16_byt"
 
 RAW_2024_RECORD = {
     "season": 2024,
@@ -503,3 +512,251 @@ def test_a17_no_private_locator_leakage():
 
     # Canonical record must not contain local absolute filesystem paths
     assert find_private_locator_in_object(rec) is None
+
+
+def test_provider_contract_missing_or_renamed_identifiers():
+    adapter = CBAStatsAdapter(key=SAMPLE_AES_KEY)
+    prov = {
+        "url": "https://data-server.cbaleague.com/api/player-base-list",
+        "endpoint": "/api/player-base-list",
+        "raw_sha256": "a" * 64,
+        "decoded_sha256": "b" * 64,
+        "season": "2024",
+        "match_type_id": "1",
+    }
+
+    # Missing playerId
+    bad_record = copy.deepcopy(RAW_2024_RECORD)
+    del bad_record["playerId"]
+    with pytest.raises(StatsProviderContractError, match="MISSING_IDENTIFIER:playerId"):
+        adapter.transform_provider_record(bad_record, prov)
+
+    # Renamed playerId -> player_id
+    bad_record_renamed = copy.deepcopy(RAW_2024_RECORD)
+    bad_record_renamed["player_id"] = bad_record_renamed.pop("playerId")
+    with pytest.raises(StatsProviderContractError, match="MISSING_IDENTIFIER:playerId"):
+        adapter.transform_provider_record(bad_record_renamed, prov)
+
+    # Missing cnAlias
+    bad_name = copy.deepcopy(RAW_2024_RECORD)
+    del bad_name["cnAlias"]
+    with pytest.raises(StatsProviderContractError, match="MISSING_IDENTIFIER:cnAlias"):
+        adapter.transform_provider_record(bad_name, prov)
+
+    # Renamed cnAlias -> name
+    bad_name_renamed = copy.deepcopy(RAW_2024_RECORD)
+    bad_name_renamed["name"] = bad_name_renamed.pop("cnAlias")
+    with pytest.raises(StatsProviderContractError, match="MISSING_IDENTIFIER:cnAlias"):
+        adapter.transform_provider_record(bad_name_renamed, prov)
+
+    # Missing season in both record and prov
+    bad_season = copy.deepcopy(RAW_2024_RECORD)
+    del bad_season["season"]
+    prov_no_season = copy.deepcopy(prov)
+    del prov_no_season["season"]
+    with pytest.raises(StatsProviderContractError, match="MISSING_IDENTIFIER:season"):
+        adapter.transform_provider_record(bad_season, prov_no_season)
+
+
+def test_provider_contract_missing_or_renamed_core_metrics():
+    adapter = CBAStatsAdapter(key=SAMPLE_AES_KEY)
+    prov = {
+        "url": "https://data-server.cbaleague.com/api/player-base-list",
+        "endpoint": "/api/player-base-list",
+        "raw_sha256": "a" * 64,
+        "decoded_sha256": "b" * 64,
+        "season": "2024",
+        "match_type_id": "1",
+    }
+
+    # Missing points
+    bad_points = copy.deepcopy(RAW_2024_RECORD)
+    del bad_points["points"]
+    with pytest.raises(StatsProviderContractError, match="MISSING_CORE_METRIC:points"):
+        adapter.transform_provider_record(bad_points, prov)
+
+    # Renamed points -> pts
+    bad_pts = copy.deepcopy(RAW_2024_RECORD)
+    bad_pts["pts"] = bad_pts.pop("points")
+    with pytest.raises(StatsProviderContractError, match="MISSING_CORE_METRIC:points"):
+        adapter.transform_provider_record(bad_pts, prov)
+
+    # Missing playerTimes (games played)
+    bad_gp = copy.deepcopy(RAW_2024_RECORD)
+    del bad_gp["playerTimes"]
+    with pytest.raises(StatsProviderContractError, match="MISSING_CORE_METRIC:playerTimes"):
+        adapter.transform_provider_record(bad_gp, prov)
+
+    # Missing rebounds
+    bad_reb = copy.deepcopy(RAW_2024_RECORD)
+    del bad_reb["rebounds"]
+    with pytest.raises(StatsProviderContractError, match="MISSING_CORE_METRIC:rebounds"):
+        adapter.transform_provider_record(bad_reb, prov)
+
+    # Missing assists
+    bad_ast = copy.deepcopy(RAW_2024_RECORD)
+    del bad_ast["assists"]
+    with pytest.raises(StatsProviderContractError, match="MISSING_CORE_METRIC:assists"):
+        adapter.transform_provider_record(bad_ast, prov)
+
+
+def test_provider_contract_incompatible_types():
+    adapter = CBAStatsAdapter(key=SAMPLE_AES_KEY)
+    prov = {
+        "url": "https://data-server.cbaleague.com/api/player-base-list",
+        "endpoint": "/api/player-base-list",
+        "raw_sha256": "a" * 64,
+        "decoded_sha256": "b" * 64,
+        "season": "2024",
+        "match_type_id": "1",
+    }
+
+    # points as non-numeric string
+    bad_type1 = copy.deepcopy(RAW_2024_RECORD)
+    bad_type1["points"] = "N/A_NOT_NUMERIC"
+    with pytest.raises(StatsProviderContractError, match="INCOMPATIBLE_TYPE:points"):
+        adapter.transform_provider_record(bad_type1, prov)
+
+    # points as dict
+    bad_type2 = copy.deepcopy(RAW_2024_RECORD)
+    bad_type2["points"] = {"pts": 36.0}
+    with pytest.raises(StatsProviderContractError, match="INCOMPATIBLE_TYPE:points"):
+        adapter.transform_provider_record(bad_type2, prov)
+
+    # secondary metric (steals) as incompatible type
+    bad_type3 = copy.deepcopy(RAW_2024_RECORD)
+    bad_type3["steals"] = [2.1]
+    with pytest.raises(StatsProviderContractError, match="INCOMPATIBLE_TYPE:steals"):
+        adapter.transform_provider_record(bad_type3, prov)
+
+
+def test_fail_closed_key_discovery():
+    # Bundle without key candidate returns None
+    bundle_empty = "function main() { console.log('no key'); }"
+    assert discover_client_key_from_bundle(bundle_empty) is None
+
+    # Multiple conflicting candidates returns None
+    bundle_ambiguous = 'const k1 = "1234567890123456"; const k2 = "abcdefghijklmnop";'
+    assert discover_client_key_from_bundle(bundle_ambiguous) is None
+
+    # Adapter without key and unable to reach portal fails closed
+    bad_adapter = CBAStatsAdapter(portal_url="https://non-existent-domain-fail-closed-999.com", key=None)
+    with pytest.raises(KeyDiscoveryError):
+        bad_adapter.get_encryption_key()
+
+
+def test_validate_consumer_manifest_with_stats_surface():
+    control_keys = ["release_status", "readme", "index", "technical_manual", "context_card", "current_version_doc"]
+    control_entries = {
+        k: {
+            "id": f"ctrl_{k}",
+            "name": f"{k}.json",
+            "sha256": "1" * 64,
+            "mime": "application/json",
+            "authority": "control",
+            "rights": "public",
+        }
+        for k in control_keys
+    }
+    fact_entries = {
+        "master": {
+            "id": "fact_master",
+            "name": "MASTER.xlsx",
+            "sha256": "2" * 64,
+            "mime": "application/json",
+            "authority": "canonical",
+            "rights": "public",
+        }
+    }
+    identity_entry = {
+        "id": "ident_id",
+        "name": "player_identity_projection.json",
+        "sha256": "3" * 64,
+        "mime": "application/json",
+        "authority": "derived",
+        "rights": "public",
+        "source_registry_sha256": "5" * 64,
+    }
+    stats_entries = {
+        "player_stats_projection": {
+            "id": "stats_art_id",
+            "name": "player_stats_projection.json",
+            "sha256": "4" * 64,
+            "mime": "application/json",
+            "authority": "canonical",
+            "rights": "public",
+        }
+    }
+
+    manifest = build_consumer_manifest(
+        release_id="REL-20261003-01",
+        code_commit="c" * 40,
+        surfaces=control_entries,
+        facts=fact_entries,
+        identity_projection=identity_entry,
+        stats=stats_entries,
+    )
+
+    # Valid validation without resolver
+    res = validate_consumer_manifest(manifest, expected_release_id="REL-20261003-01")
+    assert res["status"] == "PASS"
+    assert res["entries_validated"] == len(control_keys) + 1 + 1 + 1  # control + facts + identity + stats
+
+    # Invalid stats authority (e.g. derived instead of canonical) fails validation
+    bad_stats_manifest = copy.deepcopy(manifest)
+    bad_stats_manifest["consumer_surfaces"]["stats"]["player_stats_projection"]["authority"] = "derived"
+    without_hash = {k: v for k, v in bad_stats_manifest.items() if k != "manifest_sha256"}
+    from cba_kb.evidence_ledger import canonical_bytes
+    bad_stats_manifest["manifest_sha256"] = digest(canonical_bytes(without_hash))
+    with pytest.raises(ConsumerManifestError, match="STATS_AUTHORITY_INVALID:player_stats_projection"):
+        validate_consumer_manifest(bad_stats_manifest)
+
+    # Valid validation with artifact resolver
+    store = {f"ctrl_{k}": b"fake_ctrl" for k in control_keys}
+    store["fact_master"] = b"fake_fact"
+    store["ident_id"] = b"fake_ident"
+    store["stats_art_id"] = b"fake_stats"
+
+    for k in control_keys:
+        control_entries[k]["sha256"] = digest(store[f"ctrl_{k}"])
+    fact_entries["master"]["sha256"] = digest(store["fact_master"])
+    identity_entry["sha256"] = digest(store["ident_id"])
+    stats_entries["player_stats_projection"]["sha256"] = digest(store["stats_art_id"])
+
+    manifest_with_resolver = build_consumer_manifest(
+        release_id="REL-20261003-01",
+        code_commit="c" * 40,
+        surfaces=control_entries,
+        facts=fact_entries,
+        identity_projection=identity_entry,
+        stats=stats_entries,
+    )
+    res_resolver = validate_consumer_manifest(
+        manifest_with_resolver,
+        expected_release_id="REL-20261003-01",
+        artifact_resolver=lambda art_id: store[art_id],
+    )
+    assert res_resolver["status"] == "PASS"
+
+    # Mismatch sha in stats artifact resolver raises ConsumerManifestError
+    bad_store = dict(store)
+    bad_store["stats_art_id"] = b"corrupted_stats_payload"
+    with pytest.raises(ConsumerManifestError, match="REQUIRED_ARTIFACT_HASH_MISMATCH:player_stats_projection"):
+        validate_consumer_manifest(
+            manifest_with_resolver,
+            expected_release_id="REL-20261003-01",
+            artifact_resolver=lambda art_id: bad_store[art_id],
+        )
+
+    # Unreadable stats artifact raises ConsumerManifestError
+    def unreadable_resolver(art_id: str):
+        if art_id == "stats_art_id":
+            raise IOError("Disk read error")
+        return store[art_id]
+
+    with pytest.raises(ConsumerManifestError, match="UNREADABLE_REQUIRED_ARTIFACT:player_stats_projection"):
+        validate_consumer_manifest(
+            manifest_with_resolver,
+            expected_release_id="REL-20261003-01",
+            artifact_resolver=unreadable_resolver,
+        )
