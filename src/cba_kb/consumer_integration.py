@@ -20,8 +20,10 @@ from .consumer_package import (
     normalize_authorizations,
 )
 from .statement import validate_statement
+from .stats import validate_stats_record
 
 CONSUMER_CAPABILITY_STATEMENT_CLAIM = "statement_claim_research"
+CONSUMER_CAPABILITY_PLAYER_STATS = "player_performance_stats"
 
 _DRIVE_LOCATOR_RE = re.compile(r"https?://(?:docs|drive)\.google\.com/[^\s,;\"'\]]+")
 _RAW_DRIVE_ID_RE = re.compile(r"\b[0-9a-zA-Z_-]{28,50}\b")
@@ -81,6 +83,37 @@ _SCHEMA_KEYS = {
     "turns",
     "content_hash",
     "normalized_document_ref",
+    "record_id",
+    "semantic_grain",
+    "player_uid",
+    "identity_status",
+    "identity_resolution",
+    "provider",
+    "provider_player_id",
+    "player_name",
+    "season",
+    "competition",
+    "match_type",
+    "match_type_label",
+    "scope",
+    "team_id",
+    "team_name",
+    "metrics",
+    "raw_metrics",
+    "games_played",
+    "games_started",
+    "minutes_per_game",
+    "seconds_per_game",
+    "points_per_game",
+    "rebounds_per_game",
+    "assists_per_game",
+    "steals_per_game",
+    "blocks_per_game",
+    "turnovers_per_game",
+    "fouls_per_game",
+    "field_goals_percentage",
+    "three_point_percentage",
+    "free_throws_percentage",
 }
 
 
@@ -116,8 +149,8 @@ def is_private_locator(text: str) -> bool:
         return True
 
     # 5. Generic absolute POSIX paths beginning with /
-    # Skip web URLs starting with http:// or https://
-    if not (s.startswith("http://") or s.startswith("https://")):
+    # Skip web URLs starting with http:// or https:// and public API paths starting with /api/
+    if not (s.startswith("http://") or s.startswith("https://") or s.startswith("/api/")):
         if s.startswith("/") or _POSIX_PATH_RE.search(s):
             return True
 
@@ -454,3 +487,87 @@ def project_claims_for_consumer(
         capability = "NOT_MATERIALIZED(NO_AUTHORIZED_PUBLIC_CLAIM_EVIDENCE)"
 
     return exported, capability
+
+
+def is_stats_publicly_exportable(stats_record: Dict[str, Any]) -> bool:
+    """Check if a stats record satisfies fail-closed public export rules."""
+    rights = stats_record.get("rights") or {}
+    if not isinstance(rights, dict):
+        return False
+    classification = rights.get("classification")
+    allowed = rights.get("public_export_allowed")
+    return classification == "PUBLIC" and allowed is True
+
+
+def project_stats_for_consumer(
+    stats_records: List[Dict[str, Any]],
+    target: str = "ChatGPT",
+    authorizations: Optional[Union[List[Dict[str, Any]], Dict[str, Any]]] = None,
+) -> Tuple[List[Dict[str, Any]], str]:
+    """Project canonical player performance stats safely for consumer consumption.
+
+    Returns (projected_stats, capability_status).
+    """
+    if target not in CONSUMER_TARGETS:
+        raise ConsumerSafetyError(
+            f"UNAUTHORIZED_TARGET: target '{target}' is not in authorized targets {CONSUMER_TARGETS}"
+        )
+
+    target_slug = TARGET_SLUGS.get(target, "consumer")
+
+    if authorizations is None:
+        return [], "NOT_MATERIALIZED(NO_TARGET_AUTHORIZATIONS_PROVIDED)"
+
+    try:
+        auth_map = normalize_authorizations(authorizations)
+    except ConsumerPackageError as exc:
+        raise ConsumerSafetyError(f"INVALID_AUTHORIZATIONS: {exc}") from exc
+
+    if not auth_map:
+        return [], "NOT_MATERIALIZED(EMPTY_TARGET_AUTHORIZATIONS)"
+
+    exported: List[Dict[str, Any]] = []
+
+    for st in stats_records:
+        validated = validate_stats_record(st)
+        rec_id = validated["record_id"]
+        prov_player_id = validated["provider_player_id"]
+        season = validated["season"]
+
+        # Check target authorization by record_id, or by season-level / provider-level key
+        auth_record = (
+            auth_map.get((target, rec_id))
+            or auth_map.get((target, f"stats_{season}"))
+            or auth_map.get((target, f"player_{prov_player_id}"))
+        )
+        if not auth_record:
+            continue
+
+        if auth_record.get("allowed_scope") != CONSUMER_CAPABILITY_PLAYER_STATS:
+            continue
+        if auth_record.get("authorization_basis") != "PUBLIC":
+            continue
+
+        if not is_stats_publicly_exportable(validated):
+            continue
+
+        clean_st = dict(validated)
+
+        # Sanitize provenance
+        clean_st["provenance"] = sanitize_provenance(
+            clean_st.get("provenance"), doc_id=rec_id, target_slug=target_slug
+        )
+
+        exported.append(clean_st)
+
+    if exported:
+        for st_exp in exported:
+            bad_loc = find_private_locator_in_object(st_exp)
+            if bad_loc is not None:
+                return [], "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)"
+        capability = "MATERIALIZED"
+    else:
+        capability = "NOT_MATERIALIZED(NO_AUTHORIZED_PUBLIC_STATS_EVIDENCE)"
+
+    return exported, capability
+
