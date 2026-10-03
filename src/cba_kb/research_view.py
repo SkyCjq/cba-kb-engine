@@ -25,6 +25,7 @@ from .actor import validate_actor_ref
 from .claim import validate_claim
 from .evidence_ledger import canonical_bytes
 from .statement import validate_statement
+from .stats import validate_stats_record
 from .verification_queue import validate_verification_item
 
 RESEARCH_VIEW_VERSION = "v0"
@@ -37,6 +38,7 @@ GRAIN_LABELS = frozenset({
     "VERIFICATION_QUEUE",
     "ACTOR_IDENTITY",
     "UNKNOWN",
+    "STATS",
 })
 
 
@@ -64,6 +66,7 @@ class ResearchView:
         verification_items: Optional[List[Dict[str, Any]]] = None,
         actor_identity_states: Optional[List[Dict[str, Any]]] = None,
         unknown_items: Optional[List[Dict[str, Any]]] = None,
+        stats: Optional[List[Dict[str, Any]]] = None,
     ):
         self.subject_name = subject_name
         self.subject_player_uid = subject_player_uid
@@ -97,6 +100,17 @@ class ResearchView:
             {"semantic_grain": "UNKNOWN", **_strip_semantic_grain(u)}
             for u in (unknown_items or [])
         ]
+        self.stats = [
+            {
+                "semantic_grain": "STATS",
+                **_strip_semantic_grain(
+                    validate_stats_record(
+                        {"semantic_grain": "PLAYER_SEASON_STATS", **_strip_semantic_grain(st)}
+                    )
+                ),
+            }
+            for st in (stats or [])
+        ]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -111,6 +125,7 @@ class ResearchView:
                 "verification_items": self.verification_items,
                 "actor_identity_states": self.actor_identity_states,
                 "unknown_items": self.unknown_items,
+                "stats": self.stats,
             },
             "summary_counts": {
                 "canonical_facts_count": len(self.canonical_facts),
@@ -120,6 +135,7 @@ class ResearchView:
                 "open_verification_items_count": len([v for v in self.verification_items if v.get("status") == "open"]),
                 "actor_identity_count": len(self.actor_identity_states),
                 "unknown_items_count": len(self.unknown_items),
+                "stats_count": len(self.stats),
             },
         }
 
@@ -128,7 +144,7 @@ class ResearchView:
         lines: List[str] = [
             f"# 研究视图 (Research View v0): {self.subject_name or self.subject_player_uid or 'General'}",
             "",
-            "> 声明：本视图为只读派生视图，严格区分事实层、文档层、发言层、主张层、待核项及未知证据空缺。",
+            "> 声明：本视图为只读派生视图，严格区分事实层、比赛数据表现层、文档层、发言层、主张层、待核项及未知证据空缺。",
             "",
             "## 1. 事实层 (CANONICAL_FACTS)",
         ]
@@ -205,5 +221,26 @@ class ResearchView:
                 desc = u.get("description") or u.get("gap_description") or u.get("label") or "未说明证据缺口"
                 dim = u.get("dimension") or "UNKNOWN_DIMENSION"
                 lines.append(f"- **[{dim}]** {desc}")
+
+        lines.extend([
+            "",
+            "## 8. 比赛数据表现层 (STATS)",
+        ])
+        if not self.stats:
+            lines.append("_暂无比赛统计数据记录_")
+        else:
+            lines.append("> 声明：STATS 源于官方技术统计通道，独立于注册事实 (CANONICAL_FACT) 与发言陈述 (STATEMENT)，不作自动因果推导。")
+            lines.append("| 赛季 | 球员 | 范围/球队 | 场次 | 场均得分 | 场均篮板 | 场均助攻 | 投篮命中率 | 身份状态 |")
+            lines.append("|---|---|---|---|---|---|---|---|---|")
+            for st in self.stats:
+                m = st.get("metrics", {})
+                scope_label = st.get("team_name") if st.get("scope") == "TEAM_SPLIT" else "全赛季"
+                gp = m.get("games_played", "-")
+                pts = m.get("points_per_game", "-")
+                reb = m.get("rebounds_per_game", "-")
+                ast = m.get("assists_per_game", "-")
+                fg_pct = m.get("field_goals_percentage", "-")
+                id_st = st.get("identity_status", "-")
+                lines.append(f"| {st.get('season', '-')} | {st.get('player_name', '-')} | {scope_label} | {gp} | {pts} | {reb} | {ast} | {fg_pct} | {id_st} |")
 
         return "\n".join(lines) + "\n"
