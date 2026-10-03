@@ -14,6 +14,7 @@ Conforms to REQ-200-PLAYER-STATS-01 FROZEN r1:
 from __future__ import annotations
 
 import datetime
+import math
 import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -116,6 +117,30 @@ RAW_METRICS_MVP_ALLOWLIST = frozenset({
     "freeThrowsPercentage",
     "freeThrowsPercentageSort",
 })
+
+RAW_METRICS_PERCENTAGE_FIELDS = frozenset({
+    "fieldGoalsPercentage",
+    "threePointPercentage",
+    "freeThrowsPercentage",
+})
+
+RAW_METRICS_TEXT_FIELDS = frozenset({
+    "cnAlias",
+    "teamCnAlias",
+})
+
+RAW_METRICS_ID_FIELDS = frozenset({
+    "playerId",
+    "season",
+    "teamId",
+})
+
+RAW_METRICS_NUMERIC_FIELDS = (
+    RAW_METRICS_MVP_ALLOWLIST
+    - RAW_METRICS_PERCENTAGE_FIELDS
+    - RAW_METRICS_TEXT_FIELDS
+    - RAW_METRICS_ID_FIELDS
+)
 
 _SHA256_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _PERCENTAGE_RE = re.compile(r"^\d+(\.\d+)?%$")
@@ -221,13 +246,26 @@ def validate_stats_record(record: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(player_name, str) or not player_name.strip():
         raise StatsValidationError("PLAYER_NAME_REQUIRED")
 
-    # Scope and team context
-    scope = str(record["scope"]).upper()
-    if scope not in SCOPES:
+    # Type-bound all allowlisted optional top-level metadata:
+    mtl = record.get("match_type_label")
+    if mtl is not None and (isinstance(mtl, bool) or not isinstance(mtl, str)):
+        raise StatsValidationError(f"INVALID_MATCH_TYPE_LABEL:{mtl!r}")
+
+    tid = record.get("team_id")
+    if tid is not None and (isinstance(tid, bool) or not isinstance(tid, (str, int)) or not str(tid).strip()):
+        raise StatsValidationError(f"INVALID_TEAM_ID:{tid!r}")
+
+    tname = record.get("team_name")
+    if tname is not None and (isinstance(tname, bool) or not isinstance(tname, str)):
+        raise StatsValidationError(f"INVALID_TEAM_NAME:{tname!r}")
+
+    # Scope and team context: accept only exact string values WHOLE_SEASON and TEAM_SPLIT
+    scope = record.get("scope")
+    if not isinstance(scope, str) or isinstance(scope, bool) or scope not in ("WHOLE_SEASON", "TEAM_SPLIT"):
         raise StatsValidationError(f"INVALID_SCOPE:{scope}")
+
     if scope == "TEAM_SPLIT":
-        team_id = record.get("team_id")
-        if team_id is None or isinstance(team_id, bool) or not isinstance(team_id, (str, int)) or not str(team_id).strip():
+        if tid is None:
             raise StatsValidationError("TEAM_SPLIT_REQUIRES_TEAM_ID")
 
     # Validate deterministic record_id recomputation
@@ -237,7 +275,7 @@ def validate_stats_record(record: Dict[str, Any]) -> Dict[str, Any]:
         match_type=record["match_type"],
         scope=scope,
         provider_player_id=record["provider_player_id"],
-        team_id=record.get("team_id") if scope == "TEAM_SPLIT" else None,
+        team_id=tid if scope == "TEAM_SPLIT" else None,
     )
     if record["record_id"] != expected_record_id:
         raise StatsValidationError(
@@ -256,17 +294,28 @@ def validate_stats_record(record: Dict[str, Any]) -> Dict[str, Any]:
         raise StatsValidationError("IDENTITY_RESOLUTION_STATUS_MISMATCH")
 
     player_uid = record.get("player_uid")
+    prov_player_id_str = str(record["provider_player_id"]).strip()
+
     if identity_status == "RESOLVED":
-        if not player_uid or not isinstance(player_uid, str) or not player_uid.strip():
+        if not player_uid or not isinstance(player_uid, str) or isinstance(player_uid, bool) or not player_uid.strip():
             raise StatsValidationError("RESOLVED_RECORD_REQUIRES_PLAYER_UID")
-        res_method = str(id_res.get("resolution_method") or id_res.get("reason") or "")
-        trusted_markers = ("EXTERNAL_IDENTIFIER", "SOURCE_DECLARED", "TRUSTED_PROVIDER_LINK", "TRUSTED_EXTERNAL_ID_LINK")
-        if not any(m in res_method for m in trusted_markers):
+
+        res_method = id_res.get("resolution_method")
+        if not isinstance(res_method, str) or isinstance(res_method, bool):
+            raise StatsValidationError("IDENTITY_RESOLUTION_METHOD_REQUIRED")
+
+        valid_expected_methods = {
+            f"TRUSTED_EXTERNAL_ID_LINK:cba_player_id:{prov_player_id_str}",
+            f"TRUSTED_EXTERNAL_ID_LINK:cba_player:{prov_player_id_str}",
+            f"TRUSTED_EXTERNAL_ID_LINK:cba_official:{prov_player_id_str}",
+            f"TRUSTED_EXTERNAL_ID_LINK:{prov_player_id_str}",
+        }
+        if res_method not in valid_expected_methods:
             raise StatsValidationError(f"RESOLVED_IDENTITY_REQUIRES_TRUSTED_LINK_METHOD:{res_method}")
+
         candidates = id_res.get("candidate_player_uids")
-        if candidates is not None and isinstance(candidates, list) and candidates:
-            if player_uid not in candidates:
-                raise StatsValidationError(f"RESOLVED_PLAYER_UID_NOT_IN_CANDIDATE_UIDS:{player_uid}")
+        if not isinstance(candidates, list) or candidates != [player_uid]:
+            raise StatsValidationError(f"RESOLVED_PLAYER_UID_NOT_IN_CANDIDATE_UIDS:{player_uid}")
     else:
         if player_uid is not None:
             raise StatsValidationError(
@@ -293,13 +342,13 @@ def validate_stats_record(record: Dict[str, Any]) -> Dict[str, Any]:
             if not isinstance(v, str) or not _PERCENTAGE_RE.match(v):
                 raise StatsValidationError(f"INVALID_PERCENTAGE_FORMAT:{k}={v}")
         elif k in ("field_goals_percentage_rate", "three_point_percentage_rate", "free_throws_percentage_rate"):
-            if not isinstance(v, (int, float)) or not (0.0 <= float(v) <= 1.0):
+            if not isinstance(v, (int, float)) or math.isnan(v) or math.isinf(v) or not (0.0 <= float(v) <= 1.0):
                 raise StatsValidationError(f"INVALID_PERCENTAGE_RATE_RANGE:{k}={v}")
         elif k == "games_started":
             if not isinstance(v, int) or v < 0:
                 raise StatsValidationError(f"INVALID_GAMES_STARTED:{k}={v}")
         else:
-            if not isinstance(v, (int, float)):
+            if not isinstance(v, (int, float)) or math.isnan(v) or math.isinf(v):
                 raise StatsValidationError(f"INVALID_METRIC_TYPE:{k}={v!r}")
             if v < 0:
                 raise StatsValidationError(f"NEGATIVE_METRIC_VALUE:{k}={v}")
@@ -315,7 +364,34 @@ def validate_stats_record(record: Dict[str, Any]) -> Dict[str, Any]:
                 f"UNKNOWN_RAW_PROVIDER_KEYS:{','.join(sorted(unknown_raw))}"
             )
         for rk, rv in raw_metrics.items():
-            if rv is not None and not isinstance(rv, (str, int, float, bool)):
+            if rv is None:
+                continue
+            if isinstance(rv, bool):
+                raise StatsValidationError(f"RAW_METRICS_INVALID_TYPE:{rk}={rv!r}(bool)")
+            if rk in RAW_METRICS_PERCENTAGE_FIELDS:
+                if not isinstance(rv, str) or not _PERCENTAGE_RE.match(rv):
+                    raise StatsValidationError(f"RAW_METRICS_INVALID_PERCENTAGE:{rk}={rv!r}")
+            elif rk in RAW_METRICS_TEXT_FIELDS:
+                if not isinstance(rv, str):
+                    raise StatsValidationError(f"RAW_METRICS_INVALID_TEXT:{rk}={rv!r}")
+            elif rk in RAW_METRICS_ID_FIELDS:
+                if not isinstance(rv, (int, str)) or not str(rv).strip():
+                    raise StatsValidationError(f"RAW_METRICS_INVALID_ID:{rk}={rv!r}")
+            elif rk in RAW_METRICS_NUMERIC_FIELDS:
+                if isinstance(rv, (int, float)):
+                    if math.isnan(rv) or math.isinf(rv):
+                        raise StatsValidationError(f"RAW_METRICS_NON_FINITE_VALUE:{rk}={rv}")
+                elif isinstance(rv, str):
+                    s = rv.strip()
+                    try:
+                        vf = float(s)
+                        if math.isnan(vf) or math.isinf(vf):
+                            raise ValueError()
+                    except ValueError:
+                        raise StatsValidationError(f"RAW_METRICS_NON_NUMERIC_STRING:{rk}={rv!r}")
+                else:
+                    raise StatsValidationError(f"RAW_METRICS_NON_SCALAR_VALUE:{rk}={type(rv).__name__}")
+            else:
                 raise StatsValidationError(f"RAW_METRICS_NON_SCALAR_VALUE:{rk}={type(rv).__name__}")
 
     # Validate rights
@@ -337,28 +413,45 @@ def validate_stats_record(record: Dict[str, Any]) -> Dict[str, Any]:
     provenance = record.get("provenance")
     if not isinstance(provenance, dict):
         raise StatsValidationError("PROVENANCE_DICT_REQUIRED")
-    if not provenance.get("source_uri"):
+
+    source_uri = provenance.get("source_uri")
+    if not isinstance(source_uri, str) or not source_uri.strip():
         raise StatsValidationError("PROVENANCE_SOURCE_URI_REQUIRED")
+
+    endpoint = provenance.get("endpoint")
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        raise StatsValidationError("PROVENANCE_ENDPOINT_REQUIRED")
+
+    request_contract = provenance.get("request_contract")
+    if not isinstance(request_contract, dict):
+        raise StatsValidationError("PROVENANCE_REQUEST_CONTRACT_DICT_REQUIRED")
+
+    prov_season = provenance.get("season")
+    if prov_season is None or str(prov_season) != str(record["season"]):
+        raise StatsValidationError("PROVENANCE_SEASON_MISMATCH")
+
+    prov_match_type = provenance.get("match_type")
+    if prov_match_type is None or str(prov_match_type) != str(record["match_type"]):
+        raise StatsValidationError("PROVENANCE_MATCH_TYPE_MISMATCH")
+
     raw_hash = provenance.get("raw_response_sha256")
     if not raw_hash or not _SHA256_HEX_RE.match(str(raw_hash)):
         raise StatsValidationError("PROVENANCE_RAW_SHA256_REQUIRED")
+
     decoded_hash = provenance.get("decoded_sha256")
     if not decoded_hash or not _SHA256_HEX_RE.match(str(decoded_hash)):
         raise StatsValidationError("PROVENANCE_DECODED_SHA256_REQUIRED")
 
     captured_at = provenance.get("captured_at")
     if captured_at is not None:
-        if not isinstance(captured_at, str):
+        if not isinstance(captured_at, str) or not captured_at.strip():
             raise StatsValidationError("PROVENANCE_CAPTURED_AT_STR_REQUIRED")
         try:
-            datetime.datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+            dt = datetime.datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
         except ValueError as exc:
             raise StatsValidationError(f"INVALID_PROVENANCE_CAPTURED_AT:{captured_at}") from exc
-
-    if "season" in provenance and str(provenance["season"]) != str(record["season"]):
-        raise StatsValidationError("PROVENANCE_SEASON_MISMATCH")
-    if "match_type" in provenance and str(provenance["match_type"]) != str(record["match_type"]):
-        raise StatsValidationError("PROVENANCE_MATCH_TYPE_MISMATCH")
+        if dt.tzinfo is None:
+            raise StatsValidationError(f"PROVENANCE_CAPTURED_AT_TIMEZONE_REQUIRED:{captured_at}")
 
     return record
 
@@ -488,47 +581,41 @@ def deduplicate_and_reconcile_stats(records: List[Dict[str, Any]]) -> List[Dict[
 
         existing = by_key[rec_id]
 
-        # Check if identical canonical content
-        existing_metrics = existing.get("metrics")
-        rec_metrics = rec.get("metrics")
-        if canonical_bytes(existing_metrics) == canonical_bytes(rec_metrics):
+        # Check if identical full canonical record content
+        if canonical_bytes(existing) == canonical_bytes(rec):
             # Idempotent duplicate: retain deterministically
             continue
 
-        # Differing metrics: check provenance supersession timestamp if available
+        # Differing canonical records: must resolve via valid explicit timezone-aware captured_at supersession
         t_exist_raw = existing.get("provenance", {}).get("captured_at")
         t_rec_raw = rec.get("provenance", {}).get("captured_at")
 
-        dt_exist: Optional[datetime.datetime] = None
-        dt_rec: Optional[datetime.datetime] = None
+        if not t_exist_raw or not t_rec_raw or not isinstance(t_exist_raw, str) or not isinstance(t_rec_raw, str):
+            raise StatsError(
+                f"AMBIGUOUS_CONFLICTING_STATS_DUPLICATE:{rec_id}: conflicting canonical records without temporal supersession timestamp"
+            )
 
-        if t_exist_raw and isinstance(t_exist_raw, str):
-            try:
-                dt = datetime.datetime.fromisoformat(t_exist_raw.replace("Z", "+00:00"))
-                dt_exist = dt if dt.tzinfo is not None else dt.replace(tzinfo=datetime.timezone.utc)
-            except ValueError:
-                dt_exist = None
+        try:
+            dt_exist = datetime.datetime.fromisoformat(t_exist_raw.replace("Z", "+00:00"))
+            dt_rec = datetime.datetime.fromisoformat(t_rec_raw.replace("Z", "+00:00"))
+        except ValueError:
+            raise StatsError(
+                f"AMBIGUOUS_CONFLICTING_STATS_DUPLICATE:{rec_id}: unparseable supersession timestamp"
+            )
 
-        if t_rec_raw and isinstance(t_rec_raw, str):
-            try:
-                dt = datetime.datetime.fromisoformat(t_rec_raw.replace("Z", "+00:00"))
-                dt_rec = dt if dt.tzinfo is not None else dt.replace(tzinfo=datetime.timezone.utc)
-            except ValueError:
-                dt_rec = None
+        if dt_exist.tzinfo is None or dt_rec.tzinfo is None:
+            raise StatsError(
+                f"AMBIGUOUS_CONFLICTING_STATS_DUPLICATE:{rec_id}: naive supersession timestamp"
+            )
 
-        if dt_rec is not None and dt_exist is not None:
-            if dt_rec > dt_exist:
-                # Newer explicit observation supersedes prior observation
-                by_key[rec_id] = rec
-            elif dt_exist > dt_rec:
-                pass  # keep existing newer record
-            else:
-                raise StatsError(
-                    f"AMBIGUOUS_CONFLICTING_STATS_DUPLICATE:{rec_id}: conflicting metrics without temporal supersession"
-                )
+        if dt_rec > dt_exist:
+            # Newer explicit observation supersedes prior observation
+            by_key[rec_id] = rec
+        elif dt_exist > dt_rec:
+            pass  # keep existing newer record
         else:
             raise StatsError(
-                f"AMBIGUOUS_CONFLICTING_STATS_DUPLICATE:{rec_id}: conflicting metrics without temporal supersession"
+                f"AMBIGUOUS_CONFLICTING_STATS_DUPLICATE:{rec_id}: equal instants with differing canonical content"
             )
 
     return [by_key[k] for k in sorted(by_key.keys())]

@@ -23,8 +23,8 @@ SAMPLE_STATS_RECORD = {
     "identity_resolution": {
         "status": "RESOLVED",
         "candidate_player_uids": ["pid_0000000000000002"],
-        "resolution_method": "TRUSTED_EXTERNAL_ID_LINK",
-        "reason": "TRUSTED_EXTERNAL_ID_LINK",
+        "resolution_method": "TRUSTED_EXTERNAL_ID_LINK:cba_player_id:100098118",
+        "reason": "TRUSTED_EXTERNAL_ID_LINK:cba_player_id:100098118",
     },
     "provider": "CBA_OFFICIAL",
     "provider_player_id": "100098118",
@@ -49,6 +49,9 @@ SAMPLE_STATS_RECORD = {
     "provenance": {
         "source_uri": "https://data-server.cbaleague.com/api/player-base-list",
         "endpoint": "/api/player-base-list",
+        "request_contract": {"season": 2024, "matchTypeId": 1},
+        "season": "2024",
+        "match_type": "1",
         "raw_response_sha256": "a" * 64,
         "decoded_sha256": "b" * 64,
         "captured_at": "2026-10-03T10:00:00Z",

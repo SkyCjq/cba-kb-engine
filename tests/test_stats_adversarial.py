@@ -64,6 +64,9 @@ SAMPLE_VALID_STATS = {
     "provenance": {
         "source_uri": "https://data-server.cbaleague.com/api/player-base-list",
         "endpoint": "/api/player-base-list",
+        "request_contract": {"season": 2024, "matchTypeId": 1},
+        "season": "2024",
+        "match_type": "1",
         "raw_response_sha256": "a" * 64,
         "decoded_sha256": "b" * 64,
         "captured_at": "2026-10-03T10:00:00Z",
@@ -338,8 +341,8 @@ def test_adversarial_resolved_player_uid_candidate_mismatch():
     bad["identity_resolution"] = {
         "status": "RESOLVED",
         "candidate_player_uids": ["pid_0000000000000001"],
-        "resolution_method": "EXTERNAL_IDENTIFIER",
-        "reason": "EXTERNAL_IDENTIFIER",
+        "resolution_method": "TRUSTED_EXTERNAL_ID_LINK:cba_player_id:100098118",
+        "reason": "TRUSTED_EXTERNAL_ID_LINK:cba_player_id:100098118",
     }
     with pytest.raises(StatsValidationError, match="RESOLVED_PLAYER_UID_NOT_IN_CANDIDATE_UIDS"):
         validate_stats_record(bad)
@@ -442,6 +445,242 @@ def test_deterministic_replay_without_captured_at():
     assert json.dumps(rec1, sort_keys=True) == json.dumps(rec2, sort_keys=True)
     assert "captured_at" not in rec1["provenance"]
     assert "captured_at" not in rec2["provenance"]
+
+
+def test_scope_exact_case_rejected():
+    bad_lower = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_lower["scope"] = "whole_season"
+    with pytest.raises(StatsValidationError, match="INVALID_SCOPE:whole_season"):
+        validate_stats_record(bad_lower)
+
+    bad_mixed = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_mixed["scope"] = "Team_Split"
+    with pytest.raises(StatsValidationError, match="INVALID_SCOPE:Team_Split"):
+        validate_stats_record(bad_mixed)
+
+    bad_space = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_space["scope"] = " WHOLE_SEASON "
+    with pytest.raises(StatsValidationError, match="INVALID_SCOPE: WHOLE_SEASON "):
+        validate_stats_record(bad_space)
+
+
+def test_optional_metadata_types_rejected():
+    bad_mtl_dict = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_mtl_dict["match_type_label"] = {"nested": "dict"}
+    with pytest.raises(StatsValidationError, match="INVALID_MATCH_TYPE_LABEL"):
+        validate_stats_record(bad_mtl_dict)
+
+    bad_mtl_bool = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_mtl_bool["match_type_label"] = True
+    with pytest.raises(StatsValidationError, match="INVALID_MATCH_TYPE_LABEL"):
+        validate_stats_record(bad_mtl_bool)
+
+    bad_tid_list = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_tid_list["team_id"] = [123]
+    with pytest.raises(StatsValidationError, match="INVALID_TEAM_ID"):
+        validate_stats_record(bad_tid_list)
+
+    bad_tid_bool = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_tid_bool["team_id"] = False
+    with pytest.raises(StatsValidationError, match="INVALID_TEAM_ID"):
+        validate_stats_record(bad_tid_bool)
+
+    bad_tname_dict = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_tname_dict["team_name"] = {"cn": "北京首钢"}
+    with pytest.raises(StatsValidationError, match="INVALID_TEAM_NAME"):
+        validate_stats_record(bad_tname_dict)
+
+    bad_tname_bool = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_tname_bool["team_name"] = True
+    with pytest.raises(StatsValidationError, match="INVALID_TEAM_NAME"):
+        validate_stats_record(bad_tname_bool)
+
+
+def test_fabricated_trusted_method_substring_rejected():
+    bad = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad["identity_status"] = "RESOLVED"
+    bad["player_uid"] = "pid_0000000000000001"
+    bad["identity_resolution"] = {
+        "status": "RESOLVED",
+        "candidate_player_uids": ["pid_0000000000000001"],
+        "resolution_method": "UNTRUSTED_PREFIX_WITH_TRUSTED_EXTERNAL_ID_LINK_SUBSTRING",
+        "reason": "UNTRUSTED_PREFIX_WITH_TRUSTED_EXTERNAL_ID_LINK_SUBSTRING",
+    }
+    with pytest.raises(StatsValidationError, match="RESOLVED_IDENTITY_REQUIRES_TRUSTED_LINK_METHOD"):
+        validate_stats_record(bad)
+
+    # Different provider_player_id in method
+    bad_diff_id = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_diff_id["identity_status"] = "RESOLVED"
+    bad_diff_id["player_uid"] = "pid_0000000000000001"
+    bad_diff_id["identity_resolution"] = {
+        "status": "RESOLVED",
+        "candidate_player_uids": ["pid_0000000000000001"],
+        "resolution_method": "TRUSTED_EXTERNAL_ID_LINK:cba_player_id:999999999",
+        "reason": "TRUSTED_EXTERNAL_ID_LINK:cba_player_id:999999999",
+    }
+    with pytest.raises(StatsValidationError, match="RESOLVED_IDENTITY_REQUIRES_TRUSTED_LINK_METHOD"):
+        validate_stats_record(bad_diff_id)
+
+
+def test_trusted_resolver_external_id_syntax_valid():
+    valid_methods = [
+        "TRUSTED_EXTERNAL_ID_LINK:cba_player_id:100098118",
+        "TRUSTED_EXTERNAL_ID_LINK:cba_player:100098118",
+        "TRUSTED_EXTERNAL_ID_LINK:cba_official:100098118",
+        "TRUSTED_EXTERNAL_ID_LINK:100098118",
+    ]
+    for method in valid_methods:
+        rec = copy.deepcopy(SAMPLE_VALID_STATS)
+        rec["identity_status"] = "RESOLVED"
+        rec["player_uid"] = "pid_0000000000000001"
+        rec["identity_resolution"] = {
+            "status": "RESOLVED",
+            "candidate_player_uids": ["pid_0000000000000001"],
+            "resolution_method": method,
+            "reason": method,
+        }
+        validated = validate_stats_record(rec)
+        assert validated["identity_status"] == "RESOLVED"
+        assert validated["player_uid"] == "pid_0000000000000001"
+
+
+def test_nan_and_infinity_canonical_metrics_rejected():
+    bad_nan = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_nan["metrics"]["points_per_game"] = float("nan")
+    with pytest.raises(StatsValidationError, match="INVALID_METRIC_TYPE:points_per_game=nan"):
+        validate_stats_record(bad_nan)
+
+    bad_inf = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_inf["metrics"]["points_per_game"] = float("inf")
+    with pytest.raises(StatsValidationError, match="INVALID_METRIC_TYPE:points_per_game=inf"):
+        validate_stats_record(bad_inf)
+
+    bad_neginf = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_neginf["metrics"]["points_per_game"] = float("-inf")
+    with pytest.raises(StatsValidationError, match="INVALID_METRIC_TYPE:points_per_game=-inf"):
+        validate_stats_record(bad_neginf)
+
+    bad_rate_nan = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_rate_nan["metrics"]["field_goals_percentage_rate"] = float("nan")
+    with pytest.raises(StatsValidationError, match="INVALID_PERCENTAGE_RATE_RANGE"):
+        validate_stats_record(bad_rate_nan)
+
+    bad_rate_inf = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_rate_inf["metrics"]["field_goals_percentage_rate"] = float("inf")
+    with pytest.raises(StatsValidationError, match="INVALID_PERCENTAGE_RATE_RANGE"):
+        validate_stats_record(bad_rate_inf)
+
+
+def test_raw_metrics_type_and_finite_checks():
+    bad_bool = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_bool["raw_metrics"]["points"] = True
+    with pytest.raises(StatsValidationError, match="RAW_METRICS_INVALID_TYPE:points=True\\(bool\\)"):
+        validate_stats_record(bad_bool)
+
+    bad_nan = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_nan["raw_metrics"]["points"] = float("nan")
+    with pytest.raises(StatsValidationError, match="RAW_METRICS_NON_FINITE_VALUE:points=nan"):
+        validate_stats_record(bad_nan)
+
+    bad_inf = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_inf["raw_metrics"]["points"] = float("inf")
+    with pytest.raises(StatsValidationError, match="RAW_METRICS_NON_FINITE_VALUE:points=inf"):
+        validate_stats_record(bad_inf)
+
+    bad_non_num_str = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_non_num_str["raw_metrics"]["points"] = "not_a_valid_number"
+    with pytest.raises(StatsValidationError, match="RAW_METRICS_NON_NUMERIC_STRING:points='not_a_valid_number'"):
+        validate_stats_record(bad_non_num_str)
+
+    bad_id_bool = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_id_bool["raw_metrics"]["playerId"] = False
+    with pytest.raises(StatsValidationError, match="RAW_METRICS_INVALID_TYPE:playerId=False\\(bool\\)"):
+        validate_stats_record(bad_id_bool)
+
+    bad_pct_format = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_pct_format["raw_metrics"]["fieldGoalsPercentage"] = "45%invalid"
+    with pytest.raises(StatsValidationError, match="RAW_METRICS_INVALID_PERCENTAGE:fieldGoalsPercentage='45%invalid'"):
+        validate_stats_record(bad_pct_format)
+
+
+def test_provenance_mandatory_bindings_rejected():
+    bad_no_ep = copy.deepcopy(SAMPLE_VALID_STATS)
+    del bad_no_ep["provenance"]["endpoint"]
+    with pytest.raises(StatsValidationError, match="PROVENANCE_ENDPOINT_REQUIRED"):
+        validate_stats_record(bad_no_ep)
+
+    bad_no_req = copy.deepcopy(SAMPLE_VALID_STATS)
+    del bad_no_req["provenance"]["request_contract"]
+    with pytest.raises(StatsValidationError, match="PROVENANCE_REQUEST_CONTRACT_DICT_REQUIRED"):
+        validate_stats_record(bad_no_req)
+
+    bad_no_season = copy.deepcopy(SAMPLE_VALID_STATS)
+    del bad_no_season["provenance"]["season"]
+    with pytest.raises(StatsValidationError, match="PROVENANCE_SEASON_MISMATCH"):
+        validate_stats_record(bad_no_season)
+
+    bad_mismatch_season = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_mismatch_season["provenance"]["season"] = "2023"
+    with pytest.raises(StatsValidationError, match="PROVENANCE_SEASON_MISMATCH"):
+        validate_stats_record(bad_mismatch_season)
+
+    bad_no_mt = copy.deepcopy(SAMPLE_VALID_STATS)
+    del bad_no_mt["provenance"]["match_type"]
+    with pytest.raises(StatsValidationError, match="PROVENANCE_MATCH_TYPE_MISMATCH"):
+        validate_stats_record(bad_no_mt)
+
+    bad_mismatch_mt = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_mismatch_mt["provenance"]["match_type"] = "2"
+    with pytest.raises(StatsValidationError, match="PROVENANCE_MATCH_TYPE_MISMATCH"):
+        validate_stats_record(bad_mismatch_mt)
+
+
+def test_provenance_naive_vs_timezone_aware_captured_at():
+    bad_naive = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_naive["provenance"]["captured_at"] = "2026-10-03T10:00:00"
+    with pytest.raises(StatsValidationError, match="PROVENANCE_CAPTURED_AT_TIMEZONE_REQUIRED"):
+        validate_stats_record(bad_naive)
+
+    good_utc = copy.deepcopy(SAMPLE_VALID_STATS)
+    good_utc["provenance"]["captured_at"] = "2026-10-03T10:00:00Z"
+    assert validate_stats_record(good_utc)["provenance"]["captured_at"] == "2026-10-03T10:00:00Z"
+
+    good_offset = copy.deepcopy(SAMPLE_VALID_STATS)
+    good_offset["provenance"]["captured_at"] = "2026-10-03T18:00:00+08:00"
+    assert validate_stats_record(good_offset)["provenance"]["captured_at"] == "2026-10-03T18:00:00+08:00"
+
+
+def test_deduplicate_same_metrics_different_provenance_not_idempotent():
+    rec1 = copy.deepcopy(SAMPLE_VALID_STATS)
+    rec1["provenance"]["captured_at"] = "2026-10-03T10:00:00Z"
+    rec1["provenance"]["raw_response_sha256"] = "1" * 64
+    rec1["provenance"]["decoded_sha256"] = "2" * 64
+
+    # rec2 has IDENTICAL metrics but different provenance (later timestamp)
+    rec2 = copy.deepcopy(rec1)
+    rec2["provenance"]["captured_at"] = "2026-10-03T12:00:00Z"
+    rec2["provenance"]["raw_response_sha256"] = "3" * 64
+    rec2["provenance"]["decoded_sha256"] = "4" * 64
+
+    # Must NOT be treated as an idempotent duplicate; newer timestamp supersedes
+    reconciled = deduplicate_and_reconcile_stats([rec1, rec2])
+    assert len(reconciled) == 1
+    assert reconciled[0]["provenance"]["decoded_sha256"] == "4" * 64
+    assert reconciled[0]["provenance"]["captured_at"] == "2026-10-03T12:00:00Z"
+
+    # Conflicting provenance with equal timestamps fails closed
+    rec_equal_ts = copy.deepcopy(rec2)
+    rec_equal_ts["provenance"]["captured_at"] = "2026-10-03T10:00:00Z"
+    with pytest.raises(StatsError, match="equal instants with differing canonical content"):
+        deduplicate_and_reconcile_stats([rec1, rec_equal_ts])
+
+    # Conflicting provenance missing captured_at fails closed
+    rec_no_ts = copy.deepcopy(rec2)
+    del rec_no_ts["provenance"]["captured_at"]
+    with pytest.raises(StatsError, match="conflicting canonical records without temporal supersession timestamp"):
+        deduplicate_and_reconcile_stats([rec1, rec_no_ts])
+
 
 
 
