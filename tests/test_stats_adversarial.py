@@ -138,7 +138,7 @@ def test_adversarial_private_locator_in_projection():
     bad_prov_record = copy.deepcopy(SAMPLE_VALID_STATS)
     bad_prov_record["rights"]["classification"] = "PUBLIC"
     bad_prov_record["rights"]["public_export_allowed"] = True
-    bad_prov_record["raw_metrics"]["local_debug_file"] = "/Users/example/secret_debug.log"
+    bad_prov_record["team_name"] = "/Users/example/secret_debug.log"
 
     auth_list = [
         {
@@ -209,16 +209,50 @@ def test_a15_zero_diff_on_identity_registry():
     assert registry_before == registry_after
 
 
+def test_adversarial_unknown_canonical_metric_fail_closed():
+    """Assert arbitrary unknown canonical metric keys fail closed at canonical validation."""
+    # Arbitrary unknown advanced metric (e.g. usage_rate)
+    bad_record = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_record["metrics"]["usage_rate"] = 0.285
+    with pytest.raises(StatsValidationError, match="UNKNOWN_CANONICAL_METRIC_KEYS:usage_rate"):
+        validate_stats_record(bad_record)
+
+    # Known rim/mid-range advanced metric (e.g. rim_made, mid_range_attempted)
+    bad_record2 = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_record2["metrics"]["rim_made"] = 100.0
+    bad_record2["metrics"]["mid_range_attempted"] = 200.0
+    with pytest.raises(StatsValidationError, match="UNKNOWN_CANONICAL_METRIC_KEYS:mid_range_attempted,rim_made"):
+        validate_stats_record(bad_record2)
+
+
+def test_adversarial_unknown_raw_provider_key_fail_closed():
+    """Assert arbitrary unknown raw provider keys fail closed at canonical validation."""
+    # Arbitrary unknown provider key (e.g. foulsDefensive)
+    bad_record = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_record["raw_metrics"]["foulsDefensive"] = 45.0
+    with pytest.raises(StatsValidationError, match="UNKNOWN_RAW_PROVIDER_KEYS:foulsDefensive"):
+        validate_stats_record(bad_record)
+
+    # Known rim/mid-range provider key (e.g. fieldGoalsAtRimMade)
+    bad_record2 = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_record2["raw_metrics"]["fieldGoalsAtRimMade"] = 171.0
+    with pytest.raises(StatsValidationError, match="UNKNOWN_RAW_PROVIDER_KEYS:fieldGoalsAtRimMade"):
+        validate_stats_record(bad_record2)
+
+    # Non-dict raw_metrics
+    bad_record3 = copy.deepcopy(SAMPLE_VALID_STATS)
+    bad_record3["raw_metrics"] = ["not_a_dict"]
+    with pytest.raises(StatsValidationError, match="RAW_METRICS_DICT_REQUIRED"):
+        validate_stats_record(bad_record3)
+
+
 def test_adversarial_advanced_metrics_exclusion_and_stripping():
-    """Adversarial test: verify advanced rim/mid-range fields cannot be sneaked into consumer projection."""
+    """Adversarial test: verify advanced/unknown fields fail validation and consumer projection only projects allowlist."""
     # Construct an adversarial record where caller injected advanced keys into metrics and raw_metrics
     sneaked_record = copy.deepcopy(SAMPLE_VALID_STATS)
     sneaked_record["rights"]["classification"] = "PUBLIC"
     sneaked_record["rights"]["public_export_allowed"] = True
     sneaked_record["metrics"]["rim_made"] = 100.0
-    sneaked_record["metrics"]["mid_range_made"] = 50.0
-    sneaked_record["raw_metrics"]["fieldGoalsAtRimMade"] = 100.0
-    sneaked_record["raw_metrics"]["fieldGoalsMidRangeAttempted"] = 200.0
 
     auths = [
         {
@@ -230,7 +264,15 @@ def test_adversarial_advanced_metrics_exclusion_and_stripping():
         }
     ]
 
-    exported, cap = project_stats_for_consumer([sneaked_record], target="ChatGPT", authorizations=auths)
+    # Fails closed at validation when entering consumer projection
+    with pytest.raises(StatsValidationError, match="UNKNOWN_CANONICAL_METRIC_KEYS:rim_made"):
+        project_stats_for_consumer([sneaked_record], target="ChatGPT", authorizations=auths)
+
+    # Clean valid record passes and projects only allowlisted fields
+    valid_record = copy.deepcopy(SAMPLE_VALID_STATS)
+    valid_record["rights"]["classification"] = "PUBLIC"
+    valid_record["rights"]["public_export_allowed"] = True
+    exported, cap = project_stats_for_consumer([valid_record], target="ChatGPT", authorizations=auths)
     assert cap == "MATERIALIZED"
     assert len(exported) == 1
     exp = exported[0]
@@ -244,8 +286,11 @@ def test_adversarial_advanced_metrics_exclusion_and_stripping():
         "fieldGoalsAtRimAttempted",
         "fieldGoalsMidRangeMade",
         "fieldGoalsMidRangeAttempted",
+        "usage_rate",
+        "foulsDefensive",
     }
     for k in out_of_scope:
         assert k not in exp["metrics"]
         assert k not in exp["raw_metrics"]
+
 

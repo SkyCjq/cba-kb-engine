@@ -26,6 +26,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from ..stats import (
     DEFAULT_COMPETITION,
     PROVIDER_CBA_OFFICIAL,
+    RAW_METRICS_MVP_ALLOWLIST,
     StatsError,
     StatsProviderDriftError,
     StatsValidationError,
@@ -38,38 +39,7 @@ DEFAULT_DATA_SERVER = "https://data-server.cbaleague.com"
 DEFAULT_PORTAL_URL = "https://www.cbaleague.com/data/"
 
 # Minimal MVP allowlist of provider fields needed for frozen base Stats semantics
-RAW_METRICS_MVP_FIELDS = frozenset({
-    "playerId",
-    "cnAlias",
-    "season",
-    "teamId",
-    "teamCnAlias",
-    "playerTimes",
-    "gameStartNum",
-    "minutes",
-    "seconds",
-    "points",
-    "rebounds",
-    "reboundsOffensive",
-    "reboundsDefensive",
-    "assists",
-    "steals",
-    "blocked",
-    "turnovers",
-    "fouls",
-    "fieldGoals",
-    "fieldGoalsAttempted",
-    "fieldGoalsPercentage",
-    "fieldGoalsPercentageSort",
-    "threePointGoals",
-    "threePointAttempted",
-    "threePointPercentage",
-    "threePointPercentageSort",
-    "freeThrows",
-    "freeThrowsAttempted",
-    "freeThrowsPercentage",
-    "freeThrowsPercentageSort",
-})
+RAW_METRICS_MVP_FIELDS = RAW_METRICS_MVP_ALLOWLIST
 
 _AES_KEY_REGEX = re.compile(
     r'(?:const|var|let)\s+[a-zA-Z0-9_$]+\s*=\s*["\']([A-Za-z0-9]{16})["\'];\s*(?:const|var|let)\s+[a-zA-Z0-9_$]+\s*=\s*[a-zA-Z0-9_$.]+\.enc\.Utf8\.parse'

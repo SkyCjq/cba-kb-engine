@@ -29,6 +29,69 @@ SCOPES = frozenset({"WHOLE_SEASON", "TEAM_SPLIT"})
 IDENTITY_STATUSES = frozenset({"RESOLVED", "REVIEW_REQUIRED", "UNRESOLVED"})
 RIGHTS_CLASSIFICATIONS = frozenset({"UNKNOWN_FOR_REDISTRIBUTION", "PUBLIC", "COPYRIGHTED", "PRIVATE"})
 
+# Authoritative v2.0 MVP canonical metrics allowlist for PLAYER_SEASON_STATS
+CANONICAL_METRIC_MVP_ALLOWLIST = frozenset({
+    "games_played",
+    "games_started",
+    "minutes_per_game",
+    "seconds_per_game",
+    "points_per_game",
+    "rebounds_per_game",
+    "offensive_rebounds_per_game",
+    "defensive_rebounds_per_game",
+    "assists_per_game",
+    "steals_per_game",
+    "blocks_per_game",
+    "turnovers_per_game",
+    "fouls_per_game",
+    "field_goals_made_per_game",
+    "field_goals_attempted_per_game",
+    "field_goals_percentage",
+    "field_goals_percentage_rate",
+    "three_point_made_per_game",
+    "three_point_attempted_per_game",
+    "three_point_percentage",
+    "three_point_percentage_rate",
+    "free_throws_made_per_game",
+    "free_throws_attempted_per_game",
+    "free_throws_percentage",
+    "free_throws_percentage_rate",
+})
+
+# Authoritative MVP raw provider field allowlist
+RAW_METRICS_MVP_ALLOWLIST = frozenset({
+    "playerId",
+    "cnAlias",
+    "season",
+    "teamId",
+    "teamCnAlias",
+    "playerTimes",
+    "gameStartNum",
+    "minutes",
+    "seconds",
+    "points",
+    "rebounds",
+    "reboundsOffensive",
+    "reboundsDefensive",
+    "assists",
+    "steals",
+    "blocked",
+    "turnovers",
+    "fouls",
+    "fieldGoals",
+    "fieldGoalsAttempted",
+    "fieldGoalsPercentage",
+    "fieldGoalsPercentageSort",
+    "threePointGoals",
+    "threePointAttempted",
+    "threePointPercentage",
+    "threePointPercentageSort",
+    "freeThrows",
+    "freeThrowsAttempted",
+    "freeThrowsPercentage",
+    "freeThrowsPercentageSort",
+})
+
 _SHA256_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _PERCENTAGE_RE = re.compile(r"^\d+(\.\d+)?%$")
 
@@ -156,6 +219,12 @@ def validate_stats_record(record: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(metrics, dict):
         raise StatsValidationError("METRICS_DICT_REQUIRED")
 
+    unknown_metrics = set(metrics) - CANONICAL_METRIC_MVP_ALLOWLIST
+    if unknown_metrics:
+        raise StatsValidationError(
+            f"UNKNOWN_CANONICAL_METRIC_KEYS:{','.join(sorted(unknown_metrics))}"
+        )
+
     # Invariant: games_played must be non-negative if present
     games_played = metrics.get("games_played")
     if games_played is not None:
@@ -179,6 +248,17 @@ def validate_stats_record(record: Dict[str, Any]) -> Dict[str, Any]:
         if rate_val is not None:
             if not isinstance(rate_val, (int, float)) or not (0.0 <= float(rate_val) <= 1.0):
                 raise StatsValidationError(f"INVALID_PERCENTAGE_RATE_RANGE:{rate_key}={rate_val}")
+
+    # Validate raw_metrics against authoritative provider MVP allowlist if present
+    raw_metrics = record.get("raw_metrics")
+    if raw_metrics is not None:
+        if not isinstance(raw_metrics, dict):
+            raise StatsValidationError("RAW_METRICS_DICT_REQUIRED")
+        unknown_raw = set(raw_metrics) - RAW_METRICS_MVP_ALLOWLIST
+        if unknown_raw:
+            raise StatsValidationError(
+                f"UNKNOWN_RAW_PROVIDER_KEYS:{','.join(sorted(unknown_raw))}"
+            )
 
     # Validate rights
     rights = record.get("rights")

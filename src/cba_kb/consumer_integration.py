@@ -20,21 +20,14 @@ from .consumer_package import (
     normalize_authorizations,
 )
 from .statement import validate_statement
-from .stats import validate_stats_record
+from .stats import (
+    CANONICAL_METRIC_MVP_ALLOWLIST,
+    RAW_METRICS_MVP_ALLOWLIST,
+    validate_stats_record,
+)
 
 CONSUMER_CAPABILITY_STATEMENT_CLAIM = "statement_claim_research"
 CONSUMER_CAPABILITY_PLAYER_STATS = "player_performance_stats"
-
-OUT_OF_SCOPE_ADVANCED_METRICS = frozenset({
-    "rim_made",
-    "rim_attempted",
-    "mid_range_made",
-    "mid_range_attempted",
-    "fieldGoalsAtRimMade",
-    "fieldGoalsAtRimAttempted",
-    "fieldGoalsMidRangeMade",
-    "fieldGoalsMidRangeAttempted",
-})
 
 _DRIVE_LOCATOR_RE = re.compile(r"https?://(?:docs|drive)\.google\.com/[^\s,;\"'\]]+")
 _RAW_DRIVE_ID_RE = re.compile(r"\b[0-9a-zA-Z_-]{28,50}\b")
@@ -569,16 +562,16 @@ def project_stats_for_consumer(
             clean_st.get("provenance"), doc_id=rec_id, target_slug=target_slug
         )
 
-        # Ensure out-of-scope advanced provider metrics are never exposed to consumers
+        # Allowlist-based consumer projection: only authoritative MVP metrics and raw provider keys are materialized
         if "metrics" in clean_st and isinstance(clean_st["metrics"], dict):
             clean_st["metrics"] = {
                 k: v for k, v in clean_st["metrics"].items()
-                if k not in OUT_OF_SCOPE_ADVANCED_METRICS
+                if k in CANONICAL_METRIC_MVP_ALLOWLIST
             }
         if "raw_metrics" in clean_st and isinstance(clean_st["raw_metrics"], dict):
             clean_st["raw_metrics"] = {
                 k: v for k, v in clean_st["raw_metrics"].items()
-                if k not in OUT_OF_SCOPE_ADVANCED_METRICS
+                if k in RAW_METRICS_MVP_ALLOWLIST
             }
 
         exported.append(clean_st)

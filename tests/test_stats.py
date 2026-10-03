@@ -825,3 +825,25 @@ def test_advanced_metrics_excluded_from_canonical_and_consumer():
         assert k not in exp_st["metrics"], f"Out-of-scope metric {k} leaked into consumer projected metrics!"
         assert k not in exp_st["raw_metrics"], f"Out-of-scope metric {k} leaked into consumer projected raw_metrics!"
 
+
+def test_all_mvp_metric_and_raw_keys_round_trip():
+    """Assert all normal MVP canonical metrics and raw provider keys round-trip cleanly."""
+    from cba_kb.stats import CANONICAL_METRIC_MVP_ALLOWLIST, RAW_METRICS_MVP_ALLOWLIST
+
+    adapter = CBAStatsAdapter(key=SAMPLE_AES_KEY)
+    prov = {
+        "url": "https://data-server.cbaleague.com/api/player-base-list",
+        "endpoint": "/api/player-base-list",
+        "raw_sha256": "1" * 64,
+        "decoded_sha256": "2" * 64,
+        "season": "2024",
+        "match_type_id": "1",
+    }
+    rec = adapter.transform_provider_record(RAW_2024_RECORD, prov)
+    validated = validate_stats_record(rec)
+    assert validated["record_id"] == rec["record_id"]
+    assert set(validated["metrics"]).issubset(CANONICAL_METRIC_MVP_ALLOWLIST)
+    assert set(validated["raw_metrics"]).issubset(RAW_METRICS_MVP_ALLOWLIST)
+    assert len(validated["metrics"]) == len(CANONICAL_METRIC_MVP_ALLOWLIST)
+
+
