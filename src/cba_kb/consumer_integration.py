@@ -30,6 +30,69 @@ from .stats import (
 CONSUMER_CAPABILITY_STATEMENT_CLAIM = "statement_claim_research"
 CONSUMER_CAPABILITY_PLAYER_STATS = "player_performance_stats"
 
+STATS_CONSUMER_PROVENANCE_FIELDS = frozenset(
+    {
+        "source_uri",
+        "endpoint",
+        "season",
+        "match_type",
+        "raw_response_sha256",
+        "decoded_sha256",
+        "captured_at",
+        "provider_version",
+        "request_contract",
+    }
+)
+
+STATS_CONSUMER_REQUEST_CONTRACT_FIELDS = frozenset(
+    {
+        "season",
+        "matchTypeId",
+        "countRanger",
+        "playerRanger",
+        "teamId",
+        "acrossTeamId",
+        "type",
+        "startTime",
+        "endTime",
+        "startRound",
+        "endRound",
+        "startMatchOrder",
+        "endMatchOrder",
+        "sort",
+        "rank",
+    }
+)
+
+_STATS_CONSUMER_PROVENANCE_FIELD_ORDER = (
+    "source_uri",
+    "endpoint",
+    "season",
+    "match_type",
+    "raw_response_sha256",
+    "decoded_sha256",
+    "captured_at",
+    "provider_version",
+)
+
+_STATS_CONSUMER_REQUEST_CONTRACT_FIELD_ORDER = (
+    "season",
+    "matchTypeId",
+    "countRanger",
+    "playerRanger",
+    "teamId",
+    "acrossTeamId",
+    "type",
+    "startTime",
+    "endTime",
+    "startRound",
+    "endRound",
+    "startMatchOrder",
+    "endMatchOrder",
+    "sort",
+    "rank",
+)
+
 _DRIVE_LOCATOR_RE = re.compile(r"https?://(?:docs|drive)\.google\.com/[^\s,;\"'\]]+")
 _RAW_DRIVE_ID_RE = re.compile(r"\b[0-9a-zA-Z_-]{28,50}\b")
 _WIN_DRIVE_PATH_RE = re.compile(r"(?:^|[\s,;\"'\[\(=])[a-zA-Z]:[/\\]")
@@ -570,6 +633,44 @@ def is_stats_publicly_exportable(stats_record: Dict[str, Any]) -> bool:
     return classification == "PUBLIC" and allowed is True
 
 
+def _is_stats_consumer_request_value(value: Any) -> bool:
+    """Return whether value matches the current provider request payload contract."""
+    return value is None or (isinstance(value, int) and not isinstance(value, bool))
+
+
+def _is_stats_consumer_provider_version(value: Any) -> bool:
+    """Provider version is optional but must remain a bounded scalar in consumer output."""
+    return isinstance(value, (str, int, float, bool))
+
+
+def _project_stats_provenance_for_consumer(provenance: Dict[str, Any]) -> Dict[str, Any]:
+    """Reconstruct consumer-safe Stats provenance without metadata pass-through.
+
+    Canonical provenance remains untouched.  The consumer view is a new object made
+    only from explicitly approved source-binding fields and the current provider's
+    flat integer-or-null business request contract.
+    """
+    projected: Dict[str, Any] = {}
+    for field in _STATS_CONSUMER_PROVENANCE_FIELD_ORDER:
+        if field not in provenance:
+            continue
+        value = provenance[field]
+        if field == "provider_version" and not _is_stats_consumer_provider_version(value):
+            continue
+        projected[field] = value
+
+    request_contract = provenance.get("request_contract")
+    projected_request: Dict[str, Any] = {}
+    if isinstance(request_contract, dict):
+        for field in _STATS_CONSUMER_REQUEST_CONTRACT_FIELD_ORDER:
+            if field in request_contract and _is_stats_consumer_request_value(
+                request_contract[field]
+            ):
+                projected_request[field] = request_contract[field]
+    projected["request_contract"] = projected_request
+    return projected
+
+
 def project_stats_for_consumer(
     stats_records: List[Dict[str, Any]],
     target: str = "ChatGPT",
@@ -583,8 +684,6 @@ def project_stats_for_consumer(
         raise ConsumerSafetyError(
             f"UNAUTHORIZED_TARGET: target '{target}' is not in authorized targets {CONSUMER_TARGETS}"
         )
-
-    target_slug = TARGET_SLUGS.get(target, "consumer")
 
     if authorizations is None:
         return [], "NOT_MATERIALIZED(NO_TARGET_AUTHORIZATIONS_PROVIDED)"
@@ -625,9 +724,11 @@ def project_stats_for_consumer(
         # Allowlist-based top-level projection: only authoritative MVP fields
         clean_st = {k: v for k, v in validated.items() if k in ALLOWED_TOP_LEVEL_FIELDS}
 
-        # Sanitize provenance
-        clean_st["provenance"] = sanitize_provenance(
-            clean_st.get("provenance"), doc_id=rec_id, target_slug=target_slug
+        # Reconstruct the consumer provenance from the explicit provider business
+        # contract.  The recursive output guard below remains defense in depth; it
+        # is not the primary boundary for arbitrary request/runtime metadata.
+        clean_st["provenance"] = _project_stats_provenance_for_consumer(
+            validated["provenance"]
         )
 
         # Allowlist-based consumer projection: only authoritative MVP metrics and raw provider keys are materialized
@@ -654,4 +755,3 @@ def project_stats_for_consumer(
         capability = "NOT_MATERIALIZED(NO_AUTHORIZED_PUBLIC_STATS_EVIDENCE)"
 
     return exported, capability
-

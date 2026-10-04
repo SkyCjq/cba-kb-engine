@@ -13,10 +13,13 @@ import copy
 import json
 import pytest
 
+import cba_kb.consumer_integration as consumer_integration
 from cba_kb.adapters.cba_stats import CBAStatsAdapter
 from cba_kb.common import digest
 from cba_kb.consumer_integration import (
     CONSUMER_CAPABILITY_PLAYER_STATS,
+    STATS_CONSUMER_PROVENANCE_FIELDS,
+    STATS_CONSUMER_REQUEST_CONTRACT_FIELDS,
     find_private_locator_in_object,
     project_stats_for_consumer,
 )
@@ -682,13 +685,13 @@ def test_deduplicate_same_metrics_different_provenance_not_idempotent():
         deduplicate_and_reconcile_stats([rec1, rec_no_ts])
 
 
-def test_q2_reproducer_nested_cookie_and_credential_sanitization():
-    """Q2 reproducer (O10/A17): sensitive request metadata inside provenance.request_contract is sanitized.
+def test_q2_rerun_reproducer_arbitrary_request_runtime_metadata_is_not_projected():
+    """Second-Q2 reproducer: safe-looking unknown metadata has no consumer data path.
 
     Verifies:
-    - Nested cookie-like and credential fields are stripped from request_contract.
-    - Safe query params and provenance metadata are fully preserved.
-    - Projected output passes the final locator guard as MATERIALIZED.
+    - Request/runtime variants that need no sensitive vocabulary are omitted.
+    - Approved business fields remain available.
+    - Projected output passes the defense-in-depth guard as MATERIALIZED.
     """
     record = copy.deepcopy(SAMPLE_VALID_STATS)
     record["rights"]["classification"] = "PUBLIC"
@@ -696,20 +699,17 @@ def test_q2_reproducer_nested_cookie_and_credential_sanitization():
     record["provenance"]["request_contract"] = {
         "season": 2024,
         "matchTypeId": 1,
-        "cookie": "<MOCK_COOKIE>",
-        "Cookie": "<MOCK_COOKIE>",
-        "set-cookie": "<MOCK_COOKIE>",
-        "session_token": "<MOCK_TOKEN>",
-        "authToken": "<MOCK_TOKEN>",
-        "headers": {
-            "Cookie": "<MOCK_COOKIE>",
-            "Authorization": "Bearer <MOCK_BEARER>",
-            "User-Agent": "CBA-Client/1.0",
+        "tlsClientProfile": "desktop-v128",
+        "runtime-affinity": {
+            "nodeAlias": "batch-east",
+            "workerPool": "stats-readers",
         },
-        "nested_list": [
-            {"apiKey": "<MOCK_KEY>", "safe_param": "regular_season"},
+        "transport.overrides": [
+            {"retryClass": "interactive", "routeHint": "primary"},
         ],
+        "execution_context": {"traceAlias": "q2-reproducer"},
     }
+    record["provenance"]["runtime_metadata"] = {"workerAlias": "local-runner"}
 
     auth_list = [
         {
@@ -721,30 +721,59 @@ def test_q2_reproducer_nested_cookie_and_credential_sanitization():
         }
     ]
 
-    exported, cap = project_stats_for_consumer([record], target="ChatGPT", authorizations=auth_list)
+    exported, cap = project_stats_for_consumer(
+        [record], target="ChatGPT", authorizations=auth_list
+    )
     assert cap == "MATERIALIZED"
     assert len(exported) == 1
     exp_prov = exported[0]["provenance"]
     rc = exp_prov["request_contract"]
 
-    # Safe fields preserved
-    assert rc["season"] == 2024
-    assert rc["matchTypeId"] == 1
-    assert rc["headers"]["User-Agent"] == "CBA-Client/1.0"
-    assert rc["nested_list"][0]["safe_param"] == "regular_season"
+    assert rc == {"season": 2024, "matchTypeId": 1}
+    assert set(exp_prov) <= STATS_CONSUMER_PROVENANCE_FIELDS
+    assert "runtime_metadata" not in exp_prov
 
-    # Sensitive fields stripped
-    assert "cookie" not in rc
-    assert "Cookie" not in rc
-    assert "set-cookie" not in rc
-    assert "session_token" not in rc
-    assert "authToken" not in rc
-    assert "Cookie" not in rc["headers"]
-    assert "Authorization" not in rc["headers"]
-    assert "apiKey" not in rc["nested_list"][0]
-
-    # Output passes locator / sensitive guard
     assert find_private_locator_in_object(exported[0]) is None
+
+
+def test_stats_consumer_request_contract_unknown_key_property_matrix():
+    """Varied unknown names/nesting cannot expand the explicit request allowlist."""
+    unknown_stems = ("runtime", "transport", "machine", "future", "opaque")
+    separators = ("_", "-", ".", "")
+    unknown_entries = {}
+    for stem in unknown_stems:
+        for separator in separators:
+            key = f"{stem}{separator}Context"
+            unknown_entries[key] = {
+                "mixedCaseLeaf": f"{stem}-value",
+                "nested": [{"variant": separator or "camel"}],
+            }
+
+    record = copy.deepcopy(SAMPLE_VALID_STATS)
+    record["rights"]["classification"] = "PUBLIC"
+    record["rights"]["public_export_allowed"] = True
+    record["provenance"]["request_contract"] = {
+        "season": 2024,
+        "matchTypeId": 1,
+        **unknown_entries,
+    }
+    auth_list = [
+        {
+            "target": "ChatGPT",
+            "doc_id": record["record_id"],
+            "allowed_scope": CONSUMER_CAPABILITY_PLAYER_STATS,
+            "authorization_basis": "PUBLIC",
+            "frozen_at": "2026-10-03T10:00:00Z",
+        }
+    ]
+
+    exported, cap = project_stats_for_consumer(
+        [record], target="ChatGPT", authorizations=auth_list
+    )
+    assert cap == "MATERIALIZED"
+    request_contract = exported[0]["provenance"]["request_contract"]
+    assert set(request_contract) <= STATS_CONSUMER_REQUEST_CONTRACT_FIELDS
+    assert request_contract == {"season": 2024, "matchTypeId": 1}
 
 
 def test_stats_consumer_output_guard_detects_surviving_sensitive_keys():
@@ -769,14 +798,24 @@ def test_stats_consumer_output_guard_detects_surviving_sensitive_keys():
     assert find_private_locator_in_object(safe_obj) is None
 
 
-def test_stats_consumer_fail_closed_if_sensitive_key_survives():
-    """Verify project_stats_for_consumer fails closed with NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS) if leak survives."""
-    # A record where a top-level allowed field was tampered with a sensitive key
+def test_stats_consumer_final_guard_fails_closed_after_reconstruction(monkeypatch):
+    """A post-reconstruction injection is independently rejected by the final guard."""
     record = copy.deepcopy(SAMPLE_VALID_STATS)
     record["rights"]["classification"] = "PUBLIC"
     record["rights"]["public_export_allowed"] = True
-    # If rights dict contains a sensitive key
-    record["rights"]["api_key"] = "<MOCK_KEY>"
+
+    original_projector = consumer_integration._project_stats_provenance_for_consumer
+
+    def inject_after_reconstruction(provenance):
+        projected = original_projector(provenance)
+        projected["unexpected_post_projection"] = {"api_key": "<MOCK_KEY>"}
+        return projected
+
+    monkeypatch.setattr(
+        consumer_integration,
+        "_project_stats_provenance_for_consumer",
+        inject_after_reconstruction,
+    )
 
     auth_list = [
         {
@@ -794,17 +833,28 @@ def test_stats_consumer_fail_closed_if_sensitive_key_survives():
 
 
 def test_stats_safe_provenance_preservation():
-    """Verify safe provenance and request_contract fields remain intact through consumer projection."""
+    """All approved provenance and current provider request fields survive when valid."""
     record = copy.deepcopy(SAMPLE_VALID_STATS)
     record["rights"]["classification"] = "PUBLIC"
     record["rights"]["public_export_allowed"] = True
     record["provenance"]["request_contract"] = {
         "season": 2024,
         "matchTypeId": 1,
-        "pageSize": 50,
-        "tab": "basic",
-        "rankType": "points",
+        "countRanger": 1,
+        "playerRanger": 1,
+        "teamId": None,
+        "acrossTeamId": None,
+        "type": None,
+        "startTime": None,
+        "endTime": None,
+        "startRound": None,
+        "endRound": None,
+        "startMatchOrder": None,
+        "endMatchOrder": None,
+        "sort": 3,
+        "rank": 1,
     }
+    record["provenance"]["provider_version"] = "2026.10"
 
     auth_list = [
         {
@@ -820,18 +870,47 @@ def test_stats_safe_provenance_preservation():
     assert cap == "MATERIALIZED"
     assert len(exported) == 1
     rc = exported[0]["provenance"]["request_contract"]
-    assert rc == {
-        "season": 2024,
-        "matchTypeId": 1,
-        "pageSize": 50,
-        "tab": "basic",
-        "rankType": "points",
-    }
+    assert set(rc) == STATS_CONSUMER_REQUEST_CONTRACT_FIELDS
+    assert rc == record["provenance"]["request_contract"]
     assert exported[0]["provenance"]["endpoint"] == "/api/player-base-list"
     assert exported[0]["provenance"]["season"] == "2024"
     assert exported[0]["provenance"]["match_type"] == "1"
+    assert exported[0]["provenance"]["source_uri"] == record["provenance"]["source_uri"]
+    assert exported[0]["provenance"]["raw_response_sha256"] == "a" * 64
+    assert exported[0]["provenance"]["decoded_sha256"] == "b" * 64
+    assert exported[0]["provenance"]["captured_at"] == "2026-10-03T10:00:00Z"
+    assert exported[0]["provenance"]["provider_version"] == "2026.10"
 
 
+@pytest.mark.parametrize(
+    "invalid_value",
+    [True, "1", 1.5, {"value": 1}, [1], (1,)],
+)
+def test_stats_consumer_request_contract_omits_non_integer_non_null_values(invalid_value):
+    record = copy.deepcopy(SAMPLE_VALID_STATS)
+    record["rights"]["classification"] = "PUBLIC"
+    record["rights"]["public_export_allowed"] = True
+    record["provenance"]["request_contract"] = {
+        "season": 2024,
+        "matchTypeId": invalid_value,
+        "teamId": None,
+    }
+    auth_list = [
+        {
+            "target": "ChatGPT",
+            "doc_id": record["record_id"],
+            "allowed_scope": CONSUMER_CAPABILITY_PLAYER_STATS,
+            "authorization_basis": "PUBLIC",
+            "frozen_at": "2026-10-03T10:00:00Z",
+        }
+    ]
+
+    exported, cap = project_stats_for_consumer([record], target="ChatGPT", authorizations=auth_list)
+    assert cap == "MATERIALIZED"
+    assert exported[0]["provenance"]["request_contract"] == {
+        "season": 2024,
+        "teamId": None,
+    }
 
 
 
