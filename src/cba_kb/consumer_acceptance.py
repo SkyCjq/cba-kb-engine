@@ -449,6 +449,7 @@ def evaluate_consumer_closure_acceptance(
     gemini_result=None,
     workbuddy_result=None,
     expected_source_registry_sha256=None,
+    expected_product_version=None,
 ):
     """Evaluate the complete Consumer Acceptance Matrix for Consumer Closure DoD."""
     from .consumer_projection import (
@@ -456,7 +457,10 @@ def evaluate_consumer_closure_acceptance(
         cross_season_identity_query,
         validate_player_identity_consumer_projection,
     )
-    from .consumer_manifest import validate_consumer_manifest
+    from .consumer_manifest import PRODUCT_VERSION, validate_consumer_manifest
+
+    if expected_product_version is None:
+        expected_product_version = PRODUCT_VERSION
 
     results = {}
 
@@ -471,7 +475,7 @@ def evaluate_consumer_closure_acceptance(
         projection_validation = validate_player_identity_consumer_projection(
             identity_projection,
             expected_release_id=rel_status,
-            expected_product_version=(consumer_manifest or {}).get("product_version"),
+            expected_product_version=expected_product_version,
             expected_code_commit=(consumer_manifest or {}).get("code_commit"),
             expected_source_registry_sha256=expected_source_registry_sha256,
         )
@@ -561,7 +565,9 @@ def evaluate_consumer_closure_acceptance(
     # 9. CONSUMER_MANIFEST_DISCOVERY
     try:
         manifest_val = validate_consumer_manifest(
-            consumer_manifest, expected_release_id=rel_status,
+            consumer_manifest,
+            expected_release_id=rel_status,
+            expected_product_version=expected_product_version,
         )
         results["CONSUMER_MANIFEST_DISCOVERY"] = (
             "PASS" if manifest_val["status"] == "PASS" else "FAIL"
@@ -591,5 +597,9 @@ def evaluate_consumer_closure_acceptance(
         "matrix": results,
         "platforms": platforms,
         "release_id": rel_status,
-        "product_version": "v1.8.1",
+        "product_version": (
+            expected_product_version
+            if expected_product_version is not None
+            else (consumer_manifest or {}).get("product_version")
+        ),
     }

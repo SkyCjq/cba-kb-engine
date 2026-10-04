@@ -3,7 +3,7 @@ import json
 import pytest
 
 from cba_kb.common import digest
-from cba_kb.consumer_manifest import build_consumer_manifest
+from cba_kb.consumer_manifest import ConsumerManifestError, build_consumer_manifest
 from cba_kb.consumer_projection import build_player_identity_consumer_projection
 from cba_kb.release import (
     PreMutationAbort,
@@ -48,10 +48,10 @@ def topology(release_id=RELEASE_ID):
     ]
 
 
-def consumer_bundle():
+def consumer_bundle(product_version="v1.8.1", release_id=RELEASE_ID):
     projection = build_player_identity_consumer_projection(
-        sample_real_identity_registry(), release_id=RELEASE_ID,
-        product_version="v1.8.1", code_commit=SHA,
+        sample_real_identity_registry(), release_id=release_id,
+        product_version=product_version, code_commit=SHA,
     )
     surfaces = {
         key: {"id": f"id-{key}", "name": key, "sha256": str(index) * 64,
@@ -62,8 +62,8 @@ def consumer_bundle():
         ))
     }
     manifest = build_consumer_manifest(
-        release_id=RELEASE_ID,
-        product_version="v1.8.1",
+        release_id=release_id,
+        product_version=product_version,
         code_commit=SHA,
         surfaces=surfaces,
         facts={"master": {
@@ -80,9 +80,9 @@ def consumer_bundle():
     return manifest, projection
 
 
-def preflight_bundle():
+def preflight_bundle(product_version="v1.8.1", release_id=RELEASE_ID):
     plan = {
-        "release_id": RELEASE_ID,
+        "release_id": release_id,
         "entries": [{"id": "target-random", "logical_key": "target",
                      "after_hash": "a" * 64}],
     }
@@ -95,22 +95,23 @@ def preflight_bundle():
         "parents": ["current-random"],
     }
     frozen_meta = dict(observed, version="1", modifiedTime="2026-09-29T00:00:00Z")
-    manifest, projection = consumer_bundle()
+    manifest, projection = consumer_bundle(product_version, release_id)
     return {
         "plan": plan,
         "plan_sha256": plan_sha,
         "journal": journal,
         "current_runtime_journal_sha256": prepared_sha,
         "freeze_prepared_journal_sha256": prepared_sha,
-        "topology": topology(),
+        "topology": topology(release_id),
         "observed_target_parents": {"target-random": ["current-random"]},
         "fingerprints": [{"frozen": freeze_fingerprint(frozen_meta), "observed": observed}],
-        "status_doc": {"state": "COMPLETE", "current_release_id": RELEASE_ID,
+        "status_doc": {"state": "COMPLETE", "current_release_id": release_id,
                        "code_commit": SHA},
-        "safe_baseline_release_id": RELEASE_ID,
+        "safe_baseline_release_id": release_id,
         "consumer_manifest": manifest,
         "identity_projection": projection,
         "expected_source_registry_sha256": projection["source_registry_sha256"],
+        "expected_product_version": product_version,
         "platform_results": {"ChatGPT": "PASS", "Gemini Notebook": "PASS", "WorkBuddy": "PASS"},
     }
 
@@ -160,6 +161,47 @@ def test_real_path_compatibility_preflight_is_read_only_and_complete():
     assert result["production_mutation_count"] == 0
     assert result["release_status_mutation_count"] == 0
     assert bundle == before
+
+
+def test_v200_candidate_manifest_generation_and_independent_preflight_binding():
+    first_manifest, _ = consumer_bundle("v2.0.0")
+    second_manifest, _ = consumer_bundle("v2.0.0")
+    assert first_manifest["product_version"] == "v2.0.0"
+    assert first_manifest["manifest_sha256"] == second_manifest["manifest_sha256"]
+
+    result = release_infra_compatibility_preflight(preflight_bundle("v2.0.0"))
+    assert result["status"] == "PASS"
+    assert result["consumer_manifest"]["product_version"] == "v2.0.0"
+    assert result["identity_projection"]["product_version"] == "v2.0.0"
+
+
+@pytest.mark.parametrize("wrong_version", ["v1.8.1", "v1.9.0"])
+def test_v200_candidate_preflight_rejects_forged_or_stale_manifest(wrong_version):
+    bundle = preflight_bundle("v2.0.0")
+    wrong_manifest, _ = consumer_bundle(wrong_version)
+    bundle["consumer_manifest"] = wrong_manifest
+
+    with pytest.raises(
+        ConsumerManifestError,
+        match=f"CONSUMER_MANIFEST_PRODUCT_VERSION_MISMATCH:{wrong_version}!=v2.0.0",
+    ):
+        release_infra_compatibility_preflight(bundle)
+
+
+def test_v190_safe_baseline_is_not_reinterpreted_as_v200():
+    bundle = preflight_bundle("v1.9.0", "v1.9.0-2")
+    result = release_infra_compatibility_preflight(bundle)
+    assert result["status"] == "PASS"
+    assert result["consumer_manifest"]["product_version"] == "v1.9.0"
+
+
+def test_candidate_preflight_requires_independent_product_version_authority():
+    bundle = preflight_bundle("v2.0.0")
+    bundle.pop("expected_product_version")
+    with pytest.raises(
+        PreMutationAbort, match="RELEASE_INFRA_PRODUCT_VERSION_BINDING_INVALID",
+    ):
+        release_infra_compatibility_preflight(bundle)
 
 
 def test_compatibility_preflight_fails_before_mutation_on_contradiction():
@@ -623,6 +665,7 @@ def test_compat_preflight_cli_option_a(tmp_path, monkeypatch):
         "--instance-root", str(instance_root),
         "--evidence-root", str(evidence_root),
         "--source-registry-sha", projection["source_registry_sha256"],
+        "--product-version", "v1.8.1",
         "--output", str(out_file),
     ])
 

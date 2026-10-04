@@ -75,7 +75,7 @@ def _validate_entry(key, entry, *, category):
 def build_consumer_manifest(
     *,
     release_id,
-    product_version=PRODUCT_VERSION,
+    product_version,
     code_commit,
     surfaces,
     facts=None,
