@@ -1842,7 +1842,9 @@ def _project_command(args, instance):
         }
         targets = {
             target_id: spec for target_id, spec in targets.items()
-            if target_id in active_ids
+            if target_id in active_ids or (
+                isinstance(spec, dict) and "retire_in_release" in spec
+            )
         }
     projection = project_targets(
         release_id=args.release,
