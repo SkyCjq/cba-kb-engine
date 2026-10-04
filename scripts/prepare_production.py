@@ -785,6 +785,10 @@ def project_targets(
         "reserved_policy_target_ids": sorted(reserved_ids),
         "reserved_staging_target_count": len(reserved_ids),
         "historical_retired_policy_target_ids": sorted(historical_retired_ids),
+        "historical_retired_policy_markers": {
+            file_id: retirement_markers[file_id]
+            for file_id in sorted(historical_retired_ids)
+        },
         "release_status_unchanged": True,
         "control_target_migrations": (
             [] if migration["report"]["status"] == "NOT_APPLICABLE"
@@ -874,21 +878,46 @@ def validate_reservation(projection, allocation):
     existing_ids = {item["id"] for item in projection["existing_targets"]}
     if len(set(reserved.values())) != len(reserved):
         raise ProjectionError("RESERVATION_ID_DUPLICATE")
-    if existing_ids & set(reserved.values()):
+    historical_retired_ids = set(
+        projection.get("historical_retired_policy_target_ids") or []
+    )
+    if (existing_ids | historical_retired_ids) & set(reserved.values()):
         raise ProjectionError("RESERVATION_REUSES_EXISTING_TARGET")
     return True
 
 
 def validate_policy_reconciliation(projection, allocation, policy):
     active_ids = {
-        item["id"] for item in projection["existing_targets"]
+        item["id"] for item in projection.get("existing_targets") or []
     }
-    reserved_ids = set(allocation["reservations"].values())
-    actual_ids = set((policy.get("targets") or {}).keys())
-    if actual_ids not in (active_ids, active_ids | reserved_ids):
+    historical_retired_ids = set(
+        projection.get("historical_retired_policy_target_ids") or []
+    )
+    if active_ids & historical_retired_ids:
+        raise ProjectionError("HISTORICAL_RETIRED_TARGET_IN_ACTIVE_STATUS")
+
+    reservations = allocation.get("reservations") or {}
+    if not isinstance(reservations, dict):
+        raise ProjectionError("RESERVATION_KEY_SET_MISMATCH")
+    reserved_ids = set(reservations.values())
+    if len(reserved_ids) != len(reservations):
+        raise ProjectionError("RESERVATION_ID_DUPLICATE")
+    if (active_ids | historical_retired_ids) & reserved_ids:
+        raise ProjectionError("RESERVATION_REUSES_EXISTING_TARGET")
+
+    actual_targets = policy.get("targets") or {}
+    actual_ids = set(actual_targets.keys())
+
+    if historical_retired_ids - actual_ids:
+        raise ProjectionError("HISTORICAL_RETIRED_TARGET_NOT_IN_POLICY")
+
+    expected_pre = active_ids | historical_retired_ids
+    expected_post = expected_pre | reserved_ids
+    if actual_ids not in (expected_pre, expected_post):
         raise ProjectionError("PRIVATE_PRODUCTION_TARGET_DRIFT")
-    for item in projection["existing_targets"]:
-        current = (policy.get("targets") or {})[item["id"]]
+
+    for item in projection.get("existing_targets") or []:
+        current = actual_targets[item["id"]]
         expected = {
             "mime": item["mime"],
             "mode": item["mode"],
@@ -901,14 +930,54 @@ def validate_policy_reconciliation(projection, allocation, policy):
         if any(current.get(key) != value for key, value in expected.items()):
             raise ProjectionError("ACTIVE_PRODUCTION_TARGET_CHANGED")
         _validate_retirement_binding(item, current)
-    return {
+
+    _validate_historical_retirement_targets(
+        projection, historical_retired_ids, actual_targets,
+    )
+
+    result = {
         "active_production_targets": sorted(active_ids),
         "reserved_staging_targets": sorted(reserved_ids),
         "retirement_bound_targets": sorted(
-            item["id"] for item in projection["existing_targets"]
+            item["id"] for item in projection.get("existing_targets") or []
             if "retire_in_release" in item
         ),
     }
+    if historical_retired_ids:
+        result["historical_retired_policy_targets"] = sorted(historical_retired_ids)
+    return result
+
+
+def _validate_historical_retirement_targets(
+    projection, historical_retired_ids, actual_targets,
+):
+    release_id = projection.get("release_id")
+    expected_markers = projection.get("historical_retired_policy_markers")
+    if expected_markers is None and projection.get("historical_retired_targets"):
+        expected_markers = {
+            item["id"]: item.get("retire_in_release")
+            for item in projection["historical_retired_targets"]
+            if isinstance(item, dict) and "id" in item
+        }
+
+    for file_id in sorted(historical_retired_ids):
+        current = actual_targets.get(file_id)
+        if not isinstance(current, dict):
+            raise ProjectionError("HISTORICAL_RETIRED_TARGET_INVALID")
+        if "retire_in_release" not in current:
+            raise ProjectionError("HISTORICAL_RETIRED_TARGET_RETIREMENT_CHANGED")
+        live_marker = current["retire_in_release"]
+        if not isinstance(live_marker, str) or not live_marker:
+            raise ProjectionError("RETIREMENT_POLICY_INVALID")
+        if release_id is not None and live_marker == release_id:
+            raise ProjectionError(
+                "HISTORICAL_RETIRED_TARGET_POINTS_TO_CURRENT_RELEASE",
+            )
+        if expected_markers is not None and file_id in expected_markers:
+            if live_marker != expected_markers[file_id]:
+                raise ProjectionError(
+                    "HISTORICAL_RETIRED_TARGET_RETIREMENT_CHANGED",
+                )
 
 
 def _validate_retirement_binding(item, current):
