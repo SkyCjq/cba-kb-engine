@@ -127,6 +127,35 @@ def test_candidate_named_code_mirror_remains_current():
     )['violations'] == 0
 
 
+def test_published_non_code_candidate_named_artifact_remains_current():
+    docs = manifest() + [{
+        'uid': 'data/data_candidate_manifest.json',
+        'drive_file_id': 'candidate-data-doc',
+        'content_hash': 'e' * 64,
+        'status': 'published',
+        'published_release': 'v1.9.0-2',
+    }]
+    records = [
+        {'id': 'event-file', 'name': 'events', 'parents': ['data']},
+        {'id': 'compat-file', 'name': 'compat', 'parents': ['data']},
+        {
+            'id': 'candidate-data-doc',
+            'name': 'data_candidate_manifest.json',
+            'parents': ['data'],
+        },
+    ]
+    zones = {
+        'current': ['root', 'data', 'ai', 'scripts'],
+        'history': ['archive'],
+        'staging': ['staging'],
+        'evidence': ['sources'],
+        'folders': {'archive': ['root'], 'sources': ['root']},
+    }
+    assert audit_current_history(
+        records, zones, docs, registry(),
+    )['violations'] == 0
+
+
 def test_five_current_surfaces_share_release_and_code_identity():
     status, reg, docs = state_documents()
     result = control_document_identities(status, reg, docs)
