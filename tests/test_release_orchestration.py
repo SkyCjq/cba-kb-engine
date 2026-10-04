@@ -2199,6 +2199,43 @@ def test_closure_contract_uses_explicit_topology_zones(monkeypatch):
     assert "root-folder" not in closure["zones"]["current"]
 
 
+def test_closure_contract_accepts_mixed_zone_planned_topology(monkeypatch):
+    entries = _v190_closure_entries()
+    top = _build_test_topology(entries, staging_id="staging")
+    history_target = next(node for node in top if node["id"] == entries[0]["id"])
+    history_target.update(role="HISTORY_TARGET", parents=["history-zone"])
+    evidence_entry = next(
+        entry for entry in entries
+        if entry["logical_key"] == "evidence/bayi_legacy_context.md"
+    )
+    evidence_target = next(
+        node for node in top if node["id"] == evidence_entry["id"]
+    )
+    evidence_target.update(role="EVIDENCE_TARGET", parents=["evidence-zone"])
+    policy = {"topology": top}
+
+    class TopInstance:
+        def read_json(self, name):
+            if name == "production.json":
+                return policy
+            return {"parents": {"root": "root-folder", "archive": "history-zone"}}
+
+    monkeypatch.setattr(orchestration, "_evidence_baseline", lambda drive, roots: [])
+    closure = orchestration._build_closure_contract(
+        drive=ClosureDrive(),
+        instance=TopInstance(),
+        projection={"release_id": "v1.9.0-1", "engine_sha": "a" * 40},
+        allocation={"staging_id": "staging"},
+        entries=entries,
+        state={"status": {
+            "state": "ROLLED_BACK", "current_release_id": "v1.8.1-1",
+            "rolled_back_release_id": "v1.8.1-2", "code_commit": "b" * 40,
+        }},
+    )
+    assert closure["zones"]["history"] == ["history-zone"]
+    assert closure["zones"]["evidence"] == ["evidence-zone"]
+
+
 def test_closure_contract_excludes_root_from_current(monkeypatch):
     entries = _v190_closure_entries()
     top = _build_test_topology(entries, staging_id="staging")

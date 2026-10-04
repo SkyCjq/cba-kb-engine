@@ -48,6 +48,17 @@ def topology(release_id=RELEASE_ID):
     ]
 
 
+def mixed_planned_topology(release_id=RELEASE_ID):
+    nodes = topology(release_id)
+    nodes.extend([
+        {"id": "history-target", "role": "HISTORY_TARGET",
+         "parents": ["history-random"]},
+        {"id": "evidence-target", "role": "EVIDENCE_TARGET",
+         "parents": ["evidence-random"]},
+    ])
+    return nodes
+
+
 def consumer_bundle(product_version="v1.8.1", release_id=RELEASE_ID):
     projection = build_player_identity_consumer_projection(
         sample_real_identity_registry(), release_id=release_id,
@@ -1051,6 +1062,45 @@ def test_topology_planned_targets_coverage_diagnostics(scenario):
             validate_release_topology(nodes, release_id=release_id, planned_target_ids=["target-random"])
 
 
+def test_r2_mixed_planned_roles_pass_exact_set_validation():
+    result = validate_release_topology(
+        mixed_planned_topology(), release_id=RELEASE_ID,
+        planned_target_ids=["target-random", "history-target", "evidence-target"],
+    )
+    assert result["status"] == "PASS"
+    assert {"CURRENT_TARGET", "HISTORY_TARGET", "EVIDENCE_TARGET"} <= set(
+        result["semantic_roles"]
+    )
+
+
+@pytest.mark.parametrize(("role", "wrong_parent"), [
+    ("HISTORY_TARGET", "current-random"),
+    ("EVIDENCE_TARGET", "history-random"),
+])
+def test_r2_noncurrent_planned_roles_require_exact_zone(role, wrong_parent):
+    nodes = mixed_planned_topology()
+    node = next(item for item in nodes if item["role"] == role)
+    node["parents"] = [wrong_parent]
+    with pytest.raises(
+        ReleaseContractError, match="RELEASE_TOPOLOGY_ANCESTOR_INVALID"
+    ):
+        validate_release_topology(
+            nodes, release_id=RELEASE_ID,
+            planned_target_ids=["target-random", "history-target", "evidence-target"],
+        )
+
+
+@pytest.mark.parametrize(
+    "special_id", ["rollback-random", "recovery-random", "superseded-random"]
+)
+def test_r2_special_roles_cannot_satisfy_planned_target_coverage(special_id):
+    with pytest.raises(ReleaseContractError, match="RELEASE_TOPOLOGY_ROLE_INVALID"):
+        validate_release_topology(
+            topology(), release_id=RELEASE_ID,
+            planned_target_ids=[special_id],
+        )
+
+
 def test_retired_target_remaining_in_planned_topology_fails_exact_set_validation():
     with pytest.raises(
         ReleaseContractError, match="RELEASE_TOPOLOGY_TARGET_UNEXPECTED"
@@ -1103,6 +1153,54 @@ def test_bundle_builder_preserves_semantic_parent_and_accepts_explicit_relocatio
         "staging_parent": "staging-random",
         "publish_parent": "current-random",
     }]
+
+
+@pytest.mark.parametrize(("role", "parent"), [
+    ("HISTORY_TARGET", "history-random"),
+    ("EVIDENCE_TARGET", "evidence-random"),
+])
+def test_r2_bundle_builder_accepts_noncurrent_planned_role_authority(
+        tmp_path, role, parent):
+    evidence_root, _, _, _, projection, _ = _setup_evidence_root(tmp_path)
+    top = [
+        node for node in topology()
+        if node["role"] not in {"ROLLBACK_SNAPSHOT", "RECOVERY_CHECKPOINT"}
+    ]
+    target = next(node for node in top if node["id"] == "target-random")
+    target.update(role=role, parents=[parent])
+    (evidence_root / "topology.json").write_text(json.dumps(top))
+    status_doc = {"state": "COMPLETE", "current_release_id": RELEASE_ID}
+    drive = MockDrive(
+        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
+        metas={
+            "status-drive-id": {
+                "id": "status-drive-id", "version": "1",
+                "modifiedTime": "t0", "mimeType": "application/json",
+                "parents": ["root-random"],
+            },
+            "target-random": {
+                "id": "target-random", "version": "1",
+                "modifiedTime": "t0", "mimeType": "application/json",
+                "parents": [parent],
+            },
+        },
+    )
+    instance = MockInstance(configs={
+        "production.json": {
+            "enabled": True, "status_id": "status-drive-id",
+            "safe_baseline_release_id": RELEASE_ID,
+        },
+    })
+    bundle = build_release_infra_compatibility_bundle(
+        instance=instance, drive=drive, evidence_root=evidence_root,
+        source_registry_sha256=projection["source_registry_sha256"],
+    )
+    assert next(
+        node for node in bundle["topology"] if node["id"] == "target-random"
+    )["role"] == role
+    result = release_infra_compatibility_preflight(bundle)
+    assert result["status"] == "PASS"
+    assert result["relocations"]["unchanged"] == 1
 
 
 @pytest.mark.parametrize("spoofed_parent", [
@@ -1174,6 +1272,68 @@ def test_section18_positive_oracles_unchanged_and_explicit_relocation():
     assert relocation["classification"] == "EXPLICIT_RELOCATION"
     assert relocation["staging_parent"] == "staging-random"
     assert relocation["publish_parent"] == "current-random"
+
+
+@pytest.mark.parametrize(("role", "zone_role", "parent"), [
+    ("HISTORY_TARGET", "HISTORY_ZONE", "history-random"),
+    ("EVIDENCE_TARGET", "EVIDENCE_ZONE", "evidence-random"),
+])
+def test_r2_noncurrent_planned_relocation_unchanged_and_explicit(
+        role, zone_role, parent):
+    node = {"id": "target-random", "role": role, "parents": [parent]}
+    index = {
+        "target-random": node,
+        parent: {"id": parent, "role": zone_role, "parents": ["root-random"]},
+        "staging-random": {
+            "id": "staging-random", "role": "STAGING_ZONE",
+            "parents": ["root-random"],
+        },
+    }
+    entry = {
+        "id": "target-random", "staging_parent": "staging-random",
+        "publish_parent": parent,
+    }
+    unchanged = classify_planned_target_relocation(
+        node, entry, [parent], topology_index=index,
+    )
+    assert unchanged["classification"] == "UNCHANGED"
+    relocated = classify_planned_target_relocation(
+        node, entry, ["staging-random"], topology_index=index,
+    )
+    assert relocated["classification"] == "EXPLICIT_RELOCATION"
+
+    wrong_zone_index = dict(index)
+    wrong_zone_index[parent] = dict(index[parent], role="CURRENT_ZONE")
+    with pytest.raises(
+        PreMutationAbort, match="RELEASE_INFRA_EXPLICIT_RELOCATION_INVALID"
+    ):
+        classify_planned_target_relocation(
+            node, entry, ["staging-random"], topology_index=wrong_zone_index,
+        )
+
+
+def test_r2_staging_target_mismatch_remains_fail_closed():
+    node = {
+        "id": "target-random", "role": "STAGING_TARGET",
+        "parents": ["staging-random"],
+    }
+    entry = {
+        "id": "target-random", "staging_parent": "other-staging",
+        "publish_parent": "staging-random",
+    }
+    index = {
+        "target-random": node,
+        "staging-random": {
+            "id": "staging-random", "role": "STAGING_ZONE",
+            "parents": ["root-random"],
+        },
+    }
+    with pytest.raises(
+        PreMutationAbort, match="RELEASE_INFRA_EXPLICIT_RELOCATION_INVALID"
+    ):
+        classify_planned_target_relocation(
+            node, entry, ["other-staging"], topology_index=index,
+        )
 
 
 @pytest.mark.parametrize("case", [

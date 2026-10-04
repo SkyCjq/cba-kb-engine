@@ -506,9 +506,14 @@ def validate_freeze_fingerprint_compatibility(frozen, observed):
 TOPOLOGY_CONTAINER_ROLES = frozenset({
     'ROOT', 'CURRENT_ZONE', 'STAGING_ZONE', 'HISTORY_ZONE', 'EVIDENCE_ZONE',
 })
+PLANNED_TARGET_ROLES = frozenset({
+    'CURRENT_TARGET', 'STAGING_TARGET', 'HISTORY_TARGET', 'EVIDENCE_TARGET',
+})
 TOPOLOGY_LEAF_PARENT_ROLES = {
     'CURRENT_TARGET': frozenset({'CURRENT_ZONE'}),
     'STAGING_TARGET': frozenset({'STAGING_ZONE'}),
+    'HISTORY_TARGET': frozenset({'HISTORY_ZONE'}),
+    'EVIDENCE_TARGET': frozenset({'EVIDENCE_ZONE'}),
     'ROLLBACK_SNAPSHOT': frozenset({'HISTORY_ZONE'}),
     'RECOVERY_CHECKPOINT': frozenset({'HISTORY_ZONE'}),
     'SUPERSEDED_AUTHORITY': frozenset({'EVIDENCE_ZONE'}),
@@ -529,7 +534,7 @@ def validate_release_topology(nodes, *, release_id, planned_target_ids=None):
                        for parent in node['parents'])):
             raise ReleaseContractError('RELEASE_TOPOLOGY_NODE_INVALID')
         if node['id'] in by_id:
-            if node['role'] in {'CURRENT_TARGET', 'STAGING_TARGET'}:
+            if node['role'] in PLANNED_TARGET_ROLES:
                 raise ReleaseContractError('RELEASE_TOPOLOGY_TARGET_DUPLICATE')
             raise ReleaseContractError('RELEASE_TOPOLOGY_NODE_INVALID')
         by_id[node['id']] = node
@@ -579,11 +584,11 @@ def validate_release_topology(nodes, *, release_id, planned_target_ids=None):
         if len(planned_target_ids) != len(set(planned_target_ids)):
             raise ReleaseContractError('RELEASE_TOPOLOGY_TARGET_DUPLICATE')
         for pid in planned_target_ids:
-            if pid in by_id and by_id[pid]['role'] not in {'CURRENT_TARGET', 'STAGING_TARGET'}:
+            if pid in by_id and by_id[pid]['role'] not in PLANNED_TARGET_ROLES:
                 raise ReleaseContractError('RELEASE_TOPOLOGY_ROLE_INVALID')
         target_nodes = [
             node for node in nodes
-            if node['role'] in {'CURRENT_TARGET', 'STAGING_TARGET'}
+            if node['role'] in PLANNED_TARGET_ROLES
         ]
         if planned_target_ids and not target_nodes:
             raise ReleaseContractError('RELEASE_TOPOLOGY_CONTAINER_ONLY_FORBIDDEN')
@@ -662,8 +667,13 @@ def classify_planned_target_relocation(
         topology_index.get(publish_parent)
         if isinstance(publish_parent, str) and publish_parent else None
     )
+    relocation_parent_roles = {
+        'CURRENT_TARGET': 'CURRENT_ZONE',
+        'HISTORY_TARGET': 'HISTORY_ZONE',
+        'EVIDENCE_TARGET': 'EVIDENCE_ZONE',
+    }
     if (
-        node.get('role') == 'CURRENT_TARGET'
+        node.get('role') in relocation_parent_roles
         and len(observed) == 1
         and isinstance(staging_parent, str) and bool(staging_parent)
         and isinstance(publish_parent, str) and bool(publish_parent)
@@ -671,7 +681,7 @@ def classify_planned_target_relocation(
         and semantic == [publish_parent]
         and staging_parent != publish_parent
         and isinstance(publish_node, dict)
-        and publish_node.get('role') == 'CURRENT_ZONE'
+        and publish_node.get('role') == relocation_parent_roles[node['role']]
     ):
         return {
             'status': 'PASS',
