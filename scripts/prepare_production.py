@@ -64,6 +64,9 @@ RELEASE_SPECS = {
             "1e8c78019ef30" + "a91c3bd0f98e96ce476326c6c25"
         ),
     },
+    "v2.0.0-1": {
+        "product_baseline_sha": "2b84c900dc383d2537f435e0b7748da46318b3cc",
+    },
 }
 
 
@@ -1120,7 +1123,7 @@ def _candidate_inputs(drive, engine_root, projection, allocation, output):
     registry = None
     registry_bytes = None
     manifest_previous = None
-    if projection["release_id"] in {"v1.6.1-1", "v1.8.1-1", "v1.8.1-2", "v1.8.1-3", "v1.9.0-1"}:
+    if projection["release_id"] in {"v1.6.1-1", "v1.8.1-1", "v1.8.1-2", "v1.8.1-3", "v1.9.0-1", "v2.0.0-1"}:
         if REGISTRY_KEY not in item_by_key or MANIFEST_KEY not in item_by_key:
             raise ProjectionError("CLOSURE_CONTROL_TARGET_MISSING")
         registry_previous, _ = snapshot(
@@ -1449,7 +1452,7 @@ def _build_closure_contract(*, drive, instance, projection, allocation,
         "context_card": CONTEXT_CARD_KEY,
         "current_version_doc": "CURRENT_VERSION_DOC",
     }
-    if projection.get("release_id") in {"v1.8.1-2", "v1.8.1-3", "v1.9.0-1"}:
+    if projection.get("release_id") in {"v1.8.1-2", "v1.8.1-3", "v1.9.0-1", "v2.0.0-1"}:
         document_keys["technical_manual"] = "entry/context"
     required = {REGISTRY_KEY, MANIFEST_KEY, *document_keys.values()}
     if not required <= set(by_key):
@@ -1623,7 +1626,7 @@ def freeze_plan(
     dependencies = load_production_dependencies(drive, policy)
     outbox = output / "outbox"
     closure = None
-    if release_id in {"v1.6.1-1", "v1.8.1-1", "v1.8.1-2", "v1.8.1-3", "v1.9.0-1"}:
+    if release_id in {"v1.6.1-1", "v1.8.1-1", "v1.8.1-2", "v1.8.1-3", "v1.9.0-1", "v2.0.0-1"}:
         closure = _build_closure_contract(
             drive=drive,
             instance=instance,
