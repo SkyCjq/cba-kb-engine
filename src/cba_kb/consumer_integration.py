@@ -20,8 +20,78 @@ from .consumer_package import (
     normalize_authorizations,
 )
 from .statement import validate_statement
+from .stats import (
+    ALLOWED_TOP_LEVEL_FIELDS,
+    CANONICAL_METRIC_MVP_ALLOWLIST,
+    RAW_METRICS_MVP_ALLOWLIST,
+    validate_stats_record,
+)
 
 CONSUMER_CAPABILITY_STATEMENT_CLAIM = "statement_claim_research"
+CONSUMER_CAPABILITY_PLAYER_STATS = "player_performance_stats"
+
+STATS_CONSUMER_PROVENANCE_FIELDS = frozenset(
+    {
+        "source_uri",
+        "endpoint",
+        "season",
+        "match_type",
+        "raw_response_sha256",
+        "decoded_sha256",
+        "captured_at",
+        "provider_version",
+        "request_contract",
+    }
+)
+
+STATS_CONSUMER_REQUEST_CONTRACT_FIELDS = frozenset(
+    {
+        "season",
+        "matchTypeId",
+        "countRanger",
+        "playerRanger",
+        "teamId",
+        "acrossTeamId",
+        "type",
+        "startTime",
+        "endTime",
+        "startRound",
+        "endRound",
+        "startMatchOrder",
+        "endMatchOrder",
+        "sort",
+        "rank",
+    }
+)
+
+_STATS_CONSUMER_PROVENANCE_FIELD_ORDER = (
+    "source_uri",
+    "endpoint",
+    "season",
+    "match_type",
+    "raw_response_sha256",
+    "decoded_sha256",
+    "captured_at",
+    "provider_version",
+)
+
+_STATS_CONSUMER_REQUEST_CONTRACT_FIELD_ORDER = (
+    "season",
+    "matchTypeId",
+    "countRanger",
+    "playerRanger",
+    "teamId",
+    "acrossTeamId",
+    "type",
+    "startTime",
+    "endTime",
+    "startRound",
+    "endRound",
+    "startMatchOrder",
+    "endMatchOrder",
+    "sort",
+    "rank",
+)
 
 _DRIVE_LOCATOR_RE = re.compile(r"https?://(?:docs|drive)\.google\.com/[^\s,;\"'\]]+")
 _RAW_DRIVE_ID_RE = re.compile(r"\b[0-9a-zA-Z_-]{28,50}\b")
@@ -29,6 +99,43 @@ _WIN_DRIVE_PATH_RE = re.compile(r"(?:^|[\s,;\"'\[\(=])[a-zA-Z]:[/\\]")
 _UNC_PATH_RE = re.compile(r"(?:^|[\s,;\"'\[\(=])\\\\[^\s,;\"'\]\)=]+")
 _FILE_URL_RE = re.compile(r"file://[^\s,;\"'\]]+")
 _POSIX_PATH_RE = re.compile(r"(?:^|[\s,;\"'\[\(=])/(?:[^\s,;\"'\]\)=]+)")
+
+_SENSITIVE_KEY_RE = re.compile(
+    r"(?i)^(?:.*[_-])?(?:"
+    r"api[_-]?(?:key|token|secret)|"
+    r"client[_-]?secret|"
+    r"secret(?:[_-]?key)?|"
+    r"private[_-]?(?:key|path)|"
+    r"password|passwd|pwd|"
+    r"session(?:[_-]?(?:token|id|cookie|key))?|"
+    r"cookie(?:s)?|"
+    r"set[_-]?cookie|"
+    r"auth(?:entication|orization)?(?:[_-]?token)?|"
+    r"bearer(?:[_-]?token)?|"
+    r"credential(?:s)?|"
+    r"(?:access|refresh|id|csrf|xsrf)[_-]?token|"
+    r"token(?:s)?|"
+    r"raw[_-]?ref|"
+    r"(?:file|drive)[_-]?id"
+    r")$"
+)
+
+_SENSITIVE_VALUE_PATTERNS = [
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----"),
+    re.compile(r"(?i)\bBearer\s+[A-Za-z0-9_./+~=-]{6,}"),
+    re.compile(
+        r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|"
+        r"sk-(?:proj-)?[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{30,}|AKIA[A-Z0-9]{16})\b"
+    ),
+    re.compile(r"https?://[^\s/@:]+:[^\s/@]+@"),
+    re.compile(
+        r"(?i)(?:^|[\s,;\"'\[\(=&?])(?:"
+        r"cookie|cookies|session(?:[_-]?(?:token|id|cookie|key))?|"
+        r"api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|"
+        r"password|passwd|pwd"
+        r")\s*[:=]\s*[^\s,;\"'\]\)=&]+"
+    ),
+]
 
 
 _SCHEMA_KEYS = {
@@ -81,11 +188,65 @@ _SCHEMA_KEYS = {
     "turns",
     "content_hash",
     "normalized_document_ref",
+    "record_id",
+    "semantic_grain",
+    "player_uid",
+    "identity_status",
+    "identity_resolution",
+    "provider",
+    "provider_player_id",
+    "player_name",
+    "season",
+    "competition",
+    "match_type",
+    "match_type_label",
+    "scope",
+    "team_id",
+    "team_name",
+    "metrics",
+    "raw_metrics",
+    "games_played",
+    "games_started",
+    "minutes_per_game",
+    "seconds_per_game",
+    "points_per_game",
+    "rebounds_per_game",
+    "assists_per_game",
+    "steals_per_game",
+    "blocks_per_game",
+    "turnovers_per_game",
+    "fouls_per_game",
+    "field_goals_percentage",
+    "three_point_percentage",
+    "free_throws_percentage",
 }
 
 
 class ConsumerSafetyError(RuntimeError):
     pass
+
+
+def is_sensitive_key(key: str) -> bool:
+    """Check if a dictionary key represents sensitive credentials, sessions, or tokens."""
+    if not isinstance(key, str):
+        return False
+    k = key.strip()
+    if not k or k in _SCHEMA_KEYS:
+        return False
+    return bool(_SENSITIVE_KEY_RE.match(k))
+
+
+def is_sensitive_value(value: str) -> bool:
+    """Check if a string value contains sensitive credential patterns or secret tokens."""
+    if not isinstance(value, str):
+        return False
+    s = value.strip()
+    if not s or s in _SCHEMA_KEYS:
+        return False
+    for pat in _SENSITIVE_VALUE_PATTERNS:
+        if pat.search(s):
+            return True
+    return False
 
 
 def is_private_locator(text: str) -> bool:
@@ -98,6 +259,9 @@ def is_private_locator(text: str) -> bool:
 
     if s in _SCHEMA_KEYS:
         return False
+
+    if is_sensitive_value(s):
+        return True
 
     # 1. file:// locators
     if _FILE_URL_RE.search(s):
@@ -116,8 +280,8 @@ def is_private_locator(text: str) -> bool:
         return True
 
     # 5. Generic absolute POSIX paths beginning with /
-    # Skip web URLs starting with http:// or https://
-    if not (s.startswith("http://") or s.startswith("https://")):
+    # Skip web URLs starting with http:// or https:// and public API paths starting with /api/
+    if not (s.startswith("http://") or s.startswith("https://") or s.startswith("/api/")):
         if s.startswith("/") or _POSIX_PATH_RE.search(s):
             return True
 
@@ -136,18 +300,19 @@ def is_private_locator(text: str) -> bool:
 
 
 def find_private_locator_in_object(obj: Any) -> Optional[str]:
-    """Recursively search for any private locator string leaf or dict key in an arbitrary nested data structure.
+    """Recursively search for any private locator string leaf or sensitive key/credential in an arbitrary nested data structure.
 
-    Returns the first offending locator string found, or None if completely clean.
+    Returns the first offending locator string or sensitive key found, or None if completely clean.
     """
     if isinstance(obj, str):
-        if is_private_locator(obj):
+        if is_private_locator(obj) or is_sensitive_value(obj):
             return obj
         return None
     elif isinstance(obj, dict):
         for k, v in obj.items():
-            if isinstance(k, str) and is_private_locator(k):
-                return k
+            k_str = str(k)
+            if is_sensitive_key(k_str) or is_private_locator(k_str):
+                return k_str
             found = find_private_locator_in_object(v)
             if found is not None:
                 return found
@@ -174,17 +339,18 @@ def sanitize_locator_string(
 
 
 def sanitize_locator_value(value: Any, doc_id: str, target_slug: str) -> Any:
-    """Sanitize locator value (string, dict, or list) removing private paths/Drive locators."""
+    """Sanitize locator value (string, dict, or list) removing private paths/Drive locators and sensitive fields."""
     if isinstance(value, str):
         return sanitize_locator_string(value, doc_id, target_slug)
     elif isinstance(value, dict):
         sanitized = {}
         for k, v in value.items():
-            if k in {"private_path", "raw_ref", "credentials", "token", "file_id", "drive_id"}:
+            k_str = str(k)
+            if is_sensitive_key(k_str):
                 continue
             sanitized[k] = sanitize_locator_value(v, doc_id, target_slug)
         return sanitized
-    elif isinstance(value, list):
+    elif isinstance(value, (list, tuple)):
         return [sanitize_locator_value(x, doc_id, target_slug) for x in value]
     return value
 
@@ -224,11 +390,12 @@ def sanitize_provenance(prov: Any, doc_id: str = "unknown", target_slug: str = "
     elif isinstance(prov, dict):
         sanitized = {}
         for k, v in prov.items():
-            if k in {"private_path", "raw_ref", "credentials", "token", "file_id", "drive_id"}:
+            k_str = str(k)
+            if is_sensitive_key(k_str):
                 continue
             sanitized[k] = sanitize_provenance(v, doc_id=doc_id, target_slug=target_slug)
         return sanitized
-    elif isinstance(prov, list):
+    elif isinstance(prov, (list, tuple)):
         return [sanitize_provenance(x, doc_id=doc_id, target_slug=target_slug) for x in prov]
     return prov
 
@@ -452,5 +619,139 @@ def project_claims_for_consumer(
         capability = "MATERIALIZED"
     else:
         capability = "NOT_MATERIALIZED(NO_AUTHORIZED_PUBLIC_CLAIM_EVIDENCE)"
+
+    return exported, capability
+
+
+def is_stats_publicly_exportable(stats_record: Dict[str, Any]) -> bool:
+    """Check if a stats record satisfies fail-closed public export rules."""
+    rights = stats_record.get("rights") or {}
+    if not isinstance(rights, dict):
+        return False
+    classification = rights.get("classification")
+    allowed = rights.get("public_export_allowed")
+    return classification == "PUBLIC" and allowed is True
+
+
+def _is_stats_consumer_request_value(value: Any) -> bool:
+    """Return whether value matches the current provider request payload contract."""
+    return value is None or (isinstance(value, int) and not isinstance(value, bool))
+
+
+def _is_stats_consumer_provider_version(value: Any) -> bool:
+    """Provider version is optional but must remain a bounded scalar in consumer output."""
+    return isinstance(value, (str, int, float, bool))
+
+
+def _project_stats_provenance_for_consumer(provenance: Dict[str, Any]) -> Dict[str, Any]:
+    """Reconstruct consumer-safe Stats provenance without metadata pass-through.
+
+    Canonical provenance remains untouched.  The consumer view is a new object made
+    only from explicitly approved source-binding fields and the current provider's
+    flat integer-or-null business request contract.
+    """
+    projected: Dict[str, Any] = {}
+    for field in _STATS_CONSUMER_PROVENANCE_FIELD_ORDER:
+        if field not in provenance:
+            continue
+        value = provenance[field]
+        if field == "provider_version" and not _is_stats_consumer_provider_version(value):
+            continue
+        projected[field] = value
+
+    request_contract = provenance.get("request_contract")
+    projected_request: Dict[str, Any] = {}
+    if isinstance(request_contract, dict):
+        for field in _STATS_CONSUMER_REQUEST_CONTRACT_FIELD_ORDER:
+            if field in request_contract and _is_stats_consumer_request_value(
+                request_contract[field]
+            ):
+                projected_request[field] = request_contract[field]
+    projected["request_contract"] = projected_request
+    return projected
+
+
+def project_stats_for_consumer(
+    stats_records: List[Dict[str, Any]],
+    target: str = "ChatGPT",
+    authorizations: Optional[Union[List[Dict[str, Any]], Dict[str, Any]]] = None,
+) -> Tuple[List[Dict[str, Any]], str]:
+    """Project canonical player performance stats safely for consumer consumption.
+
+    Returns (projected_stats, capability_status).
+    """
+    if target not in CONSUMER_TARGETS:
+        raise ConsumerSafetyError(
+            f"UNAUTHORIZED_TARGET: target '{target}' is not in authorized targets {CONSUMER_TARGETS}"
+        )
+
+    if authorizations is None:
+        return [], "NOT_MATERIALIZED(NO_TARGET_AUTHORIZATIONS_PROVIDED)"
+
+    try:
+        auth_map = normalize_authorizations(authorizations)
+    except ConsumerPackageError as exc:
+        raise ConsumerSafetyError(f"INVALID_AUTHORIZATIONS: {exc}") from exc
+
+    if not auth_map:
+        return [], "NOT_MATERIALIZED(EMPTY_TARGET_AUTHORIZATIONS)"
+
+    exported: List[Dict[str, Any]] = []
+
+    for st in stats_records:
+        validated = validate_stats_record(st)
+        rec_id = validated["record_id"]
+        prov_player_id = validated["provider_player_id"]
+        season = validated["season"]
+
+        # Check target authorization by record_id, or by season-level / provider-level key
+        auth_record = (
+            auth_map.get((target, rec_id))
+            or auth_map.get((target, f"stats_{season}"))
+            or auth_map.get((target, f"player_{prov_player_id}"))
+        )
+        if not auth_record:
+            continue
+
+        if auth_record.get("allowed_scope") != CONSUMER_CAPABILITY_PLAYER_STATS:
+            continue
+        if auth_record.get("authorization_basis") != "PUBLIC":
+            continue
+
+        if not is_stats_publicly_exportable(validated):
+            continue
+
+        # Allowlist-based top-level projection: only authoritative MVP fields
+        clean_st = {k: v for k, v in validated.items() if k in ALLOWED_TOP_LEVEL_FIELDS}
+
+        # Reconstruct the consumer provenance from the explicit provider business
+        # contract.  The recursive output guard below remains defense in depth; it
+        # is not the primary boundary for arbitrary request/runtime metadata.
+        clean_st["provenance"] = _project_stats_provenance_for_consumer(
+            validated["provenance"]
+        )
+
+        # Allowlist-based consumer projection: only authoritative MVP metrics and raw provider keys are materialized
+        if "metrics" in clean_st and isinstance(clean_st["metrics"], dict):
+            clean_st["metrics"] = {
+                k: v for k, v in clean_st["metrics"].items()
+                if k in CANONICAL_METRIC_MVP_ALLOWLIST
+            }
+        if "raw_metrics" in clean_st and isinstance(clean_st["raw_metrics"], dict):
+            clean_st["raw_metrics"] = {
+                k: v for k, v in clean_st["raw_metrics"].items()
+                if k in RAW_METRICS_MVP_ALLOWLIST
+            }
+
+        exported.append(clean_st)
+
+    if exported:
+        for st_exp in exported:
+            bad_loc = find_private_locator_in_object(st_exp)
+            if bad_loc is not None:
+                return [], "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)"
+        capability = "MATERIALIZED"
+    else:
+        capability = "NOT_MATERIALIZED(NO_AUTHORIZED_PUBLIC_STATS_EVIDENCE)"
 
     return exported, capability

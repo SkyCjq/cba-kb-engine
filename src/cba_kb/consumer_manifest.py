@@ -56,6 +56,7 @@ def _validate_entry(key, entry, *, category):
         "control": "control",
         "facts": "canonical",
         "identity": "derived",
+        "stats": "canonical",
     }.get(category)
     if expected_authority is None or authority != expected_authority:
         raise ConsumerManifestError(
@@ -80,6 +81,7 @@ def build_consumer_manifest(
     facts=None,
     identity_projection=None,
     consumer_packages=None,
+    stats=None,
 ):
     """Build a deterministic, release-scoped Consumer Manifest."""
     release_id = _required_text(release_id, "RELEASE_ID")
@@ -106,11 +108,31 @@ def build_consumer_manifest(
         missing = sorted(REQUIRED_FACT_KEYS - set(fact_entries))
         raise ConsumerManifestError(f"MISSING_REQUIRED_FACT:{','.join(missing)}")
 
+    stats = stats or {}
+    stats_entries = {}
+    for key in sorted(stats):
+        stats_entries[key] = _validate_entry(key, stats[key], category="stats")
+
     if identity_projection is None or not isinstance(identity_projection, dict):
         raise ConsumerManifestError("IDENTITY_PROJECTION_ENTRY_REQUIRED")
     identity_entry = _validate_entry(
         "player_identity_projection", identity_projection, category="identity",
     )
+
+    consumer_surfaces_dict = {
+        "control": control_entries,
+        "facts": fact_entries,
+        "identity": {
+            "player_identity_projection": identity_entry,
+        },
+        "consumer_packages": consumer_packages or {
+            "ChatGPT": {"target": "ChatGPT", "status": "AVAILABLE"},
+            "Gemini Notebook": {"target": "Gemini Notebook", "status": "AVAILABLE"},
+            "WorkBuddy": {"target": "WorkBuddy", "status": "AVAILABLE"},
+        },
+    }
+    if stats_entries:
+        consumer_surfaces_dict["stats"] = stats_entries
 
     manifest = {
         "schema": SCHEMA,
@@ -120,18 +142,7 @@ def build_consumer_manifest(
         "product_candidate_sha": code_commit,
         "code_commit": code_commit,
         "manifest_version": 1,
-        "consumer_surfaces": {
-            "control": control_entries,
-            "facts": fact_entries,
-            "identity": {
-                "player_identity_projection": identity_entry,
-            },
-            "consumer_packages": consumer_packages or {
-                "ChatGPT": {"target": "ChatGPT", "status": "AVAILABLE"},
-                "Gemini Notebook": {"target": "Gemini Notebook", "status": "AVAILABLE"},
-                "WorkBuddy": {"target": "WorkBuddy", "status": "AVAILABLE"},
-            },
-        },
+        "consumer_surfaces": consumer_surfaces_dict,
         "navigation": {
             "bootstrap_rule": [
                 "1. Fresh-read live release_status to discover current_release_id and state.",
@@ -213,6 +224,10 @@ def validate_consumer_manifest(
         missing = sorted(REQUIRED_IDENTITY_KEYS - set(identity or {}))
         raise ConsumerManifestError(f"CONSUMER_MANIFEST_MISSING_IDENTITY:{','.join(missing)}")
 
+    stats = surfaces.get("stats")
+    if stats is not None and not isinstance(stats, dict):
+        raise ConsumerManifestError("CONSUMER_MANIFEST_STATS_INVALID")
+
     # Verify self-hash
     stored_sha = manifest_data.get("manifest_sha256")
     without_hash = {k: v for k, v in manifest_data.items() if k != "manifest_sha256"}
@@ -221,8 +236,12 @@ def validate_consumer_manifest(
     if stored_sha not in {computed_sha, computed_without}:
         raise ConsumerManifestError("CONSUMER_MANIFEST_HASH_MISMATCH")
 
+    categories = [("control", control), ("facts", facts), ("identity", identity)]
+    if stats:
+        categories.append(("stats", stats))
+
     all_entries = {}
-    for cat_name, cat_dict in [("control", control), ("facts", facts), ("identity", identity)]:
+    for cat_name, cat_dict in categories:
         for key, entry in cat_dict.items():
             _validate_entry(key, entry, category=cat_name)
             all_entries[key] = entry

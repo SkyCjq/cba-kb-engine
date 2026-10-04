@@ -283,9 +283,23 @@ def main():
     q.add_argument('--claims',type=Path)
     q.add_argument('--queue',type=Path)
     q.add_argument('--unknown',type=Path)
+    q.add_argument('--stats',type=Path)
     q.add_argument('--master',type=Path)
     q.add_argument('--format',choices=('json','markdown'),default='json')
     q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('stats-ingest')
+    q.add_argument('--season',required=True)
+    q.add_argument('--match-type',default='1')
+    q.add_argument('--page-size',type=int,default=50)
+    q.add_argument('--max-pages',type=int,default=1)
+    q.add_argument('--team-id',type=int)
+    q.add_argument('--identity-registry',type=Path)
+    q.add_argument('--key')
+    q.add_argument('--offline-payload',type=Path)
+    q.add_argument('--output',type=Path,required=True)
+    q=sub.add_parser('stats-validate')
+    q.add_argument('--input',type=Path,required=True)
+    q.add_argument('--output',type=Path)
     q=sub.add_parser('plan'); q.add_argument('--entries',type=Path,required=True); q.add_argument('--release-id',required=True)
     q.add_argument('--status-id',required=True); q.add_argument('--archive-id',required=True)
     q.add_argument('--dependencies',type=Path);q.add_argument('--environment',choices=['sandbox','production'],default='sandbox')
@@ -1337,6 +1351,13 @@ def main():
                     for row in reader:
                         if a.name and (row.get('姓名') == a.name or row.get('球员姓名') == a.name):
                             facts.append(row)
+            stats_data = []
+            if a.stats:
+                st_obj = json.loads(a.stats.read_text(encoding='utf-8'))
+                if isinstance(st_obj, list):
+                    stats_data = st_obj
+                elif isinstance(st_obj, dict):
+                    stats_data = [st_obj]
             rv = ResearchView(
                 subject_name=a.name,
                 subject_player_uid=a.player_uid,
@@ -1345,6 +1366,7 @@ def main():
                 claims=clms,
                 verification_items=v_items,
                 unknown_items=u_items,
+                stats=stats_data,
             )
             if a.format == 'markdown':
                 md = rv.render_markdown()
@@ -1354,6 +1376,84 @@ def main():
                 d = rv.to_dict()
                 save(a.output, d)
                 result = d
+        elif a.command == 'stats-ingest':
+            from .adapters.cba_stats import CBAStatsAdapter, decrypt_cba_envelope
+            from .stats import validate_stats_record, deduplicate_and_reconcile_stats
+            key_bytes = a.key.encode('utf-8') if a.key else None
+            adapter = CBAStatsAdapter(key=key_bytes)
+            registry = None
+            if a.identity_registry:
+                from .player_identity import PlayerRegistry
+                registry = PlayerRegistry.load(a.identity_registry)
+
+            records = []
+            if a.offline_payload:
+                raw_bytes = a.offline_payload.read_bytes()
+                try:
+                    payload_obj = json.loads(raw_bytes.decode('utf-8'))
+                    if isinstance(payload_obj, str):
+                        decoded_data, decoded_sha = decrypt_cba_envelope(raw_bytes, adapter.get_encryption_key())
+                    elif isinstance(payload_obj, dict) and "records" in payload_obj:
+                        decoded_data = payload_obj
+                        decoded_sha = digest(raw_bytes)
+                    else:
+                        decoded_data = payload_obj
+                        decoded_sha = digest(raw_bytes)
+                except Exception:
+                    decoded_data, decoded_sha = decrypt_cba_envelope(raw_bytes, adapter.get_encryption_key())
+
+                prov_base = {
+                    "url": f"offline://{a.offline_payload.name}",
+                    "endpoint": "/api/player-base-list",
+                    "raw_sha256": digest(raw_bytes),
+                    "decoded_sha256": decoded_sha,
+                    "season": str(a.season),
+                    "match_type_id": str(a.match_type),
+                }
+                raw_list = decoded_data.get("records", []) if isinstance(decoded_data, dict) else decoded_data
+                for r in raw_list:
+                    rec = adapter.transform_provider_record(r, prov_base, registry=registry)
+                    records.append(rec)
+            else:
+                resp = adapter.fetch_player_base_page(
+                    season=a.season,
+                    match_type_id=int(a.match_type),
+                    page_number=1,
+                    page_size=a.page_size,
+                    team_id=a.team_id,
+                )
+                raw_list = resp["decoded_data"].get("records", [])
+                prov_base = {
+                    "url": resp["url"],
+                    "endpoint": resp["endpoint"],
+                    "raw_sha256": resp["raw_sha256"],
+                    "decoded_sha256": resp["decoded_sha256"],
+                    "season": str(a.season),
+                    "match_type_id": str(a.match_type),
+                    "captured_at": resp["captured_at"],
+                    "request_payload": resp["request_payload"],
+                }
+                for r in raw_list:
+                    rec = adapter.transform_provider_record(r, prov_base, registry=registry)
+                    records.append(rec)
+
+            records = deduplicate_and_reconcile_stats(records)
+            save(a.output, records)
+            result = {"count": len(records), "output": str(a.output)}
+
+        elif a.command == 'stats-validate':
+            from .stats import validate_stats_record
+            data = json.loads(a.input.read_text(encoding='utf-8'))
+            if isinstance(data, dict):
+                items = [data]
+            elif isinstance(data, list):
+                items = data
+            else:
+                raise ValueError("Expected dict or list in stats input")
+            validated = [validate_stats_record(x) for x in items]
+            result = {"validated_count": len(validated), "status": "VALID"}
+            if a.output:
+                save(a.output, result)
         elif a.command=='plan':
             from .current_state import clean
             def read_plan_input(path):
