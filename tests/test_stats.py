@@ -690,6 +690,7 @@ def test_validate_consumer_manifest_with_stats_surface():
 
     manifest = build_consumer_manifest(
         release_id="REL-20261003-01",
+        product_version="v2.0.0",
         code_commit="c" * 40,
         surfaces=control_entries,
         facts=fact_entries,
@@ -698,7 +699,11 @@ def test_validate_consumer_manifest_with_stats_surface():
     )
 
     # Valid validation without resolver
-    res = validate_consumer_manifest(manifest, expected_release_id="REL-20261003-01")
+    res = validate_consumer_manifest(
+        manifest,
+        expected_release_id="REL-20261003-01",
+        expected_product_version="v2.0.0",
+    )
     assert res["status"] == "PASS"
     assert res["entries_validated"] == len(control_keys) + 1 + 1 + 1  # control + facts + identity + stats
 
@@ -709,7 +714,9 @@ def test_validate_consumer_manifest_with_stats_surface():
     from cba_kb.evidence_ledger import canonical_bytes
     bad_stats_manifest["manifest_sha256"] = digest(canonical_bytes(without_hash))
     with pytest.raises(ConsumerManifestError, match="STATS_AUTHORITY_INVALID:player_stats_projection"):
-        validate_consumer_manifest(bad_stats_manifest)
+        validate_consumer_manifest(
+            bad_stats_manifest, expected_product_version="v2.0.0",
+        )
 
     # Valid validation with artifact resolver
     store = {f"ctrl_{k}": b"fake_ctrl" for k in control_keys}
@@ -725,6 +732,7 @@ def test_validate_consumer_manifest_with_stats_surface():
 
     manifest_with_resolver = build_consumer_manifest(
         release_id="REL-20261003-01",
+        product_version="v2.0.0",
         code_commit="c" * 40,
         surfaces=control_entries,
         facts=fact_entries,
@@ -734,6 +742,7 @@ def test_validate_consumer_manifest_with_stats_surface():
     res_resolver = validate_consumer_manifest(
         manifest_with_resolver,
         expected_release_id="REL-20261003-01",
+        expected_product_version="v2.0.0",
         artifact_resolver=lambda art_id: store[art_id],
     )
     assert res_resolver["status"] == "PASS"
@@ -745,6 +754,7 @@ def test_validate_consumer_manifest_with_stats_surface():
         validate_consumer_manifest(
             manifest_with_resolver,
             expected_release_id="REL-20261003-01",
+            expected_product_version="v2.0.0",
             artifact_resolver=lambda art_id: bad_store[art_id],
         )
 
@@ -758,6 +768,7 @@ def test_validate_consumer_manifest_with_stats_surface():
         validate_consumer_manifest(
             manifest_with_resolver,
             expected_release_id="REL-20261003-01",
+            expected_product_version="v2.0.0",
             artifact_resolver=unreadable_resolver,
         )
 
@@ -845,5 +856,3 @@ def test_all_mvp_metric_and_raw_keys_round_trip():
     assert set(validated["metrics"]).issubset(CANONICAL_METRIC_MVP_ALLOWLIST)
     assert set(validated["raw_metrics"]).issubset(RAW_METRICS_MVP_ALLOWLIST)
     assert len(validated["metrics"]) == len(CANONICAL_METRIC_MVP_ALLOWLIST)
-
-

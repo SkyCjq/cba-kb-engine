@@ -692,6 +692,7 @@ def validate_release_infra_compatibility(
         identity_projection, platform_results,
         observed_target_parents=None,
         expected_source_registry_sha256=None,
+        expected_product_version=None,
         require_environmental_stability=False):
     """Run the real release contracts as a side-effect-free qualification gate."""
     if (not isinstance(plan, dict)
@@ -780,16 +781,22 @@ def validate_release_infra_compatibility(
     from .consumer_manifest import validate_consumer_manifest
     from .consumer_projection import validate_player_identity_consumer_projection
     from .consumer_acceptance import evaluate_consumer_closure_acceptance
+    # This value must already have come from release/Requirement authority;
+    # never derive the expected value from candidate evidence.
+    if (not isinstance(expected_product_version, str)
+            or not expected_product_version.strip()):
+        raise PreMutationAbort('RELEASE_INFRA_PRODUCT_VERSION_BINDING_INVALID')
+    expected_product_version = expected_product_version.strip()
     manifest_result = validate_consumer_manifest(
         consumer_manifest,
         expected_release_id=status_doc['current_release_id'],
-        expected_product_version=consumer_manifest.get('product_version'),
+        expected_product_version=expected_product_version,
         expected_code_commit=consumer_manifest.get('code_commit'),
     )
     projection_result = validate_player_identity_consumer_projection(
         identity_projection,
         expected_release_id=status_doc['current_release_id'],
-        expected_product_version=consumer_manifest.get('product_version'),
+        expected_product_version=expected_product_version,
         expected_code_commit=consumer_manifest.get('code_commit'),
         expected_source_registry_sha256=expected_source_registry_sha256,
     )
@@ -816,6 +823,7 @@ def validate_release_infra_compatibility(
         gemini_result=platform_results['Gemini Notebook'],
         workbuddy_result=platform_results['WorkBuddy'],
         expected_source_registry_sha256=expected_source_registry_sha256,
+        expected_product_version=expected_product_version,
     )
     if acceptance_result['status'] != 'PASS':
         raise PreMutationAbort('RELEASE_INFRA_CONSUMER_ACCEPTANCE_INVALID')

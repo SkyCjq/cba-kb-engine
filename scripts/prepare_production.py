@@ -21,6 +21,7 @@ from cba_kb.current_state import (
     current_version_document_migration, replace_current_block,
     target_metadata,
 )
+from cba_kb.consumer_manifest import PRODUCT_VERSION as LEGACY_PRODUCT_VERSION
 from cba_kb.drive import Drive
 from cba_kb.instance import load_instance
 from cba_kb.native import wrap
@@ -155,6 +156,7 @@ def build_release_infra_compatibility_bundle(
     platform_results=None,
     platform_results_path=None,
     source_registry_sha256=None,
+    expected_product_version=None,
     safe_baseline_release_id=None,
     topology=None,
     topology_path=None,
@@ -273,6 +275,21 @@ def build_release_infra_compatibility_bundle(
         consumer_manifest = json.loads(cm_raw)
     if not isinstance(consumer_manifest, dict):
         raise PreMutationAbort("RELEASE_INFRA_CONSUMER_MANIFEST_MISSING")
+
+    # The release/Requirement authority must be independent of candidate
+    # evidence.  An explicit caller value wins; policy is the canonical
+    # programmatic source.  The existing constant preserves legacy baseline
+    # callers, while the CLI requires the explicit form below.
+    if expected_product_version is None and isinstance(policy, dict):
+        expected_product_version = policy.get("expected_product_version")
+    if expected_product_version is None:
+        expected_product_version = LEGACY_PRODUCT_VERSION
+    if (
+        not isinstance(expected_product_version, str)
+        or not expected_product_version.strip()
+    ):
+        raise PreMutationAbort("RELEASE_INFRA_PRODUCT_VERSION_BINDING_INVALID")
+    expected_product_version = expected_product_version.strip()
 
     # Identity projection
     if identity_projection is None:
@@ -402,6 +419,7 @@ def build_release_infra_compatibility_bundle(
         "consumer_manifest": consumer_manifest,
         "identity_projection": identity_projection,
         "expected_source_registry_sha256": source_registry_sha256,
+        "expected_product_version": expected_product_version,
         "platform_results": platform_results,
         "require_environmental_stability": require_environmental_stability,
     }
@@ -1790,12 +1808,15 @@ def main(argv=None):
     parser.add_argument("--evidence-root", type=Path)
     parser.add_argument("--safe-baseline-release-id")
     parser.add_argument("--source-registry-sha", "--source-registry-sha256", dest="source_registry_sha")
+    parser.add_argument("--product-version")
     parser.add_argument("--topology", type=Path)
     parser.add_argument("--consumer-manifest", type=Path)
     parser.add_argument("--identity-projection", type=Path)
     parser.add_argument("--platform-results", type=Path)
     parser.add_argument("--require-environmental-stability", action="store_true")
     args = parser.parse_args(argv)
+    if args.step == "compat-preflight" and not args.product_version:
+        parser.error("--product-version is required for compat-preflight")
     if args.step != "compat-preflight":
         _require_release(args.release)
         if not args.output:
@@ -1811,6 +1832,7 @@ def main(argv=None):
             evidence_root=args.evidence_root,
             safe_baseline_release_id=args.safe_baseline_release_id,
             source_registry_sha256=args.source_registry_sha,
+            expected_product_version=args.product_version,
             topology_path=args.topology,
             consumer_manifest_path=args.consumer_manifest,
             identity_projection_path=args.identity_projection,
