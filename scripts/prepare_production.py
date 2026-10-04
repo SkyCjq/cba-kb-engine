@@ -26,7 +26,8 @@ from cba_kb.drive import Drive
 from cba_kb.instance import load_instance
 from cba_kb.native import wrap
 from cba_kb.release import (
-    PreMutationAbort, ReleaseContractError, _inventory, fingerprint,
+    PLANNED_TARGET_ROLES, PreMutationAbort, ReleaseContractError, _inventory,
+    fingerprint,
     freeze_fingerprint, prepare as prepare_release, runtime_journal_sha256,
     snapshot, validate_freeze_fingerprint_compatibility,
     validate_release_infra_compatibility, validate_release_topology,
@@ -389,7 +390,7 @@ def build_release_infra_compatibility_bundle(
 
     observed_target_parents = {}
     for tid in target_ids:
-        if tid not in by_id or by_id[tid].get("role") not in {"CURRENT_TARGET", "STAGING_TARGET"}:
+        if tid not in by_id or by_id[tid].get("role") not in PLANNED_TARGET_ROLES:
             raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
         if tid in observed_parents_by_target:
             fresh_parents = observed_parents_by_target[tid]
