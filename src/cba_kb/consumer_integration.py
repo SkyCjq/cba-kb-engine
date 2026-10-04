@@ -37,6 +37,43 @@ _UNC_PATH_RE = re.compile(r"(?:^|[\s,;\"'\[\(=])\\\\[^\s,;\"'\]\)=]+")
 _FILE_URL_RE = re.compile(r"file://[^\s,;\"'\]]+")
 _POSIX_PATH_RE = re.compile(r"(?:^|[\s,;\"'\[\(=])/(?:[^\s,;\"'\]\)=]+)")
 
+_SENSITIVE_KEY_RE = re.compile(
+    r"(?i)^(?:.*[_-])?(?:"
+    r"api[_-]?(?:key|token|secret)|"
+    r"client[_-]?secret|"
+    r"secret(?:[_-]?key)?|"
+    r"private[_-]?(?:key|path)|"
+    r"password|passwd|pwd|"
+    r"session(?:[_-]?(?:token|id|cookie|key))?|"
+    r"cookie(?:s)?|"
+    r"set[_-]?cookie|"
+    r"auth(?:entication|orization)?(?:[_-]?token)?|"
+    r"bearer(?:[_-]?token)?|"
+    r"credential(?:s)?|"
+    r"(?:access|refresh|id|csrf|xsrf)[_-]?token|"
+    r"token(?:s)?|"
+    r"raw[_-]?ref|"
+    r"(?:file|drive)[_-]?id"
+    r")$"
+)
+
+_SENSITIVE_VALUE_PATTERNS = [
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----"),
+    re.compile(r"(?i)\bBearer\s+[A-Za-z0-9_./+~=-]{6,}"),
+    re.compile(
+        r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|"
+        r"sk-(?:proj-)?[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{30,}|AKIA[A-Z0-9]{16})\b"
+    ),
+    re.compile(r"https?://[^\s/@:]+:[^\s/@]+@"),
+    re.compile(
+        r"(?i)(?:^|[\s,;\"'\[\(=&?])(?:"
+        r"cookie|cookies|session(?:[_-]?(?:token|id|cookie|key))?|"
+        r"api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|"
+        r"password|passwd|pwd"
+        r")\s*[:=]\s*[^\s,;\"'\]\)=&]+"
+    ),
+]
+
 
 _SCHEMA_KEYS = {
     "statement_id",
@@ -126,6 +163,29 @@ class ConsumerSafetyError(RuntimeError):
     pass
 
 
+def is_sensitive_key(key: str) -> bool:
+    """Check if a dictionary key represents sensitive credentials, sessions, or tokens."""
+    if not isinstance(key, str):
+        return False
+    k = key.strip()
+    if not k or k in _SCHEMA_KEYS:
+        return False
+    return bool(_SENSITIVE_KEY_RE.match(k))
+
+
+def is_sensitive_value(value: str) -> bool:
+    """Check if a string value contains sensitive credential patterns or secret tokens."""
+    if not isinstance(value, str):
+        return False
+    s = value.strip()
+    if not s or s in _SCHEMA_KEYS:
+        return False
+    for pat in _SENSITIVE_VALUE_PATTERNS:
+        if pat.search(s):
+            return True
+    return False
+
+
 def is_private_locator(text: str) -> bool:
     """Detect local absolute filesystem paths, UNC paths, and private Drive locators generically."""
     if not isinstance(text, str):
@@ -136,6 +196,9 @@ def is_private_locator(text: str) -> bool:
 
     if s in _SCHEMA_KEYS:
         return False
+
+    if is_sensitive_value(s):
+        return True
 
     # 1. file:// locators
     if _FILE_URL_RE.search(s):
@@ -174,18 +237,19 @@ def is_private_locator(text: str) -> bool:
 
 
 def find_private_locator_in_object(obj: Any) -> Optional[str]:
-    """Recursively search for any private locator string leaf or dict key in an arbitrary nested data structure.
+    """Recursively search for any private locator string leaf or sensitive key/credential in an arbitrary nested data structure.
 
-    Returns the first offending locator string found, or None if completely clean.
+    Returns the first offending locator string or sensitive key found, or None if completely clean.
     """
     if isinstance(obj, str):
-        if is_private_locator(obj):
+        if is_private_locator(obj) or is_sensitive_value(obj):
             return obj
         return None
     elif isinstance(obj, dict):
         for k, v in obj.items():
-            if isinstance(k, str) and is_private_locator(k):
-                return k
+            k_str = str(k)
+            if is_sensitive_key(k_str) or is_private_locator(k_str):
+                return k_str
             found = find_private_locator_in_object(v)
             if found is not None:
                 return found
@@ -212,17 +276,18 @@ def sanitize_locator_string(
 
 
 def sanitize_locator_value(value: Any, doc_id: str, target_slug: str) -> Any:
-    """Sanitize locator value (string, dict, or list) removing private paths/Drive locators."""
+    """Sanitize locator value (string, dict, or list) removing private paths/Drive locators and sensitive fields."""
     if isinstance(value, str):
         return sanitize_locator_string(value, doc_id, target_slug)
     elif isinstance(value, dict):
         sanitized = {}
         for k, v in value.items():
-            if k in {"private_path", "raw_ref", "credentials", "token", "file_id", "drive_id"}:
+            k_str = str(k)
+            if is_sensitive_key(k_str):
                 continue
             sanitized[k] = sanitize_locator_value(v, doc_id, target_slug)
         return sanitized
-    elif isinstance(value, list):
+    elif isinstance(value, (list, tuple)):
         return [sanitize_locator_value(x, doc_id, target_slug) for x in value]
     return value
 
@@ -262,11 +327,12 @@ def sanitize_provenance(prov: Any, doc_id: str = "unknown", target_slug: str = "
     elif isinstance(prov, dict):
         sanitized = {}
         for k, v in prov.items():
-            if k in {"private_path", "raw_ref", "credentials", "token", "file_id", "drive_id"}:
+            k_str = str(k)
+            if is_sensitive_key(k_str):
                 continue
             sanitized[k] = sanitize_provenance(v, doc_id=doc_id, target_slug=target_slug)
         return sanitized
-    elif isinstance(prov, list):
+    elif isinstance(prov, (list, tuple)):
         return [sanitize_provenance(x, doc_id=doc_id, target_slug=target_slug) for x in prov]
     return prov
 

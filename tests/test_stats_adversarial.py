@@ -682,5 +682,156 @@ def test_deduplicate_same_metrics_different_provenance_not_idempotent():
         deduplicate_and_reconcile_stats([rec1, rec_no_ts])
 
 
+def test_q2_reproducer_nested_cookie_and_credential_sanitization():
+    """Q2 reproducer (O10/A17): sensitive request metadata inside provenance.request_contract is sanitized.
+
+    Verifies:
+    - Nested cookie-like and credential fields are stripped from request_contract.
+    - Safe query params and provenance metadata are fully preserved.
+    - Projected output passes the final locator guard as MATERIALIZED.
+    """
+    record = copy.deepcopy(SAMPLE_VALID_STATS)
+    record["rights"]["classification"] = "PUBLIC"
+    record["rights"]["public_export_allowed"] = True
+    record["provenance"]["request_contract"] = {
+        "season": 2024,
+        "matchTypeId": 1,
+        "cookie": "<MOCK_COOKIE>",
+        "Cookie": "<MOCK_COOKIE>",
+        "set-cookie": "<MOCK_COOKIE>",
+        "session_token": "<MOCK_TOKEN>",
+        "authToken": "<MOCK_TOKEN>",
+        "headers": {
+            "Cookie": "<MOCK_COOKIE>",
+            "Authorization": "Bearer <MOCK_BEARER>",
+            "User-Agent": "CBA-Client/1.0",
+        },
+        "nested_list": [
+            {"apiKey": "<MOCK_KEY>", "safe_param": "regular_season"},
+        ],
+    }
+
+    auth_list = [
+        {
+            "target": "ChatGPT",
+            "doc_id": record["record_id"],
+            "allowed_scope": CONSUMER_CAPABILITY_PLAYER_STATS,
+            "authorization_basis": "PUBLIC",
+            "frozen_at": "2026-10-03T10:00:00Z",
+        }
+    ]
+
+    exported, cap = project_stats_for_consumer([record], target="ChatGPT", authorizations=auth_list)
+    assert cap == "MATERIALIZED"
+    assert len(exported) == 1
+    exp_prov = exported[0]["provenance"]
+    rc = exp_prov["request_contract"]
+
+    # Safe fields preserved
+    assert rc["season"] == 2024
+    assert rc["matchTypeId"] == 1
+    assert rc["headers"]["User-Agent"] == "CBA-Client/1.0"
+    assert rc["nested_list"][0]["safe_param"] == "regular_season"
+
+    # Sensitive fields stripped
+    assert "cookie" not in rc
+    assert "Cookie" not in rc
+    assert "set-cookie" not in rc
+    assert "session_token" not in rc
+    assert "authToken" not in rc
+    assert "Cookie" not in rc["headers"]
+    assert "Authorization" not in rc["headers"]
+    assert "apiKey" not in rc["nested_list"][0]
+
+    # Output passes locator / sensitive guard
+    assert find_private_locator_in_object(exported[0]) is None
+
+
+def test_stats_consumer_output_guard_detects_surviving_sensitive_keys():
+    """Verify independent final guard find_private_locator_in_object catches sensitive keys and credentials."""
+    # Dict key with cookie
+    assert find_private_locator_in_object({"cookie": "<MOCK_COOKIE>"}) == "cookie"
+    assert find_private_locator_in_object({"Cookie": "<MOCK_COOKIE>"}) == "Cookie"
+    assert find_private_locator_in_object({"request_contract": {"session_id": "<MOCK_SESSION>"}}) == "session_id"
+    assert find_private_locator_in_object({"headers": {"Authorization": "<MOCK_AUTH>"}}) == "Authorization"
+    assert find_private_locator_in_object({"nested": [{"authToken": "<MOCK_TOKEN>"}]}) == "authToken"
+    assert find_private_locator_in_object({"apiKey": "<MOCK_KEY>"}) == "apiKey"
+    assert find_private_locator_in_object({"password": "<MOCK_PWD>"}) == "password"
+    assert find_private_locator_in_object({"client_secret": "<MOCK_SECRET>"}) == "client_secret"
+
+    # Safe objects pass cleanly
+    safe_obj = {
+        "season": 2024,
+        "matchTypeId": 1,
+        "endpoint": "/api/player-base-list",
+        "nested": {"safe_code": "001", "chinese_meta": "常规赛"},
+    }
+    assert find_private_locator_in_object(safe_obj) is None
+
+
+def test_stats_consumer_fail_closed_if_sensitive_key_survives():
+    """Verify project_stats_for_consumer fails closed with NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS) if leak survives."""
+    # A record where a top-level allowed field was tampered with a sensitive key
+    record = copy.deepcopy(SAMPLE_VALID_STATS)
+    record["rights"]["classification"] = "PUBLIC"
+    record["rights"]["public_export_allowed"] = True
+    # If rights dict contains a sensitive key
+    record["rights"]["api_key"] = "<MOCK_KEY>"
+
+    auth_list = [
+        {
+            "target": "ChatGPT",
+            "doc_id": record["record_id"],
+            "allowed_scope": CONSUMER_CAPABILITY_PLAYER_STATS,
+            "authorization_basis": "PUBLIC",
+            "frozen_at": "2026-10-03T10:00:00Z",
+        }
+    ]
+
+    exported, cap = project_stats_for_consumer([record], target="ChatGPT", authorizations=auth_list)
+    assert exported == []
+    assert cap == "NOT_MATERIALIZED(PRIVATE_LOCATOR_REMAINS)"
+
+
+def test_stats_safe_provenance_preservation():
+    """Verify safe provenance and request_contract fields remain intact through consumer projection."""
+    record = copy.deepcopy(SAMPLE_VALID_STATS)
+    record["rights"]["classification"] = "PUBLIC"
+    record["rights"]["public_export_allowed"] = True
+    record["provenance"]["request_contract"] = {
+        "season": 2024,
+        "matchTypeId": 1,
+        "pageSize": 50,
+        "tab": "basic",
+        "rankType": "points",
+    }
+
+    auth_list = [
+        {
+            "target": "ChatGPT",
+            "doc_id": record["record_id"],
+            "allowed_scope": CONSUMER_CAPABILITY_PLAYER_STATS,
+            "authorization_basis": "PUBLIC",
+            "frozen_at": "2026-10-03T10:00:00Z",
+        }
+    ]
+
+    exported, cap = project_stats_for_consumer([record], target="ChatGPT", authorizations=auth_list)
+    assert cap == "MATERIALIZED"
+    assert len(exported) == 1
+    rc = exported[0]["provenance"]["request_contract"]
+    assert rc == {
+        "season": 2024,
+        "matchTypeId": 1,
+        "pageSize": 50,
+        "tab": "basic",
+        "rankType": "points",
+    }
+    assert exported[0]["provenance"]["endpoint"] == "/api/player-base-list"
+    assert exported[0]["provenance"]["season"] == "2024"
+    assert exported[0]["provenance"]["match_type"] == "1"
+
+
+
 
 
