@@ -2045,7 +2045,9 @@ def test_historical_retirement_policy_reconciliation_negative_cases():
         )
 
 
-def test_project_command_scopes_unallocated_targets_to_active_artifacts(monkeypatch, tmp_path):
+def test_project_command_scopes_unallocated_targets_to_active_and_retired_artifacts(
+    monkeypatch, tmp_path,
+):
     class FakeArgs:
         release = "v1.9.0-1"
         engine_sha = "a" * 40
@@ -2064,6 +2066,8 @@ def test_project_command_scopes_unallocated_targets_to_active_artifacts(monkeypa
         "targets": {
             "code-old": {"mime": "text/plain", "mode": "binary", "allowed_parents": ["scripts"], "publish_parent": "scripts"},
             "readme": {"mime": DOC, "mode": "managed_doc", "allowed_parents": ["root"], "publish_parent": "root"},
+            "historical-retired-1": {"mime": "text/plain", "mode": "binary", "allowed_parents": ["archive"], "publish_parent": "archive", "retire_in_release": "v1.8.0-1"},
+            "historical-retired-2": {"mime": "text/plain", "mode": "binary", "allowed_parents": ["archive"], "publish_parent": "archive", "retire_in_release": "v1.8.1-1"},
             "unreleased-staging-target": {"mime": "text/plain", "mode": "binary", "allowed_parents": ["staging"], "staging_parent": "staging"},
         },
     }
@@ -2085,7 +2089,57 @@ def test_project_command_scopes_unallocated_targets_to_active_artifacts(monkeypa
     result = orchestration._project_command(FakeArgs(), instance)
     assert result["state"] == "PROJECTED"
     assert result["active_production_target_count"] == 2
+    assert result["historical_retired_policy_target_ids"] == [
+        "historical-retired-1",
+        "historical-retired-2",
+    ]
+    assert result["historical_retired_policy_markers"] == {
+        "historical-retired-1": "v1.8.0-1",
+        "historical-retired-2": "v1.8.1-1",
+    }
     assert "unreleased-staging-target" not in [t["id"] for t in result["existing_targets"]]
+
+
+def test_project_command_current_release_retirement_fails_closed(monkeypatch, tmp_path):
+    class FakeArgs:
+        release = "v1.9.0-1"
+        engine_sha = "a" * 40
+        allocation = None
+        output = tmp_path / "projection.json"
+
+    status_data = {
+        "artifacts": [
+            {"id": "code-old", "name": "code-old", "sha256": "s1"},
+        ]
+    }
+    production = {
+        "status_id": "status-doc",
+        "archive_id": "archive-doc",
+        "targets": {
+            "code-old": {"mime": "text/plain", "mode": "binary", "allowed_parents": ["scripts"], "publish_parent": "scripts"},
+            "invalid-current-retirement": {"mime": "text/plain", "mode": "binary", "allowed_parents": ["archive"], "publish_parent": "archive", "retire_in_release": "v1.9.0-1"},
+        },
+    }
+    instance = type("FakeInstance", (), {
+        "read_json": lambda self, name: production if name == "production.json" else {
+            "inputs": {"manifest.csv": {"id": "manifest-id"}},
+            "parents": {"scripts": "scripts"},
+        },
+        "config_path": lambda self, name: tmp_path / name,
+    })()
+    monkeypatch.setattr(orchestration, "verify_execution_sha", lambda *a, **k: None)
+    monkeypatch.setattr(orchestration, "Drive", lambda *a, **k: type("FakeDrive", (), {
+        "get": lambda self, file_id: json.dumps(status_data).encode() if file_id == "status-doc" else b"drive_file_id,uid\ncode-old,code-old\n",
+        "meta": lambda self, file_id: {"id": file_id, "modifiedTime": "2026-09-30T00:00:00Z", "version": "1"},
+    })())
+    monkeypatch.setattr(subprocess, "check_output", lambda *a, **k: b"code-old\0")
+    monkeypatch.setattr(Path, "read_bytes", lambda self: b"fake content")
+
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match="RETIREMENT_TARGET_NOT_IN_PREVIOUS_STATUS",
+    ):
+        orchestration._project_command(FakeArgs(), instance)
 
 
 def _build_test_topology(entries, staging_id="staging"):
