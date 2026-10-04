@@ -1789,6 +1789,262 @@ def test_stage4_revalidation_fresh_binds_retirement_marker(monkeypatch):
         )
 
 
+def _incident_regression_fixture():
+    release_id = "v2.0.0-1"
+    active_ids = [f"active_{i:03d}" for i in range(1, 300)]  # 299 active
+    hist_ids = ["hist_01", "hist_02"]  # 2 historical-retired
+    res_keys = [f"res_key_{i:02d}" for i in range(1, 10)]  # 9 reservation keys
+    res_ids = [f"res_target_{i:02d}" for i in range(1, 10)]
+    reservations = dict(zip(res_keys, res_ids))
+
+    existing_targets = [
+        {
+            "logical_key": f"entry/{aid}",
+            "id": aid,
+            "mime": "text/plain",
+            "mode": "binary",
+            "allowed_parents": ["root"],
+            "publish_parent": "root",
+            "staging_parent": None,
+        }
+        for aid in active_ids
+    ]
+    new_targets = [
+        {
+            "logical_key": rkey,
+            "id": rid,
+            "name": f"{rkey}.txt",
+            "mime": "text/plain",
+            "mode": "binary",
+            "publish_parent": "root",
+        }
+        for rkey, rid in reservations.items()
+    ]
+    projection = {
+        "release_id": release_id,
+        "status_id": "status_id",
+        "semantic_delta_signature": "sig",
+        "existing_targets": existing_targets,
+        "new_targets": new_targets,
+        "active_target_ids": sorted(active_ids),
+        "historical_retired_policy_target_ids": sorted(hist_ids),
+        "historical_retired_policy_markers": {
+            "hist_01": "v1.9.0-1",
+            "hist_02": "v1.9.0-1",
+        },
+    }
+    allocation = {
+        "release_id": release_id,
+        "status_id": "status_id",
+        "semantic_delta_signature": "sig",
+        "reservations": reservations,
+    }
+    targets = {}
+    for aid in active_ids:
+        targets[aid] = {
+            "mime": "text/plain",
+            "mode": "binary",
+            "allowed_parents": ["root"],
+            "publish_parent": "root",
+        }
+    for hid in hist_ids:
+        targets[hid] = {
+            "mime": "text/plain",
+            "mode": "binary",
+            "allowed_parents": ["archive"],
+            "publish_parent": "archive",
+            "retire_in_release": "v1.9.0-1",
+        }
+    pre_reservation_policy = {"targets": dict(targets)}
+
+    post_targets = dict(targets)
+    for rid in res_ids:
+        post_targets[rid] = {
+            "mime": "text/plain",
+            "mode": "binary",
+            "allowed_parents": ["root", "staging"],
+            "publish_parent": "root",
+            "staging_parent": "staging",
+        }
+    post_reservation_policy = {"targets": post_targets}
+
+    return projection, allocation, pre_reservation_policy, post_reservation_policy
+
+
+def test_historical_retirement_policy_reconciliation_incident_shape():
+    """Mandatory incident regression: 299 active + 2 historical-retired + 9 reserved.
+
+    Pre-reservation policy set (301) must PASS.
+    Post-reservation policy set (310) must PASS.
+    311th unclassified target must FAIL CLOSED with PRIVATE_PRODUCTION_TARGET_DRIFT.
+    """
+    projection, allocation, pre_policy, post_policy = _incident_regression_fixture()
+    assert len(projection["existing_targets"]) == 299
+    assert len(projection["historical_retired_policy_target_ids"]) == 2
+    assert len(allocation["reservations"]) == 9
+    assert len(pre_policy["targets"]) == 301
+    assert len(post_policy["targets"]) == 310
+
+    # 1. Pre-reservation policy set = 301 must PASS
+    pre_result = orchestration.validate_policy_reconciliation(
+        projection, allocation, pre_policy,
+    )
+    assert len(pre_result["active_production_targets"]) == 299
+    assert len(pre_result["reserved_staging_targets"]) == 9
+    assert pre_result["historical_retired_policy_targets"] == ["hist_01", "hist_02"]
+
+    # 2. Post-reservation policy set = 310 must PASS
+    post_result = orchestration.validate_policy_reconciliation(
+        projection, allocation, post_policy,
+    )
+    assert len(post_result["active_production_targets"]) == 299
+    assert len(post_result["reserved_staging_targets"]) == 9
+    assert post_result["historical_retired_policy_targets"] == ["hist_01", "hist_02"]
+
+    # 3. Adding one unclassified 311th target must FAIL CLOSED
+    drift_policy = json.loads(json.dumps(post_policy))
+    drift_policy["targets"]["extra_311"] = {
+        "mime": "text/plain",
+        "mode": "binary",
+        "allowed_parents": ["root"],
+    }
+    assert len(drift_policy["targets"]) == 311
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match="PRIVATE_PRODUCTION_TARGET_DRIFT",
+    ):
+        orchestration.validate_policy_reconciliation(
+            projection, allocation, drift_policy,
+        )
+
+
+def test_historical_retirement_policy_reconciliation_negative_cases():
+    """Mandatory negative test suite for historical-retired policy validation."""
+    projection, allocation, pre_policy, post_policy = _incident_regression_fixture()
+
+    # Case 1: historical-retired projection ID absent from live policy => fail closed
+    missing_hist_policy = json.loads(json.dumps(pre_policy))
+    del missing_hist_policy["targets"]["hist_01"]
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match="HISTORICAL_RETIRED_TARGET_NOT_IN_POLICY",
+    ):
+        orchestration.validate_policy_reconciliation(
+            projection, allocation, missing_hist_policy,
+        )
+
+    # Case 2: historical-retired record marker removed => fail closed
+    no_marker_policy = json.loads(json.dumps(pre_policy))
+    del no_marker_policy["targets"]["hist_01"]["retire_in_release"]
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match="HISTORICAL_RETIRED_TARGET_RETIREMENT_CHANGED",
+    ):
+        orchestration.validate_policy_reconciliation(
+            projection, allocation, no_marker_policy,
+        )
+
+    # Case 3: historical-retired record marker changed in a way that breaks authority => fail closed
+    changed_marker_policy = json.loads(json.dumps(pre_policy))
+    changed_marker_policy["targets"]["hist_01"]["retire_in_release"] = "v1.8.0-1"
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match="HISTORICAL_RETIRED_TARGET_RETIREMENT_CHANGED",
+    ):
+        orchestration.validate_policy_reconciliation(
+            projection, allocation, changed_marker_policy,
+        )
+
+    # Case 4: current-release retirement marker cannot be silently treated as historical
+    current_release_marker_policy = json.loads(json.dumps(pre_policy))
+    current_release_marker_policy["targets"]["hist_01"]["retire_in_release"] = "v2.0.0-1"
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match="HISTORICAL_RETIRED_TARGET_POINTS_TO_CURRENT_RELEASE",
+    ):
+        orchestration.validate_policy_reconciliation(
+            projection, allocation, current_release_marker_policy,
+        )
+
+    # Case 5: arbitrary extra policy target remains PRIVATE_PRODUCTION_TARGET_DRIFT
+    arbitrary_extra_policy = json.loads(json.dumps(pre_policy))
+    arbitrary_extra_policy["targets"]["arbitrary_extra_target"] = {
+        "mime": "text/plain",
+        "mode": "binary",
+        "allowed_parents": ["root"],
+    }
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match="PRIVATE_PRODUCTION_TARGET_DRIFT",
+    ):
+        orchestration.validate_policy_reconciliation(
+            projection, allocation, arbitrary_extra_policy,
+        )
+
+    # Case 6: reserved ID set mismatch remains fail closed
+    # 6a: partial reserved IDs in post-reservation policy
+    partial_reserved_policy = json.loads(json.dumps(post_policy))
+    del partial_reserved_policy["targets"]["res_target_09"]
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match="PRIVATE_PRODUCTION_TARGET_DRIFT",
+    ):
+        orchestration.validate_policy_reconciliation(
+            projection, allocation, partial_reserved_policy,
+        )
+
+    # 6b: unexpected reserved ID in policy
+    wrong_reserved_policy = json.loads(json.dumps(post_policy))
+    del wrong_reserved_policy["targets"]["res_target_09"]
+    wrong_reserved_policy["targets"]["res_target_wrong"] = {
+        "mime": "text/plain",
+        "mode": "binary",
+        "allowed_parents": ["root", "staging"],
+        "publish_parent": "root",
+        "staging_parent": "staging",
+    }
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match="PRIVATE_PRODUCTION_TARGET_DRIFT",
+    ):
+        orchestration.validate_policy_reconciliation(
+            projection, allocation, wrong_reserved_policy,
+        )
+
+    # 6c: duplicate reserved IDs in allocation
+    duplicate_allocation = json.loads(json.dumps(allocation))
+    duplicate_allocation["reservations"]["res_key_09"] = "res_target_01"
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match="RESERVATION_ID_DUPLICATE",
+    ):
+        orchestration.validate_policy_reconciliation(
+            projection, duplicate_allocation, post_policy,
+        )
+
+    # 6d: reservation reuses active or historical target
+    reuse_allocation = json.loads(json.dumps(allocation))
+    reuse_allocation["reservations"]["res_key_09"] = "hist_01"
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match="RESERVATION_REUSES_EXISTING_TARGET",
+    ):
+        orchestration.validate_policy_reconciliation(
+            projection, reuse_allocation, post_policy,
+        )
+
+    # Case 7: target mislabeled historical-retired when it is actually active for current baseline
+    active_mislabeled_proj = json.loads(json.dumps(projection))
+    active_mislabeled_proj["historical_retired_policy_target_ids"].append("active_001")
+    with pytest.raises(
+        orchestration.ProjectionError,
+        match="HISTORICAL_RETIRED_TARGET_IN_ACTIVE_STATUS",
+    ):
+        orchestration.validate_policy_reconciliation(
+            active_mislabeled_proj, allocation, pre_policy,
+        )
+
+
 def test_project_command_scopes_unallocated_targets_to_active_artifacts(monkeypatch, tmp_path):
     class FakeArgs:
         release = "v1.9.0-1"
