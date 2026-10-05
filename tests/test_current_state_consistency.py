@@ -34,7 +34,8 @@ def _consumer_entry(key, authority, sha):
 
 def _v200_consumer_manifest(*, candidate_sha=V200_CANDIDATE_SHA,
                             code_commit=V200_EXECUTION_SHA,
-                            product_version='v2.0.0'):
+                            product_version='v2.0.0',
+                            release_id='v2.0.0-1'):
     surfaces = {
         key: _consumer_entry(key, 'control', str(index) * 64)
         for index, key in enumerate((
@@ -43,7 +44,7 @@ def _v200_consumer_manifest(*, candidate_sha=V200_CANDIDATE_SHA,
         ))
     }
     return build_consumer_manifest(
-        release_id='v2.0.0-1', product_version=product_version,
+        release_id=release_id, product_version=product_version,
         product_candidate_sha=candidate_sha, code_commit=code_commit,
         surfaces=surfaces,
         facts={'master': _consumer_entry('master', 'canonical', '6' * 64)},
@@ -134,6 +135,38 @@ def test_v200_manifest_rejects_collapsed_candidate_and_execution_sha():
             release_id='v2.0.0-1', product_version='v2.0.0',
             code_commit=V200_EXECUTION_SHA, surfaces={},
         )
+
+
+def test_v200_second_attempt_requires_explicit_product_candidate_sha():
+    with pytest.raises(ConsumerManifestError, match='PRODUCT_CANDIDATE_SHA_REQUIRED'):
+        build_consumer_manifest(
+            release_id='v2.0.0-2', product_version='v2.0.0',
+            code_commit=V200_EXECUTION_SHA, surfaces={},
+        )
+
+
+def test_v200_second_attempt_rejects_collapsed_candidate_and_execution_sha():
+    with pytest.raises(
+        ConsumerManifestError,
+        match='PRODUCT_CANDIDATE_CODE_COMMIT_COLLAPSED',
+    ):
+        _v200_consumer_manifest(
+            release_id='v2.0.0-2', candidate_sha=V200_EXECUTION_SHA,
+        )
+
+
+def test_v200_second_attempt_accepts_distinct_candidate_and_execution_sha():
+    consumer = _v200_consumer_manifest(release_id='v2.0.0-2')
+    result = validate_consumer_manifest(
+        consumer,
+        expected_release_id='v2.0.0-2',
+        expected_product_version='v2.0.0',
+        expected_product_candidate_sha=V200_CANDIDATE_SHA,
+        expected_code_commit=V200_EXECUTION_SHA,
+    )
+    assert result['status'] == 'PASS'
+    assert result['product_candidate_sha'] == V200_CANDIDATE_SHA
+    assert result['code_commit'] == V200_EXECUTION_SHA
 
 
 def test_v200_current_world_rejects_swapped_candidate_and_execution_sha():
