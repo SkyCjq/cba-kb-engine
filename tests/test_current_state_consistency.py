@@ -2,6 +2,11 @@ import json
 
 import pytest
 
+from cba_kb.consumer_manifest import (
+    ConsumerManifestError,
+    build_consumer_manifest,
+    validate_consumer_manifest,
+)
 from cba_kb.current_state import (
     BEGIN, CURRENT_VERSION_DOC, END, audit_current_history, consumer_artifacts,
     control_document_identities, current_version_document,
@@ -11,6 +16,65 @@ from cba_kb.current_state import (
     zero_business_delta,
 )
 from test_canonical_registry import SHA, manifest, registry
+
+
+V200_CANDIDATE_SHA = '2b84c900dc383d2537f435e0b7748da46318b3cc'
+V200_EXECUTION_SHA = '9ef9833389424343ab63831f26a6b8abb303b51e'
+
+
+def _consumer_entry(key, authority, sha):
+    entry = {
+        'id': f'id-{key}', 'name': key, 'sha256': sha, 'mime': 'application/json',
+        'authority': authority, 'rights': 'public',
+    }
+    if key == 'player_identity_projection':
+        entry['source_registry_sha256'] = '8' * 64
+    return entry
+
+
+def _v200_consumer_manifest(*, candidate_sha=V200_CANDIDATE_SHA,
+                            code_commit=V200_EXECUTION_SHA,
+                            product_version='v2.0.0'):
+    surfaces = {
+        key: _consumer_entry(key, 'control', str(index) * 64)
+        for index, key in enumerate((
+            'release_status', 'readme', 'index', 'technical_manual',
+            'context_card', 'current_version_doc',
+        ))
+    }
+    return build_consumer_manifest(
+        release_id='v2.0.0-1', product_version=product_version,
+        product_candidate_sha=candidate_sha, code_commit=code_commit,
+        surfaces=surfaces,
+        facts={'master': _consumer_entry('master', 'canonical', '6' * 64)},
+        identity_projection=_consumer_entry(
+            'player_identity_projection', 'derived', '7' * 64,
+        ),
+    )
+
+
+def _v200_current_world():
+    reg = registry()
+    reg['registry_release_id'] = 'v2.0.0-1'
+    meta = target_metadata('v2.0.0-1', V200_EXECUTION_SHA, reg)
+    block = render_current_state(meta)
+    docs = {
+        'readme': block + 'README body\n',
+        'index': block + 'INDEX body\n',
+        'current_version_doc': block + 'CURRENT_VERSION_DOC body\n',
+        'context_card': generate_context_card(meta, reg, manifest()),
+    }
+    status = {
+        'state': 'COMPLETE', 'current_release_id': 'v2.0.0-1',
+        'code_commit': V200_EXECUTION_SHA,
+        'release_execution_sha': V200_EXECUTION_SHA,
+        'product_candidate_sha': V200_CANDIDATE_SHA,
+    }
+    projection = {
+        'release_id': 'v2.0.0-1', 'product_version': 'v2.0.0',
+        'code_commit': V200_EXECUTION_SHA,
+    }
+    return status, reg, docs, projection
 
 
 def state_documents():
@@ -28,6 +92,97 @@ def state_documents():
 def test_current_state_agrees_across_all_surfaces():
     status, reg, docs = state_documents()
     assert validate_current_state(status, reg, manifest(), docs)['status'] == 'PASS'
+
+
+def test_v200_current_world_accepts_distinct_candidate_and_execution_bindings():
+    status, reg, docs, projection = _v200_current_world()
+    consumer = _v200_consumer_manifest()
+    result = validate_consumer_manifest(
+        consumer,
+        expected_release_id='v2.0.0-1',
+        expected_product_version='v2.0.0',
+        expected_product_candidate_sha=V200_CANDIDATE_SHA,
+        expected_code_commit=V200_EXECUTION_SHA,
+    )
+    assert result['product_candidate_sha'] == V200_CANDIDATE_SHA
+    assert result['code_commit'] == V200_EXECUTION_SHA
+    assert validate_current_state(
+        status, reg, manifest(), docs,
+        consumer_manifest=consumer, identity_projection=projection,
+    )['status'] == 'PASS'
+
+
+def test_v200_current_world_rejects_v181_product_version():
+    status, reg, docs, projection = _v200_current_world()
+    consumer = _v200_consumer_manifest(product_version='v1.8.1')
+    projection['product_version'] = 'v1.8.1'
+    with pytest.raises(ValueError, match='CURRENT_STATE_DRIFT'):
+        validate_current_state(
+            status, reg, manifest(), docs,
+            consumer_manifest=consumer, identity_projection=projection,
+        )
+
+
+def test_v200_manifest_rejects_collapsed_candidate_and_execution_sha():
+    with pytest.raises(
+        ConsumerManifestError,
+        match='PRODUCT_CANDIDATE_CODE_COMMIT_COLLAPSED',
+    ):
+        _v200_consumer_manifest(candidate_sha=V200_EXECUTION_SHA)
+    with pytest.raises(ConsumerManifestError, match='PRODUCT_CANDIDATE_SHA_REQUIRED'):
+        build_consumer_manifest(
+            release_id='v2.0.0-1', product_version='v2.0.0',
+            code_commit=V200_EXECUTION_SHA, surfaces={},
+        )
+
+
+def test_v200_current_world_rejects_swapped_candidate_and_execution_sha():
+    status, reg, docs, projection = _v200_current_world()
+    consumer = _v200_consumer_manifest(
+        candidate_sha=V200_EXECUTION_SHA,
+        code_commit=V200_CANDIDATE_SHA,
+    )
+    with pytest.raises(
+        ConsumerManifestError,
+        match='CONSUMER_MANIFEST_PRODUCT_CANDIDATE_SHA_MISMATCH',
+    ):
+        validate_consumer_manifest(
+            consumer,
+            expected_release_id='v2.0.0-1',
+            expected_product_version='v2.0.0',
+            expected_product_candidate_sha=V200_CANDIDATE_SHA,
+            expected_code_commit=V200_EXECUTION_SHA,
+        )
+    projection['code_commit'] = V200_CANDIDATE_SHA
+    with pytest.raises(ValueError, match='CURRENT_STATE_DRIFT'):
+        validate_current_state(
+            status, reg, manifest(), docs,
+            consumer_manifest=consumer, identity_projection=projection,
+        )
+
+
+def test_v181_current_world_binding_remains_backward_compatible():
+    status, reg, docs = state_documents()
+    status['current_release_id'] = 'v1.8.1-1'
+    reg['registry_release_id'] = 'v1.8.1-1'
+    docs = {
+        key: value.replace('v1.5.4-test', 'v1.8.1-1')
+        for key, value in docs.items()
+        if key != 'version'
+    }
+    consumer = _v200_consumer_manifest(product_version='v1.8.1')
+    consumer.update({
+        'release_id': 'v1.8.1-1', 'product_candidate_sha': SHA,
+        'code_commit': SHA,
+    })
+    projection = {
+        'release_id': 'v1.8.1-1', 'product_version': 'v1.8.1',
+        'code_commit': SHA,
+    }
+    assert validate_current_state(
+        status, reg, manifest(), docs,
+        consumer_manifest=consumer, identity_projection=projection,
+    )['status'] == 'PASS'
 
 
 @pytest.mark.parametrize('surface', ['readme', 'index', 'version', 'current_version_doc', 'context_card'])
@@ -286,4 +441,3 @@ def test_v181_and_future_releases_use_modern_current_surfaces(release_id):
     del docs['current_version_doc']
     with pytest.raises(ValueError, match='CURRENT_DOCUMENT_MISSING'):
         validate_current_state(status, reg, manifest(), docs)
-
