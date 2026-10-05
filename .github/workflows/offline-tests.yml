@@ -23,6 +23,8 @@ jobs:
       - name: Tracked secret and credential guard
         run: python scripts/check_secrets.py --tracked
       - run: python -m pip install -r requirements.lock
+      - name: Deterministic workflow hardening canary
+        run: PYTHONPATH=src:legacy python -m automation.orchestrator hardening-canary
       - name: Public Engine boundary and watcher synthetic tests
         run: |
           python -m pytest -q \

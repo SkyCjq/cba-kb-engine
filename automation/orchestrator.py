@@ -9,6 +9,7 @@ from typing import Any
 from .drive_io import DirectoryDriveStore, GoogleDriveStore
 from .git_io import GitHubInspector
 from .handoff import TransitionIntent, transition_commit
+from .hardening import HardeningFailure, run_hardening_canary, run_preflight_document
 from .ledger import AppendOnlyLedger
 from .models import P2AError, canonical_json_bytes, load_json_bytes, load_yaml_bytes, read_bytes, sha256_bytes
 from .review_package import build_review_package
@@ -151,6 +152,17 @@ def _transition_commit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _hardening_preflight(args: argparse.Namespace) -> int:
+    document = load_json_bytes(read_bytes(args.input), code="TASK_CONTRACT_INVALID")
+    _emit(run_preflight_document(document))
+    return 0
+
+
+def _hardening_canary(args: argparse.Namespace) -> int:
+    _emit(run_hardening_canary())
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="python -m automation.orchestrator")
     sub = root.add_subparsers(dest="command", required=True)
@@ -190,6 +202,11 @@ def parser() -> argparse.ArgumentParser:
     transition = sub.add_parser("transition-commit")
     transition.add_argument("--intent", required=True)
     transition.set_defaults(handler=_transition_commit)
+    preflight = sub.add_parser("hardening-preflight")
+    preflight.add_argument("--input", required=True)
+    preflight.set_defaults(handler=_hardening_preflight)
+    canary = sub.add_parser("hardening-canary")
+    canary.set_defaults(handler=_hardening_canary)
     return root
 
 
@@ -199,6 +216,9 @@ def main(argv: list[str] | None = None) -> int:
         return args.handler(args)
     except P2AError as exc:
         _emit({"status": "BLOCKED", "classification": exc.code, "errors": [exc.as_dict()]})
+        return 2
+    except HardeningFailure as exc:
+        _emit(exc.as_dict())
         return 2
     except Exception as exc:
         error = P2AError("UNCLASSIFIED_EXCEPTION", "Unhandled orchestrator exception", error=repr(exc))

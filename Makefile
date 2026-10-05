@@ -1,7 +1,7 @@
 PYTHON ?= .venv/bin/python
 export PYTHONPATH := src:legacy
 INSTANCE_ARG = $(if $(INSTANCE_ROOT),--instance-root "$(INSTANCE_ROOT)",)
-.PHONY: doctor auth test validate build pull extract facts domain watch document-ingest document-batch verify-v1.5.2 sync-v1.5.2 prepare-v1.5.2 reconcile-v1.5.3 prepare-v1.5.3 prepare-v1.5.3-production accept registry plan publish verify restore sync task-verify result-verify review-package transition-commit
+.PHONY: doctor auth test validate build pull extract facts domain watch document-ingest document-batch verify-v1.5.2 sync-v1.5.2 prepare-v1.5.2 reconcile-v1.5.3 prepare-v1.5.3 prepare-v1.5.3-production accept registry plan publish verify restore sync task-verify result-verify review-package transition-commit hardening-preflight hardening-canary
 doctor:
 	$(PYTHON) -m cba_kb.cli $(INSTANCE_ARG) doctor
 auth:
@@ -58,6 +58,10 @@ review-package:
 	$(PYTHON) -m automation.orchestrator review-package --task "$(TASK)" --result "$(RESULT)" --output "$(OUTPUT)" $(ARGS)
 transition-commit:
 	$(PYTHON) -m automation.orchestrator transition-commit --intent "$(INTENT)" $(ARGS)
+hardening-preflight:
+	$(PYTHON) -m automation.orchestrator hardening-preflight --input "$(INPUT)" $(ARGS)
+hardening-canary:
+	$(PYTHON) -m automation.orchestrator hardening-canary
 sync:
 	@echo 'Legacy sync is disabled. Use pull, validate, build, plan, publish, verify.'
 	@exit 1
