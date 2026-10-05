@@ -1123,6 +1123,25 @@ def archive_snapshot(drive, root, plan):
     return previous
 
 
+def _status_product_candidate_sha(plan, release_execution_sha):
+    provenance = plan.get('provenance')
+    if provenance is None:
+        candidate = (
+            plan.get('closure', {}).get('code_commit')
+            or plan.get('code_commit')
+        )
+    else:
+        roles = provenance_dag(provenance)['roles']
+        candidate = roles['product_candidate_sha']
+        if candidate is None:
+            raise ReleaseContractError('PRODUCT_CANDIDATE_SHA_REQUIRED')
+        frozen_execution_sha = roles['release_execution_sha']
+        if (frozen_execution_sha is not None
+                and frozen_execution_sha != release_execution_sha):
+            raise ReleaseContractError('RELEASE_EXECUTION_SHA_MISMATCH')
+    return _sha(candidate, 'product_candidate_sha')
+
+
 def set_status(drive, plan, state, previous_snapshot, release_execution_sha=None):
     import json
     if state == 'PUBLISHING':
@@ -1153,8 +1172,13 @@ def set_status(drive, plan, state, previous_snapshot, release_execution_sha=None
             else plan['closure'].get('previous_code_commit')
         )
         if release_execution_sha and state != 'ROLLED_BACK':
-            status['product_candidate_sha'] = plan['closure']['code_commit']
-            status['release_execution_sha'] = release_execution_sha
+            status['release_execution_sha'] = _sha(
+                release_execution_sha, 'release_execution_sha',
+            )
+            status['product_candidate_sha'] = _status_product_candidate_sha(
+                plan, status['release_execution_sha'],
+            )
+            status['code_commit'] = status['release_execution_sha']
     elif plan.get('code_commit'):
         status['code_commit'] = (
             plan['code_commit'] if state == 'COMPLETE'

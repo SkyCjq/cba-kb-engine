@@ -194,8 +194,16 @@ def validate_current_state(status, registry, manifest, documents, counts=None, b
     commit = status.get('code_commit') or status.get('published_code_commit')
     if status.get('published_code_commit', commit) != commit:
         raise ValueError('CURRENT_STATE_DRIFT')
-    metadata = target_metadata(status.get('current_release_id'), commit, registry)
     release_id = status.get('current_release_id')
+    document_commit = commit
+    if re.fullmatch(r'v1\.8\.1-\d+', release_id or ''):
+        legacy_candidate_sha = status.get('product_candidate_sha')
+        release_execution_sha = status.get('release_execution_sha')
+        if (release_execution_sha == commit
+                and isinstance(legacy_candidate_sha, str)
+                and re.fullmatch(r'[0-9a-f]{40}', legacy_candidate_sha)):
+            document_commit = legacy_candidate_sha
+    metadata = target_metadata(release_id, document_commit, registry)
     is_legacy = (
         release_id in {'v1.5.0', 'v1.5.1-1', 'v1.5.1-2', 'v1.5.2-1', 'v1.5.3-1', 'v1.5.3-2', 'v1.5.4-test', 'v1.5.5-1', 'v1.6.0-1'}
         and 'current_version_doc' not in documents
