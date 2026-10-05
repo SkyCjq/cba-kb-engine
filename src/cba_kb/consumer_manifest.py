@@ -11,6 +11,7 @@ from .evidence_ledger import canonical_bytes
 SCHEMA = "cba-kb.consumer-manifest.v1"
 SCHEMA_VERSION = 1
 PRODUCT_VERSION = "v1.8.1"
+V200_PRODUCT_VERSION = "v2.0.0"
 REQUIRED_CONTROL_KEYS = frozenset({
     "release_status",
     "readme",
@@ -38,6 +39,20 @@ def _required_sha256(value, label):
     if not re.fullmatch(r"[0-9a-f]{64}", value):
         raise ConsumerManifestError(f"{label}_INVALID_SHA256")
     return value
+
+
+def _required_git_sha(value, label):
+    value = _required_text(value, label)
+    if not re.fullmatch(r"[0-9a-f]{40}", value):
+        raise ConsumerManifestError(f"{label}_INVALID_SHA")
+    return value
+
+
+def _requires_independent_candidate(release_id, product_version):
+    return (
+        product_version == V200_PRODUCT_VERSION
+        and re.fullmatch(re.escape(product_version) + r"-\d+", release_id) is not None
+    )
 
 
 def _validate_entry(key, entry, *, category):
@@ -77,6 +92,7 @@ def build_consumer_manifest(
     release_id,
     product_version,
     code_commit,
+    product_candidate_sha=None,
     surfaces,
     facts=None,
     identity_projection=None,
@@ -86,9 +102,20 @@ def build_consumer_manifest(
     """Build a deterministic, release-scoped Consumer Manifest."""
     release_id = _required_text(release_id, "RELEASE_ID")
     product_version = _required_text(product_version, "PRODUCT_VERSION")
-    code_commit = _required_text(code_commit, "CODE_COMMIT")
-    if not re.fullmatch(r"[0-9a-f]{40}", code_commit):
-        raise ConsumerManifestError("CODE_COMMIT_INVALID_SHA")
+    code_commit = _required_git_sha(code_commit, "CODE_COMMIT")
+    if product_candidate_sha is None:
+        # Preserve the v1 manifest-builder API while making the published v2
+        # candidate binding explicit.  The v2 release must never inherit the
+        # execution commit merely because it was the only SHA supplied.
+        if _requires_independent_candidate(release_id, product_version):
+            raise ConsumerManifestError("PRODUCT_CANDIDATE_SHA_REQUIRED")
+        product_candidate_sha = code_commit
+    product_candidate_sha = _required_git_sha(
+        product_candidate_sha, "PRODUCT_CANDIDATE_SHA",
+    )
+    if (_requires_independent_candidate(release_id, product_version)
+            and product_candidate_sha == code_commit):
+        raise ConsumerManifestError("PRODUCT_CANDIDATE_CODE_COMMIT_COLLAPSED")
 
     if not isinstance(surfaces, dict):
         raise ConsumerManifestError("SURFACES_DICT_REQUIRED")
@@ -139,7 +166,7 @@ def build_consumer_manifest(
         "schema_version": SCHEMA_VERSION,
         "release_id": release_id,
         "product_version": product_version,
-        "product_candidate_sha": code_commit,
+        "product_candidate_sha": product_candidate_sha,
         "code_commit": code_commit,
         "manifest_version": 1,
         "consumer_surfaces": consumer_surfaces_dict,
@@ -167,6 +194,7 @@ def validate_consumer_manifest(
     *,
     expected_release_id=None,
     expected_product_version=PRODUCT_VERSION,
+    expected_product_candidate_sha=None,
     expected_code_commit=None,
     artifact_resolver=None,
 ):
@@ -192,7 +220,25 @@ def validate_consumer_manifest(
             f"CONSUMER_MANIFEST_PRODUCT_VERSION_MISMATCH:{product_version}!={expected_product_version}"
         )
 
-    code_commit = manifest_data.get("code_commit")
+    product_candidate_sha = _required_git_sha(
+        manifest_data.get("product_candidate_sha"),
+        "CONSUMER_MANIFEST_PRODUCT_CANDIDATE_SHA",
+    )
+    code_commit = _required_git_sha(
+        manifest_data.get("code_commit"),
+        "CONSUMER_MANIFEST_CODE_COMMIT",
+    )
+    if (_requires_independent_candidate(release_id, product_version)
+            and product_candidate_sha == code_commit):
+        raise ConsumerManifestError(
+            "CONSUMER_MANIFEST_PRODUCT_CANDIDATE_CODE_COMMIT_COLLAPSED"
+        )
+    if (expected_product_candidate_sha is not None
+            and product_candidate_sha != expected_product_candidate_sha):
+        raise ConsumerManifestError(
+            "CONSUMER_MANIFEST_PRODUCT_CANDIDATE_SHA_MISMATCH:"
+            f"{product_candidate_sha}!={expected_product_candidate_sha}"
+        )
     if expected_code_commit is not None and code_commit != expected_code_commit:
         raise ConsumerManifestError(
             f"CONSUMER_MANIFEST_CODE_COMMIT_MISMATCH:{code_commit}!={expected_code_commit}"
@@ -265,6 +311,7 @@ def validate_consumer_manifest(
         "status": "PASS",
         "release_id": release_id,
         "product_version": product_version,
+        "product_candidate_sha": product_candidate_sha,
         "code_commit": code_commit,
         "entries_validated": len(all_entries),
         "manifest_sha256": stored_sha,

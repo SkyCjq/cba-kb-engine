@@ -194,8 +194,16 @@ def validate_current_state(status, registry, manifest, documents, counts=None, b
     commit = status.get('code_commit') or status.get('published_code_commit')
     if status.get('published_code_commit', commit) != commit:
         raise ValueError('CURRENT_STATE_DRIFT')
-    metadata = target_metadata(status.get('current_release_id'), commit, registry)
     release_id = status.get('current_release_id')
+    document_commit = commit
+    if re.fullmatch(r'v1\.8\.1-\d+', release_id or ''):
+        legacy_candidate_sha = status.get('product_candidate_sha')
+        release_execution_sha = status.get('release_execution_sha')
+        if (release_execution_sha == commit
+                and isinstance(legacy_candidate_sha, str)
+                and re.fullmatch(r'[0-9a-f]{40}', legacy_candidate_sha)):
+            document_commit = legacy_candidate_sha
+    metadata = target_metadata(release_id, document_commit, registry)
     is_legacy = (
         release_id in {'v1.5.0', 'v1.5.1-1', 'v1.5.1-2', 'v1.5.2-1', 'v1.5.3-1', 'v1.5.3-2', 'v1.5.4-test', 'v1.5.5-1', 'v1.6.0-1'}
         and 'current_version_doc' not in documents
@@ -211,17 +219,42 @@ def validate_current_state(status, registry, manifest, documents, counts=None, b
         if read_current_block(text) != metadata:
             raise ValueError('CURRENT_STATE_DRIFT')
     validate_context_card(documents['context_card'], metadata, registry, manifest, counts, blockers)
-    if consumer_manifest is not None:
+    bound_contracts = [
+        value for value in (consumer_manifest, identity_projection)
+        if value is not None
+    ]
+    bound_versions = set()
+    for contract in bound_contracts:
+        if not isinstance(contract, dict):
+            raise ValueError('CURRENT_STATE_DRIFT')
+        version = contract.get('product_version')
         if (
-            consumer_manifest.get('release_id') != metadata['release_id']
-            or consumer_manifest.get('product_version') != 'v1.8.1'
+            contract.get('release_id') != metadata['release_id']
+            or not isinstance(version, str)
+            or not re.fullmatch(r'v\d+\.\d+\.\d+', version)
+            or contract.get('code_commit') != commit
         ):
             raise ValueError('CURRENT_STATE_DRIFT')
-    if identity_projection is not None:
-        if (
-            identity_projection.get('release_id') != metadata['release_id']
-            or identity_projection.get('product_version') != 'v1.8.1'
-        ):
+        bound_versions.add(version)
+    if len(bound_versions) > 1:
+        raise ValueError('CURRENT_STATE_DRIFT')
+    if bound_versions:
+        release_version = re.fullmatch(
+            r'(v\d+\.\d+\.\d+)-\d+', metadata['release_id'],
+        )
+        if release_version is None or bound_versions != {release_version.group(1)}:
+            raise ValueError('CURRENT_STATE_DRIFT')
+    release_execution_sha = status.get('release_execution_sha', commit)
+    if bound_versions == {'v2.0.0'} and release_execution_sha != commit:
+        raise ValueError('CURRENT_STATE_DRIFT')
+    if consumer_manifest is not None:
+        candidate_sha = consumer_manifest.get('product_candidate_sha')
+        if not isinstance(candidate_sha, str) or not re.fullmatch(r'[0-9a-f]{40}', candidate_sha):
+            raise ValueError('CURRENT_STATE_DRIFT')
+        status_candidate_sha = status.get('product_candidate_sha')
+        if status_candidate_sha is not None and candidate_sha != status_candidate_sha:
+            raise ValueError('CURRENT_STATE_DRIFT')
+        if bound_versions == {'v2.0.0'} and candidate_sha == commit:
             raise ValueError('CURRENT_STATE_DRIFT')
     return {
         'status': 'PASS',

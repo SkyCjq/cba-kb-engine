@@ -975,10 +975,89 @@ def test_official_publish_preserves_product_executor_split_through_completion(
     }
     status = json.loads(d.get('status'))
     assert status['state'] == 'COMPLETE'
-    assert status['code_commit'] == plan['closure']['code_commit']
+    assert status['code_commit'] == execution_sha
     assert status['product_candidate_sha'] == plan['closure']['code_commit']
     assert status['release_execution_sha'] == execution_sha
     assert verify(d, r, binding)['verified'] == len(plan['entries'])
+
+
+def _v200_status_provenance(candidate_sha, execution_sha):
+    return {
+        'baseline_development_sha': '1' * 40,
+        'product_candidate_sha': candidate_sha,
+        'release_execution_sha': execution_sha,
+        'reviewed_release_pr_head_sha': execution_sha,
+        'reviewed_ci_head_sha': execution_sha,
+        'release_merge_sha': execution_sha,
+        'production_execution_sha': execution_sha,
+        'release_critical_tree_attestation': '6' * 64,
+    }
+
+
+def test_set_status_preserves_frozen_v200_candidate_execution_split():
+    candidate_sha = '2b84c900dc383d2537f435e0b7748da46318b3cc'
+    execution_sha = '9ef9833389424343ab63831f26a6b8abb303b51e'
+    drive = FakeDrive()
+    plan = {
+        'release_id': 'v2.0.0-1',
+        'previous_release_id': 'v1.9.0-2',
+        'status_id': 'status',
+        'entries': [],
+        'closure': {'code_commit': candidate_sha},
+        'provenance': _v200_status_provenance(candidate_sha, execution_sha),
+    }
+    release_module.set_status(
+        drive, plan, 'COMPLETE', [], release_execution_sha=execution_sha,
+    )
+    status = json.loads(drive.get('status'))
+    assert status['product_candidate_sha'] == candidate_sha
+    assert status['release_execution_sha'] == execution_sha
+    assert status['code_commit'] == execution_sha
+    assert status['product_candidate_sha'] != status['code_commit']
+
+
+@pytest.mark.parametrize('provenance', [
+    {},
+    _v200_status_provenance('runtime', '9' * 40),
+])
+def test_set_status_fails_closed_on_missing_or_unresolved_frozen_candidate(
+        provenance):
+    execution_sha = '9' * 40
+    drive = FakeDrive()
+    plan = {
+        'release_id': 'v2.0.0-1',
+        'previous_release_id': 'v1.9.0-2',
+        'status_id': 'status',
+        'entries': [],
+        'closure': {'code_commit': '2' * 40},
+        'provenance': provenance,
+    }
+    with pytest.raises(release_module.ReleaseContractError):
+        release_module.set_status(
+            drive, plan, 'COMPLETE', [], release_execution_sha=execution_sha,
+        )
+    assert drive.calls == []
+
+
+def test_set_status_fails_closed_on_frozen_execution_mismatch():
+    candidate_sha = '2' * 40
+    drive = FakeDrive()
+    plan = {
+        'release_id': 'v2.0.0-1',
+        'previous_release_id': 'v1.9.0-2',
+        'status_id': 'status',
+        'entries': [],
+        'closure': {'code_commit': candidate_sha},
+        'provenance': _v200_status_provenance(candidate_sha, '8' * 40),
+    }
+    with pytest.raises(
+        release_module.ReleaseContractError,
+        match='RELEASE_EXECUTION_SHA_MISMATCH',
+    ):
+        release_module.set_status(
+            drive, plan, 'COMPLETE', [], release_execution_sha='9' * 40,
+        )
+    assert drive.calls == []
 
 
 def test_security_preflight_uses_logical_path_for_candidate(tmp_path):
