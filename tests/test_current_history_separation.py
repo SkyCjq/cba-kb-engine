@@ -71,3 +71,103 @@ def test_unknown_and_missing_folder_identity_fail_closed():
     records[0]['parents'] = ['unclassified']
     with pytest.raises(ValueError, match='FOLDER_ROLE_UNRESOLVED'):
         audit_current_history(records, zones(), manifest(), registry())
+
+
+def test_published_manifest_authority_suppresses_filename_only_historical_hint():
+    # Test A: Synthetic manifest-mapped non-code artifact:
+    # uid data/data_candidate_manifest.json, name data_candidate_manifest.json,
+    # parent Current, status published, non-empty published_release => PASS.
+    docs = manifest() + [{
+        'uid': 'data/data_candidate_manifest.json',
+        'drive_file_id': 'synth-candidate-manifest',
+        'content_hash': 'd' * 64,
+        'status': 'published',
+        'published_release': 'v1.9.0-2',
+    }]
+    records = items() + [{
+        'id': 'synth-candidate-manifest',
+        'name': 'data_candidate_manifest.json',
+        'parents': ['data'],
+    }]
+    assert audit_current_history(records, zones(), docs, registry())['violations'] == 0
+
+
+@pytest.mark.parametrize('row_patch', [
+    None,  # unmapped (no row in manifest)
+    {'status': 'draft', 'published_release': 'v1.9.0-2'},  # not published status
+    {'status': 'published', 'published_release': ''},  # empty published_release
+    {'status': 'published', 'published_release': '   '},  # whitespace published_release
+    {'status': 'published'},  # missing published_release
+])
+def test_candidate_filename_without_explicit_published_authority_fails(row_patch):
+    # Test B: Same filename/current placement without explicit published manifest authority => HISTORICAL_IN_CURRENT.
+    docs = manifest()
+    if row_patch is not None:
+        row = {
+            'uid': 'data/data_candidate_manifest.json',
+            'drive_file_id': 'synth-candidate-manifest',
+            'content_hash': 'd' * 64,
+        }
+        row.update(row_patch)
+        docs.append(row)
+    records = items() + [{
+        'id': 'synth-candidate-manifest',
+        'name': 'data_candidate_manifest.json',
+        'parents': ['data'],
+    }]
+    with pytest.raises(ValueError, match='HISTORICAL_IN_CURRENT'):
+        audit_current_history(records, zones(), docs, registry())
+
+
+def test_published_row_with_explicit_noncurrent_role_fails():
+    # Test C: Same published row plus artifact_role=candidate => HISTORICAL_IN_CURRENT.
+    docs = manifest() + [{
+        'uid': 'data/data_candidate_manifest.json',
+        'drive_file_id': 'synth-candidate-manifest',
+        'content_hash': 'd' * 64,
+        'status': 'published',
+        'published_release': 'v1.9.0-2',
+    }]
+    records = items() + [{
+        'id': 'synth-candidate-manifest',
+        'name': 'data_candidate_manifest.json',
+        'parents': ['data'],
+        'artifact_role': 'candidate',
+    }]
+    with pytest.raises(ValueError, match='HISTORICAL_IN_CURRENT'):
+        audit_current_history(records, zones(), docs, registry())
+
+
+def test_published_row_dual_parent_current_and_history_fails():
+    # Test D: Same published row dual-parent Current + History => HISTORICAL_IN_CURRENT.
+    docs = manifest() + [{
+        'uid': 'data/data_candidate_manifest.json',
+        'drive_file_id': 'synth-candidate-manifest',
+        'content_hash': 'd' * 64,
+        'status': 'published',
+        'published_release': 'v1.9.0-2',
+    }]
+    records = items() + [{
+        'id': 'synth-candidate-manifest',
+        'name': 'data_candidate_manifest.json',
+        'parents': ['data', 'archive'],
+    }]
+    with pytest.raises(ValueError, match='HISTORICAL_IN_CURRENT'):
+        audit_current_history(records, zones(), docs, registry())
+
+
+def test_published_row_physically_under_history_remains_non_current():
+    # Test E: Published row physically under History remains non-current and does not become Current from manifest evidence.
+    docs = manifest() + [{
+        'uid': 'data/data_candidate_manifest.json',
+        'drive_file_id': 'synth-candidate-manifest',
+        'content_hash': 'd' * 64,
+        'status': 'published',
+        'published_release': 'v1.9.0-2',
+    }]
+    records = items() + [{
+        'id': 'synth-candidate-manifest',
+        'name': 'data_candidate_manifest.json',
+        'parents': ['archive'],
+    }]
+    assert audit_current_history(records, zones(), docs, registry())['violations'] == 0
