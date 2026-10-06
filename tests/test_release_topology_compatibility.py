@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -57,6 +58,134 @@ def mixed_planned_topology(release_id=RELEASE_ID):
          "parents": ["evidence-random"]},
     ])
     return nodes
+
+
+def production_shaped_topology_policy():
+    return {
+        "zones": {
+            "root": "root-synthetic",
+            "current": ["current-a-synthetic", "current-b-synthetic"],
+            "history": "history-synthetic",
+            "staging": "stale-staging-synthetic",
+            "evidence": "evidence-synthetic",
+        },
+        "targets": {
+            "target-current": {"publish_parent": "current-a-synthetic"},
+            "target-history": {"publish_parent": "history-synthetic"},
+            "target-evidence": {"publish_parent": "evidence-synthetic"},
+            "target-staging": {"publish_parent": "active-staging-synthetic"},
+            "unplanned-target": {"publish_parent": "current-b-synthetic"},
+        },
+    }
+
+
+def test_production_shaped_fallback_builds_exact_semantic_topology():
+    planned = [
+        "target-current", "target-history", "target-evidence", "target-staging",
+    ]
+    nodes = build_release_topology_from_production(
+        production_shaped_topology_policy(),
+        planned_target_ids=planned,
+        allocation_staging_id="active-staging-synthetic",
+        release_id="v2.0.1-1",
+    )
+    by_id = {node["id"]: node for node in nodes}
+
+    assert by_id["root-synthetic"] == {
+        "id": "root-synthetic", "role": "ROOT", "parents": [],
+    }
+    assert by_id["active-staging-synthetic"]["role"] == "STAGING_ZONE"
+    assert "stale-staging-synthetic" not in by_id
+    assert {
+        target_id: by_id[target_id]["role"] for target_id in planned
+    } == {
+        "target-current": "CURRENT_TARGET",
+        "target-history": "HISTORY_TARGET",
+        "target-evidence": "EVIDENCE_TARGET",
+        "target-staging": "STAGING_TARGET",
+    }
+    assert "unplanned-target" not in by_id
+    assert validate_release_topology(
+        nodes, release_id="v2.0.1-1", planned_target_ids=planned,
+    )["status"] == "PASS"
+
+
+def test_production_shaped_fallback_preserves_nonempty_list_zone_forms():
+    policy = production_shaped_topology_policy()
+    for key in ("history", "staging", "evidence"):
+        policy["zones"][key] = [policy["zones"][key]]
+    policy["zones"]["root"] = [policy["zones"]["root"]]
+
+    nodes = build_release_topology_from_production(
+        policy,
+        planned_target_ids=["target-current"],
+        allocation_staging_id="active-staging-synthetic",
+        release_id="v2.0.1-1",
+    )
+
+    assert validate_release_topology(
+        nodes,
+        release_id="v2.0.1-1",
+        planned_target_ids=["target-current"],
+    )["status"] == "PASS"
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing_root",
+    "ambiguous_root",
+    "multi_root",
+    "invalid_current_type",
+    "empty_history",
+    "invalid_evidence_member",
+])
+def test_production_shaped_fallback_invalid_root_or_zone_fails_closed(mutation):
+    policy = production_shaped_topology_policy()
+    if mutation == "missing_root":
+        policy["zones"].pop("root")
+    elif mutation == "ambiguous_root":
+        policy["root_folder_id"] = "different-root-synthetic"
+    elif mutation == "multi_root":
+        policy["zones"]["root"] = ["root-one", "root-two"]
+    elif mutation == "invalid_current_type":
+        policy["zones"]["current"] = {"id": "current-a-synthetic"}
+    elif mutation == "empty_history":
+        policy["zones"]["history"] = []
+    else:
+        policy["zones"]["evidence"] = ["evidence-synthetic", None]
+
+    with pytest.raises(PreMutationAbort, match="RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING"):
+        build_release_topology_from_production(
+            policy,
+            planned_target_ids=["target-current"],
+            allocation_staging_id="active-staging-synthetic",
+            release_id="v2.0.1-1",
+        )
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing_planned_target",
+    "unsupported_publish_parent",
+    "ambiguous_publish_parent",
+])
+def test_production_shaped_fallback_target_authority_fails_closed(mutation):
+    policy = production_shaped_topology_policy()
+    planned = ["target-current"]
+    if mutation == "missing_planned_target":
+        planned.append("missing-target")
+    elif mutation == "unsupported_publish_parent":
+        policy["targets"]["target-current"]["publish_parent"] = "outside-topology"
+    else:
+        policy["zones"]["evidence"] = "current-a-synthetic"
+
+    with pytest.raises(
+        PreMutationAbort, match="RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING",
+    ):
+        build_release_topology_from_production(
+            policy,
+            planned_target_ids=planned,
+            allocation_staging_id="active-staging-synthetic",
+            release_id="v2.0.1-1",
+        )
 
 
 def consumer_bundle(product_version="v1.8.1", release_id=RELEASE_ID):
@@ -493,6 +622,73 @@ def test_trusted_bundle_builder_real_path_and_qualification_fingerprints(tmp_pat
     )
     assert result["status"] == "PASS"
     assert result["classification"] == "RELEASE_INFRA_COMPATIBILITY_PREFLIGHT_PASS"
+    assert result["production_mutation_count"] == 0
+    assert result["release_status_mutation_count"] == 0
+    assert drive.puts == []
+
+
+def test_compatibility_bundle_uses_same_production_shaped_topology_semantics(tmp_path):
+    evidence_root, _, _, _, projection, _ = _setup_evidence_root(tmp_path)
+    (evidence_root / "topology.json").unlink()
+    status_doc = {
+        "state": "COMPLETE", "current_release_id": RELEASE_ID,
+        "code_commit": SHA,
+    }
+    drive = MockDrive(
+        files={"status-drive-id": json.dumps(status_doc).encode("utf-8")},
+        metas={
+            "status-drive-id": {
+                "id": "status-drive-id", "version": "1",
+                "modifiedTime": "t0", "mimeType": "application/json",
+                "parents": ["root-random"],
+            },
+            "target-random": {
+                "id": "target-random", "version": "1",
+                "modifiedTime": "t0", "mimeType": "application/json",
+                "parents": ["current-random"],
+            },
+        },
+    )
+    policy = {
+        "enabled": True,
+        "status_id": "status-drive-id",
+        "safe_baseline_release_id": RELEASE_ID,
+        "expected_source_registry_sha256": projection["source_registry_sha256"],
+        "zones": {
+            "root": "root-random",
+            "current": ["current-random"],
+            "history": "history-random",
+            "staging": "stale-staging-random",
+            "evidence": "evidence-random",
+        },
+        "targets": {
+            "target-random": {"publish_parent": "current-random"},
+        },
+    }
+    instance = MockInstance(configs={"production.json": policy})
+    allocation = {"staging_id": "active-staging-random"}
+
+    bundle = build_release_infra_compatibility_bundle(
+        instance=instance,
+        drive=drive,
+        evidence_root=evidence_root,
+        allocation=allocation,
+    )
+    canonical = build_release_topology_from_production(
+        policy,
+        instance=instance,
+        release_id=RELEASE_ID,
+        planned_target_ids=["target-random"],
+        allocation_staging_id=allocation["staging_id"],
+    )
+
+    assert bundle["topology"] == canonical
+    assert {
+        node["id"] for node in bundle["topology"]
+        if node["role"] == "STAGING_ZONE"
+    } == {"active-staging-random"}
+    result = release_infra_compatibility_preflight(bundle)
+    assert result["status"] == "PASS"
     assert result["production_mutation_count"] == 0
     assert result["release_status_mutation_count"] == 0
     assert drive.puts == []

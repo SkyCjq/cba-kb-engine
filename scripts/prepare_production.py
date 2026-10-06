@@ -100,37 +100,95 @@ def build_live_qualification_fingerprints(drive, target_ids):
     return fingerprints
 
 
-def build_release_topology_from_production(policy, instance=None, *, release_id=None):
-    """Construct semantic release topology from production policy / instance structure."""
+def _topology_ids(value, *, exactly_one=False):
+    """Normalize one policy topology ID or a non-empty list, failing closed."""
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, list):
+        values = value
+    else:
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
+    if (
+        not values
+        or any(not isinstance(item, str) or not item for item in values)
+        or len(values) != len(set(values))
+        or (exactly_one and len(values) != 1)
+    ):
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
+    return list(values)
+
+
+def build_release_topology_from_production(
+    policy,
+    instance=None,
+    *,
+    release_id=None,
+    planned_target_ids=None,
+    allocation_staging_id=None,
+):
+    """Construct the canonical semantic release topology from production policy."""
     if not isinstance(policy, dict):
         raise PreMutationAbort("RELEASE_INFRA_PRODUCTION_POLICY_INVALID")
-    if "topology" in policy and isinstance(policy["topology"], list) and policy["topology"]:
-        return policy["topology"]
+    if "topology" in policy:
+        if isinstance(policy["topology"], list) and policy["topology"]:
+            return policy["topology"]
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
     if instance is not None and hasattr(instance, "config_path"):
         try:
             if instance.config_path("topology.json").is_file():
                 top = instance.read_json("topology.json")
                 if isinstance(top, list) and top:
                     return top
-        except Exception:
-            pass
+                raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
+        except PreMutationAbort:
+            raise
+        except Exception as exc:
+            raise PreMutationAbort(
+                "RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING"
+            ) from exc
     zones = policy.get("zones")
     if not isinstance(zones, dict):
         raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
     required_zones = {"current", "history", "staging", "evidence"}
-    if not required_zones <= set(zones) or any(
-        not isinstance(zones[k], list) or not zones[k] for k in required_zones
-    ):
+    if not required_zones <= set(zones):
         raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
-    root_id = policy.get("root_folder_id") or zones.get("root_folder_id")
-    if not root_id and instance is not None and hasattr(instance, "config_path"):
+    normalized_zones = {
+        key: _topology_ids(zones[key]) for key in sorted(required_zones)
+    }
+
+    root_candidates = []
+    for source, key in (
+        (policy, "root_folder_id"),
+        (zones, "root"),
+        (zones, "root_folder_id"),
+    ):
+        if key in source:
+            root_candidates.append(_topology_ids(source[key], exactly_one=True)[0])
+    if root_candidates:
+        if len(set(root_candidates)) != 1:
+            raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
+        root_id = root_candidates[0]
+    else:
+        root_id = None
+    if root_id is None and instance is not None and hasattr(instance, "read_json"):
         try:
             inv = instance.read_json("import_inventory.json")
-            root_id = inv.get("parents", {}).get("root")
-        except Exception:
-            pass
-    if not root_id:
+            root_id = _topology_ids(
+                inv.get("parents", {}).get("root"), exactly_one=True,
+            )[0]
+        except PreMutationAbort:
+            raise
+        except Exception as exc:
+            raise PreMutationAbort(
+                "RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING"
+            ) from exc
+    if not isinstance(root_id, str) or not root_id:
         raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
+
+    if allocation_staging_id is not None:
+        if not isinstance(allocation_staging_id, str) or not allocation_staging_id:
+            raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
+        normalized_zones["staging"] = [allocation_staging_id]
 
     nodes = [{"id": root_id, "role": "ROOT", "parents": []}]
     zone_role_map = {
@@ -140,8 +198,48 @@ def build_release_topology_from_production(policy, instance=None, *, release_id=
         "evidence": "EVIDENCE_ZONE",
     }
     for zkey, role in zone_role_map.items():
-        for zid in zones[zkey]:
+        for zid in normalized_zones[zkey]:
             nodes.append({"id": zid, "role": role, "parents": [root_id]})
+
+    if not isinstance(planned_target_ids, (list, tuple, set)) or not planned_target_ids:
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
+    planned_target_ids = (
+        sorted(planned_target_ids)
+        if isinstance(planned_target_ids, set)
+        else list(planned_target_ids)
+    )
+    if (
+        len(planned_target_ids) != len(set(planned_target_ids))
+        or any(not isinstance(item, str) or not item for item in planned_target_ids)
+    ):
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
+    targets = policy.get("targets")
+    if not isinstance(targets, dict):
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
+    parent_roles = {
+        "current": "CURRENT_TARGET",
+        "history": "HISTORY_TARGET",
+        "evidence": "EVIDENCE_TARGET",
+        "staging": "STAGING_TARGET",
+    }
+    for target_id in planned_target_ids:
+        target = targets.get(target_id)
+        if not isinstance(target, dict):
+            raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
+        publish_parent = target.get("publish_parent")
+        if not isinstance(publish_parent, str) or not publish_parent:
+            raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
+        matches = [
+            key for key, zone_ids in normalized_zones.items()
+            if publish_parent in zone_ids
+        ]
+        if len(matches) != 1:
+            raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
+        nodes.append({
+            "id": target_id,
+            "role": parent_roles[matches[0]],
+            "parents": [publish_parent],
+        })
     return nodes
 
 
@@ -167,6 +265,8 @@ def build_release_infra_compatibility_bundle(
     safe_baseline_release_id=None,
     topology=None,
     topology_path=None,
+    allocation=None,
+    allocation_path=None,
     fingerprints=None,
     require_environmental_stability=False,
 ):
@@ -353,6 +453,59 @@ def build_release_infra_compatibility_bundle(
     if any(v != "PASS" for v in platform_results.values()):
         raise PreMutationAbort("RELEASE_INFRA_PLATFORM_NON_PASS")
 
+    # Target IDs and current allocation staging binding are inputs to the
+    # canonical topology builder, rather than post-hoc topology observations.
+    target_ids = [
+        e["id"] for e in plan.get("entries", [])
+        if isinstance(e, dict) and e.get("id")
+    ]
+    if not target_ids and "targets" in policy and isinstance(policy["targets"], dict):
+        target_ids = list(policy["targets"].keys())
+
+    if allocation is None and allocation_path is not None:
+        try:
+            allocation_raw = Path(allocation_path).read_bytes()
+            clean(allocation_raw, "allocation.json")
+            allocation = json.loads(allocation_raw)
+        except Exception as exc:
+            raise PreMutationAbort(
+                "RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING"
+            ) from exc
+    if allocation is None and evidence_root is not None:
+        allocation_candidates = [evidence_root / "allocation.json"]
+        if evidence_root.name == "outbox":
+            allocation_candidates.append(evidence_root.parent / "allocation.json")
+        for candidate in allocation_candidates:
+            if candidate.is_file():
+                try:
+                    allocation_raw = candidate.read_bytes()
+                    clean(allocation_raw, "allocation.json")
+                    allocation = json.loads(allocation_raw)
+                except Exception as exc:
+                    raise PreMutationAbort(
+                        "RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING"
+                    ) from exc
+                break
+    if allocation is not None and not isinstance(allocation, dict):
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
+    allocation_staging_id = (
+        allocation.get("staging_id") if isinstance(allocation, dict) else None
+    )
+    if allocation is not None and (
+        not isinstance(allocation_staging_id, str) or not allocation_staging_id
+    ):
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
+    if allocation_staging_id is None:
+        plan_staging_ids = {
+            entry.get("staging_parent")
+            for entry in plan.get("entries", [])
+            if isinstance(entry, dict) and entry.get("staging_parent")
+        }
+        if len(plan_staging_ids) == 1:
+            allocation_staging_id = next(iter(plan_staging_ids))
+        elif len(plan_staging_ids) > 1:
+            raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
+
     # Topology
     if topology is None:
         if topology_path is not None and Path(topology_path).is_file():
@@ -361,18 +514,14 @@ def build_release_infra_compatibility_bundle(
             topology = json.loads(top_raw)
         else:
             topology = build_release_topology_from_production(
-                policy, instance, release_id=plan.get("release_id"),
+                policy,
+                instance,
+                release_id=plan.get("release_id"),
+                planned_target_ids=target_ids,
+                allocation_staging_id=allocation_staging_id,
             )
     if not isinstance(topology, list) or not topology:
         raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
-
-    # Target IDs
-    target_ids = [
-        e["id"] for e in plan.get("entries", [])
-        if isinstance(e, dict) and e.get("id")
-    ]
-    if not target_ids and "targets" in policy and isinstance(policy["targets"], dict):
-        target_ids = list(policy["targets"].keys())
 
     # Fingerprints
     if fingerprints is None:
@@ -1592,7 +1741,11 @@ def _build_closure_contract(*, drive, instance, projection, allocation,
         ]
         try:
             nodes = build_release_topology_from_production(
-                policy, instance=instance, release_id=projection.get("release_id"),
+                policy,
+                instance=instance,
+                release_id=projection.get("release_id"),
+                planned_target_ids=planned_target_ids,
+                allocation_staging_id=allocation.get("staging_id"),
             )
             validate_release_topology(
                 nodes,
