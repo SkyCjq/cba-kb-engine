@@ -19,7 +19,14 @@ def authorize_plan(drive, root, plan, environment, instance=None):
         raise RuntimeError('Unapproved production control object')
     if not plan.get('dependencies'):raise RuntimeError('Production input dependencies required')
     allowed=policy['targets']
-    if {e['id'] for e in plan['entries']}!=set(allowed):
+    # Retired targets remain registered with a retire_in_release marker but are
+    # excluded from the publish plan (project/freeze drop them from final_keys).
+    # The gate must expect the live set, not the full registry.
+    publishable={
+        fid for fid, spec in allowed.items()
+        if not (isinstance(spec, dict) and spec.get('retire_in_release'))
+    }
+    if {e['id'] for e in plan['entries']}!=publishable:
         raise RuntimeError('Production requires the complete approved target set')
     for e in plan['entries']:
         item=allowed[e['id']]
