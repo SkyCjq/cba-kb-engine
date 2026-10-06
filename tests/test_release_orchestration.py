@@ -2257,6 +2257,53 @@ def test_closure_contract_accepts_mixed_zone_planned_topology(monkeypatch):
     assert closure["zones"]["evidence"] == ["evidence-zone"]
 
 
+def test_v201_canonical_freeze_closure_uses_production_shaped_fallback():
+    entries = _v190_closure_entries()
+    entries[0]["publish_parent"] = "history-zone"
+    policy = {
+        "zones": {
+            "root": "release-root",
+            "current": ["root", "data"],
+            "history": "history-zone",
+            "staging": "stale-staging-zone",
+            "evidence": "source-evidence",
+        },
+        "targets": {
+            entry["id"]: {"publish_parent": entry["publish_parent"]}
+            for entry in entries
+        },
+    }
+
+    class ProductionShapedInstance:
+        def read_json(self, name):
+            if name == "production.json":
+                return policy
+            raise RuntimeError(f"unexpected config read: {name}")
+
+        def config_path(self, name):
+            return Path("/synthetic-not-present") / name
+
+    closure = orchestration._build_closure_contract(
+        drive=ClosureDrive(),
+        instance=ProductionShapedInstance(),
+        projection={"release_id": "v2.0.1-1", "engine_sha": "a" * 40},
+        allocation={"staging_id": "active-staging-zone"},
+        entries=entries,
+        state={"status": {
+            "state": "COMPLETE", "current_release_id": "v2.0.0-1",
+            "code_commit": "b" * 40,
+        }},
+    )
+
+    assert closure["zones"] == {
+        "current": ["data", "root"],
+        "history": ["history-zone"],
+        "staging": ["active-staging-zone"],
+        "evidence": ["source-evidence"],
+    }
+    assert closure["protected"]
+
+
 def test_closure_contract_excludes_root_from_current(monkeypatch):
     entries = _v190_closure_entries()
     top = _build_test_topology(entries, staging_id="staging")
