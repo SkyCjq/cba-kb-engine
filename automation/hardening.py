@@ -52,8 +52,24 @@ def _pass(check: str, **facts: Any) -> dict[str, Any]:
 
 
 _OUTPUT_ACTIONS = {
-    "PREPARED": frozenset({"RESERVE_STAGING", "WRITE_PREPARE_JOURNAL"}),
+    "FROZEN_PLAN": frozenset({
+        "RESERVE_STAGING", "WRITE_PREPARE_JOURNAL", "FREEZE_PLAN",
+    }),
+    "PREPARED": frozenset({
+        "RESERVE_STAGING", "WRITE_PREPARE_JOURNAL", "FREEZE_PLAN",
+    }),
     "GO_PACKET_COMPLETE": frozenset({
+        "RESERVE_STAGING", "WRITE_PREPARE_JOURNAL", "FREEZE_PLAN",
+    }),
+}
+
+_STATE_TRANSITION_ACTIONS = {
+    "RESERVED": frozenset({"RESERVE_STAGING"}),
+    "REPROJECTED": frozenset({"RESERVE_STAGING"}),
+    "FROZEN_PLAN": frozenset({
+        "RESERVE_STAGING", "WRITE_PREPARE_JOURNAL", "FREEZE_PLAN",
+    }),
+    "PREPARED": frozenset({
         "RESERVE_STAGING", "WRITE_PREPARE_JOURNAL", "FREEZE_PLAN",
     }),
 }
@@ -68,10 +84,12 @@ def validate_task_contract(contract: Mapping[str, Any]) -> dict[str, Any]:
     if mode not in {"READ_ONLY", "STATEFUL_PREPARE"}:
         _fail(TASK_CONTRACT_INVALID, "authority_mode is missing or unsupported", authority_mode=mode)
     stateful_outputs = outputs & set(_OUTPUT_ACTIONS)
-    stateful_transitions = transitions & {"RESERVED", "REPROJECTED", "FROZEN_PLAN", "PREPARED"}
+    stateful_transitions = transitions & set(_STATE_TRANSITION_ACTIONS)
     required = set().union(*(_OUTPUT_ACTIONS[value] for value in stateful_outputs)) if stateful_outputs else set()
     if stateful_transitions:
-        required |= {"RESERVE_STAGING", "WRITE_PREPARE_JOURNAL"}
+        required |= set().union(*(
+            _STATE_TRANSITION_ACTIONS[value] for value in stateful_transitions
+        ))
     missing = sorted(required - mutations)
     if (mode == "READ_ONLY" and (stateful_outputs or stateful_transitions)) or missing:
         _fail(
@@ -406,6 +424,11 @@ def run_hardening_canary() -> dict[str, Any]:
     positive("P1", lambda: validate_task_contract({
         "authority_mode": "STATEFUL_PREPARE", "required_outputs": ["PREPARED"],
         "required_state_transitions": ["RESERVED", "PREPARED"],
+        "authorized_mutations": ["RESERVE_STAGING", "WRITE_PREPARE_JOURNAL", "FREEZE_PLAN"],
+    }))
+    negative("N1_FREEZE_PLAN", TASK_CONTRACT_INVALID, lambda: validate_task_contract({
+        "authority_mode": "STATEFUL_PREPARE", "required_outputs": ["PREPARED"],
+        "required_state_transitions": ["FROZEN_PLAN", "PREPARED"],
         "authorized_mutations": ["RESERVE_STAGING", "WRITE_PREPARE_JOURNAL"],
     }))
     wrong_q2 = dict(q2, surface="WEB", checkout_capability="REMOTE_INSPECTION_ONLY")

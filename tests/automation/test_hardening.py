@@ -45,6 +45,29 @@ def test_authority_output_contract_fails_closed_and_stateful_passes():
     })["status"] == "PASS"
 
 
+@pytest.mark.parametrize(
+    ("required_outputs", "required_state_transitions"),
+    [
+        (["PREPARED"], []),
+        (["FROZEN_PLAN"], []),
+        ([], ["FROZEN_PLAN"]),
+        ([], ["PREPARED"]),
+    ],
+)
+def test_freeze_bound_output_or_transition_requires_freeze_plan(
+    required_outputs, required_state_transitions,
+):
+    contract = {
+        "authority_mode": "STATEFUL_PREPARE",
+        "required_outputs": required_outputs,
+        "required_state_transitions": required_state_transitions,
+        "authorized_mutations": ["RESERVE_STAGING", "WRITE_PREPARE_JOURNAL"],
+    }
+    assert _classification(
+        lambda: validate_task_contract(contract)
+    ) == TASK_CONTRACT_INVALID
+
+
 def test_q2_contract_binds_every_required_field_and_is_not_technical_pass():
     expected = {
         "profile_id": "Q2_INDEPENDENT_TECH_QA@1",
@@ -134,8 +157,8 @@ def test_preflight_document_and_zero_production_canary():
     assert result["classification"] == "HARDENING_PREFLIGHT_PASS"
     canary = run_hardening_canary()
     assert canary["status"] == "PASS"
-    assert canary["case_count"] == 11
+    assert canary["case_count"] == 12
     assert canary["production_mutation_count"] == 0
     assert [case["case"] for case in canary["cases"]] == [
-        "N1", "P1", "N2", "P2", "N3", "P3", "N4", "N5", "P4", "N6", "P5",
+        "N1", "P1", "N1_FREEZE_PLAN", "N2", "P2", "N3", "P3", "N4", "N5", "P4", "N6", "P5",
     ]
