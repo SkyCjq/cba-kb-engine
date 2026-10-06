@@ -117,6 +117,51 @@ def test_production_shaped_fallback_builds_exact_semantic_topology():
     )["status"] == "PASS"
 
 
+@pytest.mark.parametrize(
+    ("explicit_present", "explicit", "allowed", "expected_parent"),
+    [
+        (False, None, ["current-a-synthetic"], "current-a-synthetic"),
+        (True, "current-a-synthetic", ["current-a-synthetic"],
+         "current-a-synthetic"),
+        (True, None, ["current-a-synthetic"], None),
+        (True, "", ["current-a-synthetic"], None),
+        (True, 7, ["current-a-synthetic"], None),
+        (True, "current-a-synthetic", ["current-b-synthetic"], None),
+    ],
+    ids=["absent", "valid", "null", "empty", "non-string", "conflict"],
+)
+def test_publish_parent_presence_and_value_authority_matrix(
+    explicit_present, explicit, allowed, expected_parent,
+):
+    policy = production_shaped_topology_policy()
+    target = {"allowed_parents": allowed}
+    if explicit_present:
+        target["publish_parent"] = explicit
+    policy["targets"]["target-current"] = target
+
+    if expected_parent is None:
+        with pytest.raises(
+            PreMutationAbort,
+            match="RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING",
+        ):
+            build_release_topology_from_production(
+                policy,
+                planned_target_ids=["target-current"],
+                allocation_staging_id="active-staging-synthetic",
+                release_id="v2.0.1-1",
+            )
+        return
+
+    nodes = build_release_topology_from_production(
+        policy,
+        planned_target_ids=["target-current"],
+        allocation_staging_id="active-staging-synthetic",
+        release_id="v2.0.1-1",
+    )
+    by_id = {node["id"]: node for node in nodes}
+    assert by_id["target-current"]["parents"] == [expected_parent]
+
+
 def test_production_shaped_fallback_preserves_nonempty_list_zone_forms():
     policy = production_shaped_topology_policy()
     for key in ("history", "staging", "evidence"):

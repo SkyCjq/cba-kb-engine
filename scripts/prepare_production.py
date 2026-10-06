@@ -143,6 +143,7 @@ def _optional_instance_topology(instance):
 
 def _target_publish_parent(target, normalized_zones):
     """Resolve one authoritative publish destination without ordering guesses."""
+    explicit_present = "publish_parent" in target
     explicit = target.get("publish_parent")
     allowed_present = "allowed_parents" in target
     allowed = target.get("allowed_parents")
@@ -154,7 +155,7 @@ def _target_publish_parent(target, normalized_zones):
     ):
         raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
 
-    if explicit is not None:
+    if explicit_present:
         if (
             not isinstance(explicit, str)
             or not explicit
