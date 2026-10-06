@@ -9,6 +9,7 @@ from cba_kb.current_state import (
     read_current_block, render_current_state, target_metadata,
     validate_current_state,
 )
+from cba_kb.instance import CONFIG_FILES, Instance as RealInstance, load_instance
 from cba_kb import release as release_module
 from cba_kb.release import ReleaseContractError, publish
 from scripts import prepare_production as orchestration
@@ -2286,6 +2287,65 @@ def test_v201_canonical_freeze_closure_uses_production_shaped_fallback():
     closure = orchestration._build_closure_contract(
         drive=ClosureDrive(),
         instance=ProductionShapedInstance(),
+        projection={"release_id": "v2.0.1-1", "engine_sha": "a" * 40},
+        allocation={"staging_id": "active-staging-zone"},
+        entries=entries,
+        state={"status": {
+            "state": "COMPLETE", "current_release_id": "v2.0.0-1",
+            "code_commit": "b" * 40,
+        }},
+    )
+
+    assert closure["zones"] == {
+        "current": ["data", "root"],
+        "history": ["history-zone"],
+        "staging": ["active-staging-zone"],
+        "evidence": ["source-evidence"],
+    }
+    assert closure["protected"]
+
+
+def test_v201_real_instance_closure_uses_allowed_parents_authority(tmp_path):
+    entries = _v190_closure_entries()
+    entries[0]["publish_parent"] = "history-zone"
+    policy = {
+        "zones": {
+            "root": "release-root",
+            "current": ["root", "data"],
+            "history": ["history-zone"],
+            "staging": "stale-staging-zone",
+            "evidence": "source-evidence",
+        },
+        "targets": {},
+    }
+    for entry in entries:
+        allowed = [entry["publish_parent"]]
+        if entry["logical_key"] == "entry/context":
+            allowed.append("active-staging-zone")
+            policy["targets"][entry["id"]] = {
+                "allowed_parents": allowed,
+                "publish_parent": entry["publish_parent"],
+                "staging_parent": "active-staging-zone",
+            }
+        else:
+            policy["targets"][entry["id"]] = {
+                "allowed_parents": allowed,
+            }
+
+    instance_root = tmp_path / "synthetic-private-instance"
+    config_root = instance_root / "config"
+    config_root.mkdir(parents=True)
+    (config_root / "production.json").write_text(json.dumps(policy))
+    instance = load_instance(Path.cwd(), instance_root)
+
+    assert isinstance(instance, RealInstance)
+    assert "topology.json" not in CONFIG_FILES
+    with pytest.raises(ValueError, match="UNKNOWN_INSTANCE_CONFIG: topology.json"):
+        instance.config_path("topology.json")
+
+    closure = orchestration._build_closure_contract(
+        drive=ClosureDrive(),
+        instance=instance,
         projection={"release_id": "v2.0.1-1", "engine_sha": "a" * 40},
         allocation={"staging_id": "active-staging-zone"},
         entries=entries,
