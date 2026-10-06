@@ -118,6 +118,65 @@ def _topology_ids(value, *, exactly_one=False):
     return list(values)
 
 
+def _optional_instance_topology(instance):
+    """Read a supported optional topology config; unsupported/absent is empty."""
+    if instance is None or not hasattr(instance, "config_path"):
+        return None
+    try:
+        path = instance.config_path("topology.json")
+    except ValueError as exc:
+        if str(exc) == "UNKNOWN_INSTANCE_CONFIG: topology.json":
+            return None
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING") from exc
+    except Exception as exc:
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING") from exc
+    if not path.is_file():
+        return None
+    try:
+        top = instance.read_json("topology.json")
+    except Exception as exc:
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING") from exc
+    if not isinstance(top, list) or not top:
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
+    return top
+
+
+def _target_publish_parent(target, normalized_zones):
+    """Resolve one authoritative publish destination without ordering guesses."""
+    explicit_present = "publish_parent" in target
+    explicit = target.get("publish_parent")
+    allowed_present = "allowed_parents" in target
+    allowed = target.get("allowed_parents")
+    if allowed_present and (
+        not isinstance(allowed, list)
+        or not allowed
+        or any(not isinstance(item, str) or not item for item in allowed)
+        or len(allowed) != len(set(allowed))
+    ):
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
+
+    if explicit_present:
+        if (
+            not isinstance(explicit, str)
+            or not explicit
+            or (allowed_present and explicit not in allowed)
+        ):
+            raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
+        return explicit
+
+    if not allowed_present:
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
+    # Staging is a temporary release location, not an inferred publish
+    # destination. Reserved/new targets must keep explicit publish semantics.
+    semantic_zone_ids = set().union(*(
+        set(ids) for key, ids in normalized_zones.items() if key != "staging"
+    ))
+    candidates = set(allowed) & semantic_zone_ids
+    if len(candidates) != 1:
+        raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
+    return next(iter(candidates))
+
+
 def build_release_topology_from_production(
     policy,
     instance=None,
@@ -133,19 +192,9 @@ def build_release_topology_from_production(
         if isinstance(policy["topology"], list) and policy["topology"]:
             return policy["topology"]
         raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
-    if instance is not None and hasattr(instance, "config_path"):
-        try:
-            if instance.config_path("topology.json").is_file():
-                top = instance.read_json("topology.json")
-                if isinstance(top, list) and top:
-                    return top
-                raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
-        except PreMutationAbort:
-            raise
-        except Exception as exc:
-            raise PreMutationAbort(
-                "RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING"
-            ) from exc
+    optional_topology = _optional_instance_topology(instance)
+    if optional_topology is not None:
+        return optional_topology
     zones = policy.get("zones")
     if not isinstance(zones, dict):
         raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING")
@@ -226,9 +275,7 @@ def build_release_topology_from_production(
         target = targets.get(target_id)
         if not isinstance(target, dict):
             raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
-        publish_parent = target.get("publish_parent")
-        if not isinstance(publish_parent, str) or not publish_parent:
-            raise PreMutationAbort("RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING")
+        publish_parent = _target_publish_parent(target, normalized_zones)
         matches = [
             key for key, zone_ids in normalized_zones.items()
             if publish_parent in zone_ids
@@ -1727,12 +1774,11 @@ def _build_closure_contract(*, drive, instance, projection, allocation,
             "zones" in policy and isinstance(policy["zones"], dict) and policy["zones"]
         ):
             has_explicit_topology = True
-    if not has_explicit_topology and instance is not None and hasattr(instance, "config_path"):
+    if not has_explicit_topology:
         try:
-            if instance.config_path("topology.json").is_file():
-                has_explicit_topology = True
-        except Exception:
-            pass
+            has_explicit_topology = _optional_instance_topology(instance) is not None
+        except PreMutationAbort as exc:
+            raise ProjectionError(f"CLOSURE_TOPOLOGY_INVALID: {exc}") from exc
 
     if has_explicit_topology:
         planned_target_ids = [

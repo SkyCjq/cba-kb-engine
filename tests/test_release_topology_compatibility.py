@@ -70,10 +70,17 @@ def production_shaped_topology_policy():
             "evidence": "evidence-synthetic",
         },
         "targets": {
-            "target-current": {"publish_parent": "current-a-synthetic"},
-            "target-history": {"publish_parent": "history-synthetic"},
-            "target-evidence": {"publish_parent": "evidence-synthetic"},
-            "target-staging": {"publish_parent": "active-staging-synthetic"},
+            "target-current": {
+                "allowed_parents": [
+                    "current-a-synthetic", "active-staging-synthetic",
+                ],
+            },
+            "target-history": {"allowed_parents": ["history-synthetic"]},
+            "target-evidence": {"allowed_parents": ["evidence-synthetic"]},
+            "target-staging": {
+                "allowed_parents": ["active-staging-synthetic"],
+                "publish_parent": "active-staging-synthetic",
+            },
             "unplanned-target": {"publish_parent": "current-b-synthetic"},
         },
     }
@@ -108,6 +115,51 @@ def test_production_shaped_fallback_builds_exact_semantic_topology():
     assert validate_release_topology(
         nodes, release_id="v2.0.1-1", planned_target_ids=planned,
     )["status"] == "PASS"
+
+
+@pytest.mark.parametrize(
+    ("explicit_present", "explicit", "allowed", "expected_parent"),
+    [
+        (False, None, ["current-a-synthetic"], "current-a-synthetic"),
+        (True, "current-a-synthetic", ["current-a-synthetic"],
+         "current-a-synthetic"),
+        (True, None, ["current-a-synthetic"], None),
+        (True, "", ["current-a-synthetic"], None),
+        (True, 7, ["current-a-synthetic"], None),
+        (True, "current-a-synthetic", ["current-b-synthetic"], None),
+    ],
+    ids=["absent", "valid", "null", "empty", "non-string", "conflict"],
+)
+def test_publish_parent_presence_and_value_authority_matrix(
+    explicit_present, explicit, allowed, expected_parent,
+):
+    policy = production_shaped_topology_policy()
+    target = {"allowed_parents": allowed}
+    if explicit_present:
+        target["publish_parent"] = explicit
+    policy["targets"]["target-current"] = target
+
+    if expected_parent is None:
+        with pytest.raises(
+            PreMutationAbort,
+            match="RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING",
+        ):
+            build_release_topology_from_production(
+                policy,
+                planned_target_ids=["target-current"],
+                allocation_staging_id="active-staging-synthetic",
+                release_id="v2.0.1-1",
+            )
+        return
+
+    nodes = build_release_topology_from_production(
+        policy,
+        planned_target_ids=["target-current"],
+        allocation_staging_id="active-staging-synthetic",
+        release_id="v2.0.1-1",
+    )
+    by_id = {node["id"]: node for node in nodes}
+    assert by_id["target-current"]["parents"] == [expected_parent]
 
 
 def test_production_shaped_fallback_preserves_nonempty_list_zone_forms():
@@ -166,6 +218,9 @@ def test_production_shaped_fallback_invalid_root_or_zone_fails_closed(mutation):
     "missing_planned_target",
     "unsupported_publish_parent",
     "ambiguous_publish_parent",
+    "allowed_parents_ambiguous",
+    "allowed_parents_no_semantic_parent",
+    "explicit_conflicts_with_allowed",
 ])
 def test_production_shaped_fallback_target_authority_fails_closed(mutation):
     policy = production_shaped_topology_policy()
@@ -173,9 +228,24 @@ def test_production_shaped_fallback_target_authority_fails_closed(mutation):
     if mutation == "missing_planned_target":
         planned.append("missing-target")
     elif mutation == "unsupported_publish_parent":
-        policy["targets"]["target-current"]["publish_parent"] = "outside-topology"
-    else:
+        policy["targets"]["target-current"] = {
+            "publish_parent": "outside-topology",
+        }
+    elif mutation == "ambiguous_publish_parent":
         policy["zones"]["evidence"] = "current-a-synthetic"
+    elif mutation == "allowed_parents_ambiguous":
+        policy["targets"]["target-current"]["allowed_parents"] = [
+            "current-a-synthetic", "history-synthetic",
+        ]
+    elif mutation == "allowed_parents_no_semantic_parent":
+        policy["targets"]["target-current"]["allowed_parents"] = [
+            "active-staging-synthetic",
+        ]
+    else:
+        policy["targets"]["target-current"] = {
+            "allowed_parents": ["current-b-synthetic"],
+            "publish_parent": "current-a-synthetic",
+        }
 
     with pytest.raises(
         PreMutationAbort, match="RELEASE_INFRA_TOPOLOGY_ROLE_AUTHORITY_MISSING",
@@ -183,6 +253,18 @@ def test_production_shaped_fallback_target_authority_fails_closed(mutation):
         build_release_topology_from_production(
             policy,
             planned_target_ids=planned,
+            allocation_staging_id="active-staging-synthetic",
+            release_id="v2.0.1-1",
+        )
+
+
+def test_malformed_explicit_topology_remains_fail_closed():
+    with pytest.raises(
+        PreMutationAbort, match="RELEASE_INFRA_TOPOLOGY_SOURCE_MISSING",
+    ):
+        build_release_topology_from_production(
+            {"topology": [], **production_shaped_topology_policy()},
+            planned_target_ids=["target-current"],
             allocation_staging_id="active-staging-synthetic",
             release_id="v2.0.1-1",
         )
