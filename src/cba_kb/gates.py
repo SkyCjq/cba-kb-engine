@@ -31,7 +31,10 @@ def authorize_plan(drive, root, plan, environment, instance=None):
         def _retired(fid,spec):
             marker=spec.get('retire_in_release') if isinstance(spec,dict) else None
             if not isinstance(marker,str) or not marker:return False
-            if marker==release_id:return True
+            if marker==release_id:
+                if fid not in active_ids:
+                    raise RuntimeError('Retirement target not in previous active set')
+                return True
             return fid not in active_ids
         publishable={fid for fid,spec in allowed.items() if not _retired(fid,spec)}
     else:

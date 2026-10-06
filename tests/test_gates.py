@@ -77,6 +77,10 @@ def test_production_allows_retired_targets_omission_from_plan(tmp_path):
  policy['targets']['bad']={'mime':'text/plain','allowed_parents':['sandbox'],'retire_in_release':True}
  with pytest.raises(RuntimeError,match='complete'):authorize_plan(d,tmp_path,plan,'production',instance)
 
+ # 6. marker==release_id 但不在上轮 active 集合 → 必须 REJECT（非法退休状态）
+ policy['targets']['ghost']={'mime':'text/plain','allowed_parents':['sandbox'],'retire_in_release':'v2.0.1-1'}
+ with pytest.raises(RuntimeError,match='Retirement target'):authorize_plan(d,tmp_path,plan,'production',instance)
+
 
 def test_legacy_upload_entry_is_disabled():
  import subprocess,sys
