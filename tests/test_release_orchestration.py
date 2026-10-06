@@ -622,7 +622,7 @@ def test_v200_1_release_spec_uses_product_candidate_sha():
     assert orchestration._release_spec("v1.9.0-1")["product_baseline_sha"] == "1e8c78019ef30a91c3bd0f98e96ce476326c6c25"
 
     # Unknown future release IDs remain fail closed
-    for unk in ["v2.0.1-1", "v2.1.0-1", "v3.0.0-1", "v9.9.9"]:
+    for unk in ["v2.1.0-1", "v3.0.0-1", "v9.9.9"]:
         with pytest.raises(orchestration.ProjectionError, match="RELEASE_ID_FORBIDDEN"):
             orchestration._release_spec(unk)
 
@@ -640,6 +640,27 @@ def test_v200_1_release_spec_uses_product_candidate_sha():
         ["git", "merge-base", "--is-ancestor", baseline, head],
         cwd=repo, check=False,
     ).returncode == 0
+
+
+def test_v201_1_is_the_only_supported_v201_release_attempt():
+    baseline = "63ca7a00b70ef52ecc97a808642f821d557417b5"
+    assert orchestration._release_spec("v2.0.1-1") == {
+        "product_baseline_sha": baseline,
+    }
+    for forbidden in ["v2.0.1", "v2.0.1-2", "v2.0.1-99", "v2.0.2-1"]:
+        with pytest.raises(
+            orchestration.ProjectionError,
+            match=f"RELEASE_ID_FORBIDDEN:{forbidden}",
+        ):
+            orchestration._release_spec(forbidden)
+
+    inputs = projection_inputs()
+    inputs["release_id"] = "v2.0.1-1"
+    inputs["engine_sha"] = baseline
+    projected = orchestration.project_targets(**inputs)
+    assert projected["release_id"] == "v2.0.1-1"
+    assert projected["engine_sha"] == baseline
+    assert projected["state"] == "PROJECTED"
 
 
 def test_v200_1_execution_sha_requires_clean_product_descendant(tmp_path):
