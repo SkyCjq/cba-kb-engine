@@ -2,7 +2,8 @@
 
 Implements fail-closed placement resolution, forbidden root enforcement,
 two-phase reparenting transaction with root removal, strict set equality readback verification,
-durable idempotency via Drive metadata/appProperties, class-based semantic validation,
+durable idempotency via Drive metadata/appProperties (fail-closed on lookup errors),
+class-based semantic validation, opaque folder ID resolution without path concatenation,
 and active artifact placement auditing.
 """
 from __future__ import annotations
@@ -120,45 +121,53 @@ class PlacementRegistry:
 
         target_folder_key = PLACEMENT_MATRIX[key]
 
-        # D4: Dynamic resolution
+        # R2 / D4: Dynamic resolution of exact opaque folder IDs without path concatenation
+        resolved_id = None
         if target_folder_key == "INBOX":
             if batch_id:
                 sub_key = f"INBOX/{batch_id}"
-                if sub_key in self.folder_map:
-                    resolved_id = self.folder_map[sub_key]
-                else:
-                    base_inbox = self.folder_map.get("INBOX")
-                    resolved_id = f"{base_inbox}/{batch_id}" if base_inbox else f"inbox-{batch_id}"
+                resolved_id = self.folder_map.get(sub_key) or self.folder_map.get(batch_id)
+                if not resolved_id:
+                    raise PlacementError(
+                        "UNRESOLVED_FOLDER_KEY",
+                        f"Inbox batch folder key '{sub_key}' not resolved to an opaque ID",
+                        sub_key=sub_key,
+                    )
             else:
-                resolved_id = self.folder_map.get("INBOX", "")
+                resolved_id = self.folder_map.get("INBOX")
         elif target_folder_key == "SOURCE_DERIVED":
             if source_pdf_parent_id:
                 resolved_id = source_pdf_parent_id
             else:
-                resolved_id = self.folder_map.get("SOURCE_DERIVED") or self.folder_map.get("SOURCES", "")
+                resolved_id = self.folder_map.get("SOURCE_DERIVED") or self.folder_map.get("SOURCES")
         elif target_folder_key.startswith("GOVERNANCE_"):
             gov_sub = target_folder_key.removeprefix("GOVERNANCE_")  # CURRENT, HISTORY, EVIDENCE, STAGING
             specific_key = f"{req_id}/{gov_sub}"
-            if specific_key in self.folder_map:
-                resolved_id = self.folder_map[specific_key]
-            else:
-                base_gov = self.folder_map.get(target_folder_key)
-                resolved_id = f"{base_gov}/{req_id}" if base_gov else f"gov-{req_id}-{gov_sub}"
-        elif target_folder_key == "STAGING_ARCHIVE":
-            specific_key = f"ARCHIVE/{req_id}"
-            if specific_key in self.folder_map:
-                resolved_id = self.folder_map[specific_key]
-            else:
-                base_arch = self.folder_map.get("STAGING_ARCHIVE", "")
-                resolved_id = f"{base_arch}/{req_id}" if base_arch else f"archive-{req_id}"
-        else:
-            if target_folder_key not in self.folder_map:
+            resolved_id = self.folder_map.get(specific_key) or self.folder_map.get(target_folder_key)
+            if not resolved_id:
                 raise PlacementError(
                     "UNRESOLVED_FOLDER_KEY",
-                    f"Target folder key '{target_folder_key}' not resolved in folder map",
-                    folder_key=target_folder_key,
+                    f"Governance folder key '{specific_key}' not resolved to an opaque ID",
+                    specific_key=specific_key,
                 )
-            resolved_id = self.folder_map[target_folder_key]
+        elif target_folder_key == "STAGING_ARCHIVE":
+            specific_key = f"ARCHIVE/{req_id}"
+            resolved_id = self.folder_map.get(specific_key) or self.folder_map.get("STAGING_ARCHIVE")
+            if not resolved_id:
+                raise PlacementError(
+                    "UNRESOLVED_FOLDER_KEY",
+                    f"Staging archive folder key '{specific_key}' not resolved to an opaque ID",
+                    specific_key=specific_key,
+                )
+        else:
+            resolved_id = self.folder_map.get(target_folder_key)
+
+        if not resolved_id:
+            raise PlacementError(
+                "UNRESOLVED_FOLDER_KEY",
+                f"Target folder key '{target_folder_key}' not resolved in folder map",
+                folder_key=target_folder_key,
+            )
 
         self.validate_parent(resolved_id)
         return resolved_id
@@ -195,17 +204,25 @@ class PlacementGuard:
             )
 
     def _find_durable_idempotent_file(self, parent_id: str, idempotency_key: str) -> Optional[Dict[str, Any]]:
-        """D3: Search for existing file with matching idempotency key in parent."""
+        """R1: Search for existing file with matching idempotency key. Fail closed on any exception."""
         if not hasattr(self.drive, "list"):
             return None
         try:
             items = self.drive.list(parent_id)
-            for item in items:
-                app_props = item.get("appProperties") or {}
-                if app_props.get("placement_idempotency_key") == idempotency_key or app_props.get("cba_key") == idempotency_key:
-                    return item
-        except Exception:
-            pass
+        except Exception as exc:
+            # R1: Fail closed! Do not swallow error or continue to create.
+            raise PlacementError(
+                "IDEMPOTENCY_LOOKUP_FAILED",
+                f"Failed to query Drive for durable idempotency key '{idempotency_key}': {exc}",
+                idempotency_key=idempotency_key,
+                parent_id=parent_id,
+                cause=str(exc),
+            ) from exc
+
+        for item in items:
+            app_props = item.get("appProperties") or {}
+            if app_props.get("placement_idempotency_key") == idempotency_key or app_props.get("cba_key") == idempotency_key:
+                return item
         return None
 
     def create_artifact(self, req: ArtifactPlacementRequest) -> PlacementRecord:
@@ -230,12 +247,11 @@ class PlacementGuard:
 
         # D2: Class semantic validation
         if req.artifact_class in HISTORY_CLASSES:
-            # HISTORY class can only go to HISTORY/ARCHIVE destinations
             gov_history_ids = {
-                self.registry.folder_map.get("GOVERNANCE_HISTORY"),
-                self.registry.folder_map.get("STAGING_ARCHIVE"),
+                val for k, val in self.registry.folder_map.items()
+                if "HISTORY" in k or "ARCHIVE" in k
             }
-            if not any(target_parent.startswith(h_id) for h_id in gov_history_ids if h_id):
+            if target_parent not in gov_history_ids:
                 raise PlacementError(
                     "INVALID_PLACEMENT",
                     f"HISTORY class artifact '{req.artifact_class}' cannot be placed in non-history folder '{target_parent}'",
@@ -244,9 +260,11 @@ class PlacementGuard:
                 )
 
         if req.artifact_class not in STAGING_CLASSES:
-            # Non-staging artifacts cannot be placed in STAGING
-            gov_staging_id = self.registry.folder_map.get("GOVERNANCE_STAGING")
-            if gov_staging_id and (target_parent == gov_staging_id or target_parent.startswith(gov_staging_id)):
+            staging_ids = {
+                val for k, val in self.registry.folder_map.items()
+                if "STAGING" in k
+            }
+            if target_parent in staging_ids:
                 raise PlacementError(
                     "INVALID_PLACEMENT",
                     f"Non-staging artifact class '{req.artifact_class}' cannot be placed in staging folder '{target_parent}'",
@@ -254,7 +272,7 @@ class PlacementGuard:
                     parent_id=target_parent,
                 )
 
-        # D3: Durable idempotency check
+        # R1 / D3: Durable idempotency check (fail-closed on error)
         if req.idempotency_key:
             existing = self._find_durable_idempotent_file(target_parent, req.idempotency_key)
             if existing:
@@ -332,7 +350,6 @@ class PlacementGuard:
         actual_parents_set = set(meta.get("parents", []))
         expected_parents_set = {target_parent}
 
-        # Any residual root or extra parent causes failure
         if actual_parents_set != expected_parents_set:
             record.status = PlacementStatus.FAILED
             raise PlacementError(

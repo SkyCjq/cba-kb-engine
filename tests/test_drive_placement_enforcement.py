@@ -53,19 +53,29 @@ class FakeDriveClient:
 
 def build_standard_registry():
     folder_map = {
-        "INBOX": "folder-inbox-00",
-        "SOURCES": "folder-sources-10",
-        "SOURCE_DERIVED": "folder-sources-10",
-        "DATA": "folder-data-20",
-        "NOTES": "folder-notes-30",
-        "AI_VIEW": "folder-ai-40",
-        "CONFIG": "folder-config-60",
-        "GOVERNANCE_CURRENT": "folder-gov-current",
-        "GOVERNANCE_HISTORY": "folder-gov-history",
-        "GOVERNANCE_EVIDENCE": "folder-gov-evidence",
-        "GOVERNANCE_STAGING": "folder-gov-staging",
-        "STAGING_ARCHIVE": "folder-archive-90",
-        "VERSION_DEV": "folder-v202-dev",
+        "INBOX": "opaque_inbox_root",
+        "INBOX/20261007_B01": "opaque_inbox_b01",
+        "SOURCES": "opaque_sources_10",
+        "SOURCE_DERIVED": "opaque_sources_10",
+        "DATA": "opaque_data_20",
+        "NOTES": "opaque_notes_30",
+        "AI_VIEW": "opaque_ai_40",
+        "CONFIG": "opaque_config_60",
+        "GOVERNANCE_CURRENT": "opaque_gov_current",
+        "GOVERNANCE_HISTORY": "opaque_gov_history",
+        "GOVERNANCE_EVIDENCE": "opaque_gov_evidence",
+        "GOVERNANCE_STAGING": "opaque_gov_staging",
+        "REQ-202-TEST/CURRENT": "opaque_gov_current_202",
+        "REQ-202-TEST/STAGING": "opaque_gov_staging_202",
+        "REQ-202-TEST/HISTORY": "opaque_gov_history_202",
+        "REQ-202-TEST/EVIDENCE": "opaque_gov_evidence_202",
+        "REQ-190-DATA-CORPUS/CURRENT": "opaque_gov_current_190",
+        "REQ-190-DATA-CORPUS/STAGING": "opaque_gov_staging_190",
+        "REQ-190-DATA-CORPUS/HISTORY": "opaque_gov_history_190",
+        "REQ-190-DATA-CORPUS/EVIDENCE": "opaque_gov_evidence_190",
+        "ARCHIVE/REQ-190-DATA-CORPUS": "opaque_archive_190",
+        "STAGING_ARCHIVE": "opaque_archive_90",
+        "VERSION_DEV": "opaque_v202_dev",
     }
     return PlacementRegistry(
         folder_map=folder_map,
@@ -147,13 +157,13 @@ def test_reparent_atomicity():
 def test_history_vs_active():
     registry = PlacementRegistry(
         folder_map={
-            "INBOX": "folder-inbox-00",
-            "GOVERNANCE_CURRENT": "folder-gov-current",
-            "GOVERNANCE_HISTORY": "folder-gov-history",
-            "GOVERNANCE_STAGING": "folder-gov-staging",
+            "INBOX": "opaque_inbox_00",
+            "GOVERNANCE_CURRENT": "opaque_gov_current",
+            "GOVERNANCE_HISTORY": "opaque_gov_history",
+            "GOVERNANCE_STAGING": "opaque_gov_staging",
         },
         disallowed_roots={"root", "my_drive", "cba_kb_root"},
-        allowed_override_parents={"folder-gov-current"},
+        allowed_override_parents={"opaque_gov_current"},
     )
     drive = FakeDriveClient()
     guard = PlacementGuard(drive=drive, registry=registry)
@@ -164,7 +174,7 @@ def test_history_vs_active():
         artifact_class="HISTORY",
         artifact_role="AUDIT_LOG",
         name="history.log",
-        override_parent_id="folder-gov-current",  # Force ACTIVE directory
+        override_parent_id="opaque_gov_current",  # Force ACTIVE directory
     )
     with pytest.raises(PlacementError) as exc_info:
         guard.create_artifact(req)
@@ -227,18 +237,18 @@ def test_registry_lookup():
     registry = build_standard_registry()
 
     expected_lookups = [
-        ("INBOX", "BATCH", "folder-inbox-00"),
-        ("SOURCE", "ORIGINAL", "folder-sources-10"),
-        ("SOURCE_DERIVED", "OCR", "folder-sources-10"),
-        ("DATA", "CANONICAL", "folder-data-20"),
-        ("NOTES", "MANUAL", "folder-notes-30"),
-        ("AI_VIEW", "INDEX", "folder-ai-40"),
-        ("CONFIG", "REGISTRY", "folder-config-60"),
-        ("CANONICAL", "GOVERNANCE", "folder-gov-current/REQ-202-TEST"),
-        ("ACTIVE_WORK", "STAGING", "folder-gov-staging/REQ-202-TEST"),
-        ("HISTORY", "ARCHIVE", "folder-gov-history/REQ-202-TEST"),
-        ("EVIDENCE", "RAW", "folder-gov-evidence/REQ-202-TEST"),
-        ("VERSION_DEV", "DOC", "folder-v202-dev"),
+        ("INBOX", "BATCH", "opaque_inbox_root"),
+        ("SOURCE", "ORIGINAL", "opaque_sources_10"),
+        ("SOURCE_DERIVED", "OCR", "opaque_sources_10"),
+        ("DATA", "CANONICAL", "opaque_data_20"),
+        ("NOTES", "MANUAL", "opaque_notes_30"),
+        ("AI_VIEW", "INDEX", "opaque_ai_40"),
+        ("CONFIG", "REGISTRY", "opaque_config_60"),
+        ("CANONICAL", "GOVERNANCE", "opaque_gov_current_202"),
+        ("ACTIVE_WORK", "STAGING", "opaque_gov_staging_202"),
+        ("HISTORY", "ARCHIVE", "opaque_gov_history_202"),
+        ("EVIDENCE", "RAW", "opaque_gov_evidence_202"),
+        ("VERSION_DEV", "DOC", "opaque_v202_dev"),
     ]
 
     for artifact_class, artifact_role, expected_parent in expected_lookups:
@@ -295,10 +305,10 @@ def test_history_cannot_enter_staging_and_class_semantics():
         artifact_class="HISTORY",
         artifact_role="AUDIT_LOG",
         name="history_item.json",
-        override_parent_id="folder-gov-staging",
+        override_parent_id="opaque_gov_staging",
     )
     # Even if override is in allowed list, class semantics must reject
-    registry.allowed_override_parents.add("folder-gov-staging")
+    registry.allowed_override_parents.add("opaque_gov_staging")
     with pytest.raises(PlacementError) as exc_info:
         guard.create_artifact(req)
     assert exc_info.value.code == "INVALID_PLACEMENT"
@@ -310,7 +320,7 @@ def test_history_cannot_enter_staging_and_class_semantics():
         artifact_class="DATA",
         artifact_role="CANONICAL",
         name="data.json",
-        override_parent_id="folder-gov-staging",
+        override_parent_id="opaque_gov_staging",
     )
     with pytest.raises(PlacementError) as exc_info2:
         guard.create_artifact(req2)
@@ -351,38 +361,42 @@ def test_durable_idempotency_across_two_guard_instances():
 def test_dynamic_resolution_with_real_parameters():
     registry = build_standard_registry()
 
-    # 1. INBOX with batch_id
+    # 1. INBOX with batch_id resolves to opaque ID
     parent_inbox_batch = registry.resolve_parent_id(
         req_id="REQ-202-TEST",
         artifact_class="INBOX",
         artifact_role="BATCH",
         batch_id="20261007_B01",
     )
-    assert parent_inbox_batch == "folder-inbox-00/20261007_B01"
+    assert parent_inbox_batch == "opaque_inbox_b01"
+    assert "/" not in parent_inbox_batch
 
-    # 2. SOURCE_DERIVED with source_pdf_parent_id
+    # 2. SOURCE_DERIVED with source_pdf_parent_id resolves to opaque ID
     parent_ocr = registry.resolve_parent_id(
         req_id="REQ-202-TEST",
         artifact_class="SOURCE_DERIVED",
         artifact_role="OCR",
-        source_pdf_parent_id="folder-sources-sub-123",
+        source_pdf_parent_id="opaque_sources_sub_123",
     )
-    assert parent_ocr == "folder-sources-sub-123"
+    assert parent_ocr == "opaque_sources_sub_123"
+    assert "/" not in parent_ocr
 
-    # 3. Governance artifacts with dynamic REQ-ID
+    # 3. Governance artifacts with dynamic REQ-ID resolve to opaque IDs
     parent_gov_staging = registry.resolve_parent_id(
         req_id="REQ-190-DATA-CORPUS",
         artifact_class="ACTIVE_WORK",
         artifact_role="STAGING",
     )
-    assert parent_gov_staging == "folder-gov-staging/REQ-190-DATA-CORPUS"
+    assert parent_gov_staging == "opaque_gov_staging_190"
+    assert "/" not in parent_gov_staging
 
     parent_gov_archive = registry.resolve_parent_id(
         req_id="REQ-190-DATA-CORPUS",
         artifact_class="STAGING_ARCHIVE",
         artifact_role="ARCHIVE",
     )
-    assert parent_gov_archive == "folder-archive-90/REQ-190-DATA-CORPUS"
+    assert parent_gov_archive == "opaque_archive_190"
+    assert "/" not in parent_gov_archive
 
 
 # D5 Probe: test_unallowed_override_parent_rejected
@@ -413,3 +427,144 @@ def test_unknown_file_id_dispatch_rejected():
     with pytest.raises(PlacementError) as exc_info:
         guard.assert_safe_to_dispatch("unknown-file-999")
     assert exc_info.value.code == "UNKNOWN_FILE_DISPATCH"
+
+
+# ==================== R1-R4 Probe Tests ====================
+
+def test_r1_idempotency_lookup_fail_closed_on_error():
+    registry = build_standard_registry()
+    drive = FakeDriveClient()
+
+    class ErrorListDrive(FakeDriveClient):
+        def list(self, parent):
+            raise RuntimeError("Network timeout during list")
+
+    error_drive = ErrorListDrive()
+    guard = PlacementGuard(drive=error_drive, registry=registry)
+
+    req = ArtifactPlacementRequest(
+        req_id="REQ-202-TEST",
+        artifact_class="NOTES",
+        artifact_role="MANUAL",
+        name="notes.md",
+        idempotency_key="key-err-123",
+    )
+    with pytest.raises(PlacementError) as exc_info:
+        guard.create_artifact(req)
+    assert exc_info.value.code == "IDEMPOTENCY_LOOKUP_FAILED"
+    assert len(error_drive.files) == 0, "Ensure/create must not be called when lookup fails"
+
+
+def test_r2_dynamic_resolution_opaque_id_no_path_concatenation():
+    folder_map = {
+        "INBOX": "opaque_inbox_root",
+        "INBOX/20261007_B01": "opaque_inbox_b01",
+        "SOURCES": "opaque_sources_10",
+        "DATA": "opaque_data_20",
+        "NOTES": "opaque_notes_30",
+        "AI_VIEW": "opaque_ai_40",
+        "CONFIG": "opaque_config_60",
+        "REQ-190-DATA-CORPUS/CURRENT": "opaque_gov_curr_190",
+        "REQ-190-DATA-CORPUS/STAGING": "opaque_gov_stage_190",
+        "REQ-190-DATA-CORPUS/HISTORY": "opaque_gov_hist_190",
+        "REQ-190-DATA-CORPUS/EVIDENCE": "opaque_gov_evid_190",
+        "ARCHIVE/REQ-190-DATA-CORPUS": "opaque_archive_190",
+        "VERSION_DEV": "opaque_v202_dev",
+    }
+    registry = PlacementRegistry(folder_map=folder_map)
+
+    # 1. INBOX batch resolves to exact opaque ID
+    p_inbox = registry.resolve_parent_id(
+        req_id="REQ-202-TEST",
+        artifact_class="INBOX",
+        artifact_role="BATCH",
+        batch_id="20261007_B01",
+    )
+    assert p_inbox == "opaque_inbox_b01"
+    assert "/" not in p_inbox
+
+    # 2. SOURCE_DERIVED with source PDF parent ID resolves to exact opaque ID
+    p_ocr = registry.resolve_parent_id(
+        req_id="REQ-202-TEST",
+        artifact_class="SOURCE_DERIVED",
+        artifact_role="OCR",
+        source_pdf_parent_id="opaque_pdf_parent_999",
+    )
+    assert p_ocr == "opaque_pdf_parent_999"
+
+    # 3. Governance staging and archive resolve to opaque IDs
+    p_gov_stage = registry.resolve_parent_id(
+        req_id="REQ-190-DATA-CORPUS",
+        artifact_class="ACTIVE_WORK",
+        artifact_role="STAGING",
+    )
+    assert p_gov_stage == "opaque_gov_stage_190"
+    assert "/" not in p_gov_stage
+
+    p_gov_archive = registry.resolve_parent_id(
+        req_id="REQ-190-DATA-CORPUS",
+        artifact_class="STAGING_ARCHIVE",
+        artifact_role="ARCHIVE",
+    )
+    assert p_gov_archive == "opaque_archive_190"
+    assert "/" not in p_gov_archive
+
+
+def test_r3_drive_adapter_bridges_real_drive_methods():
+    from cba_kb.drive_adapter import PlacementDriveAdapter
+
+    class StubDrive:
+        def __init__(self):
+            self.calls = []
+            self.api = self
+            self._files = self
+
+        def files(self):
+            return self
+
+        def ensure(self, parent, key, name, mime, content=None, index=None):
+            self.calls.append(("ensure", parent, key, name, mime))
+            return "opaque_ensured_fid_1"
+
+        def move(self, file_id, destination, previous):
+            self.calls.append(("move", file_id, destination, previous))
+            return {"id": file_id, "parents": [destination]}
+
+        def meta(self, file_id):
+            self.calls.append(("meta", file_id))
+            return {"id": file_id, "parents": ["opaque_dest"]}
+
+        def list(self, parent):
+            self.calls.append(("list", parent))
+            return []
+
+        def delete(self, fileId, supportsAllDrives=True):
+            self.calls.append(("delete", fileId))
+            class Exec:
+                def execute(self, num_retries=0):
+                    return {}
+            return Exec()
+
+    stub = StubDrive()
+    adapter = PlacementDriveAdapter(stub)
+
+    # Test create -> ensure
+    res = adapter.create(name="file.txt", parent="opaque_p1", mime="text/plain", appProperties={"cba_key": "key1"})
+    assert res["id"] == "opaque_ensured_fid_1"
+    assert stub.calls[-1][0] == "ensure"
+
+    # Test reparent -> move
+    adapter.reparent("opaque_ensured_fid_1", new_parent="opaque_dest", old_parent="opaque_p1")
+    assert stub.calls[-1][0] == "move"
+
+    # Test meta -> meta
+    m = adapter.meta("opaque_ensured_fid_1")
+    assert stub.calls[-1][0] == "meta"
+
+    # Test list -> list
+    l = adapter.list("opaque_p1")
+    assert stub.calls[-1][0] == "list"
+
+    # Test delete -> delete.execute()
+    adapter.delete("opaque_ensured_fid_1")
+    assert stub.calls[-1][0] == "delete"
