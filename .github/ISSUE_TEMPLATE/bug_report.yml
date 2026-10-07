@@ -1,0 +1,36 @@
+name: Bug Report
+description: Create a bug report to help improve CBA-KB Engine
+title: "[BUG]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue!
+        **Reminder**: Do not include private credentials, proprietary documents, or real Google Drive IDs in your report.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: Tell us what you see!
+    validations:
+      required: true
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: Exact steps to reproduce the issue offline using public/synthetic fixtures.
+      placeholder: |
+        1. Run `cba-kb validate ...`
+        2. Observe error ...
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS version, Python version, CBA-KB version (`cba-kb doctor` output)
+      placeholder: macOS 15, Python 3.11, v2.0.2
+    validations:
+      required: true
