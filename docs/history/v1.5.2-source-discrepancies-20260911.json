@@ -1,5 +1,6 @@
 {
-  "kind": "audit_source_discrepancies",
+  "_SUPERSEDED_NOTICE": "HISTORICAL RECORD ONLY. SUPERSEDED AND SANITIZED FOR REPOSITORY COMPLIANCE (G3).",
+"kind": "audit_source_discrepancies",
   "release_id": "v1.5.2-1",
   "recorded_at": "2026-09-11",
   "audit_only": true,
@@ -13,8 +14,8 @@
       "season": "2024-2025",
       "field": "jersey_number",
       "observations": [
-        {"source_file_id": "16H0cxiItoSlGALeHce-E06pD_a3RFAmd", "location": "F16", "raw_value": 0, "cell_number_format": "General", "legacy_export_value": "0"},
-        {"source_file_id": "1eGrMDep9YMfPNy66M6-6Jwm9iYaF_gQj", "location": "frozen Markdown line 500", "raw_value": "00", "six_table_export_value": "00"}
+        {"source_file_id": "<DRIVE_ID>", "location": "F16", "raw_value": 0, "cell_number_format": "General", "legacy_export_value": "0"},
+        {"source_file_id": "<DRIVE_ID>", "location": "frozen Markdown line 500", "raw_value": "00", "six_table_export_value": "00"}
       ],
       "disposition": "PRESERVE_EACH_SOURCE_LITERAL",
       "cross_source_resolution": "NOT_RESOLVED",
@@ -26,13 +27,13 @@
       "season": "2024-2025",
       "field": "jersey_number",
       "observations": [
-        {"source_file_id": "16H0cxiItoSlGALeHce-E06pD_a3RFAmd", "location": "F57", "raw_value": 0, "cell_number_format": "General", "legacy_export_value": "0"},
-        {"source_file_id": "1eGrMDep9YMfPNy66M6-6Jwm9iYaF_gQj", "location": "frozen Markdown line 541", "raw_value": "00", "six_table_export_value": "00"}
+        {"source_file_id": "<DRIVE_ID>", "location": "F57", "raw_value": 0, "cell_number_format": "General", "legacy_export_value": "0"},
+        {"source_file_id": "<DRIVE_ID>", "location": "frozen Markdown line 541", "raw_value": "00", "six_table_export_value": "00"}
       ],
       "disposition": "PRESERVE_EACH_SOURCE_LITERAL",
       "cross_source_resolution": "NOT_RESOLVED",
       "reason": "外部审阅方已撤回要求将 XLSX 0 改成 00 的建议；代码冻结后继续保留来源差异，不补造事实。"
     }
   ],
-  "review_url": "https://drive.google.com/file/d/1q8T0PLMwuO7XhqI0_5sAOE8tpwVf2GnK/view"
+  "review_url": "https://drive.google.com/file/d/<DRIVE_ID>/view"
 }
