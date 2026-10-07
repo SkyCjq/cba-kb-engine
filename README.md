@@ -4,7 +4,7 @@
 
 **CBA-KB** is an evidence-first data and research engine for the Chinese Basketball Association (CBA). It turns heterogeneous source material into traceable structured facts, identity-aware document evidence, statements, claims, verification queues, and read-only research views that can be consumed by humans and AI systems without collapsing evidence into fact.
 
-Current production release: **v1.9.0-1 — COMPLETE**.
+Current production release: **v2.0.1-1 — COMPLETE**.
 
 > Core rule: **Statement ≠ Fact. Evidence ≠ Fact. Unknown ≠ 0.**
 
@@ -190,7 +190,7 @@ Do not treat a successful local build or CI run as permission to publish product
 
 ## Project status and roadmap
 
-**v1.9.0-1** is the current completed production release and includes the Statement/Claim research layer, source intake contract, verification queue, research view, and associated consumer-closure controls.
+**v2.0.1-1** is the current completed production release and includes the Statement/Claim research layer, source intake contract, verification queue, research view, and associated consumer-closure controls.
 
 Likely future directions include deeper person modeling, statistics, richer claims/research workflows, and additional automation, but those are not implied to be implemented until they appear in code and a completed release.
 

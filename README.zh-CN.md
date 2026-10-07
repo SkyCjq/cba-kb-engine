@@ -4,7 +4,7 @@
 
 **CBA-KB** 是一个面向中国男子篮球职业联赛（CBA）的证据优先（evidence-first）数据与研究引擎。它把分散的注册资料、表格、文档、文章和人工核验证据整理为可追溯的结构化事实、身份关联的文档证据、Statement（陈述）、Claim（主张）、Verification Queue（待核队列）和只读 Research View（研究视图），并供人类与 AI 消费，同时避免把“证据”直接等同于“事实”。
 
-当前生产发布：**v1.9.0-1 — COMPLETE**。
+当前生产发布：**v2.0.1-1 — COMPLETE**。
 
 > 核心规则：**Statement ≠ Fact；Evidence ≠ Fact；Unknown ≠ 0。**
 
@@ -190,7 +190,7 @@ Production write 与普通开发严格分离。发布链路使用显式 producti
 
 ## 项目状态与路线
 
-**v1.9.0-1** 是当前已完成的 Production release，包含 Statement/Claim 研究层、Source Intake Contract、Verification Queue、Research View 及其 Consumer Closure 控制。
+**v2.0.1-1** 是当前已完成的 Production release，包含 Statement/Claim 研究层、Source Intake Contract、Verification Queue、Research View 及其 Consumer Closure 控制。
 
 后续可能继续发展 Person modeling、Stats、更加完整的 Claim/Research workflow 与自动化，但只有代码实际存在且完成正式发布后，才视为已实现能力。
 
