@@ -227,6 +227,9 @@ def test_managed_native_doc_publish_and_rollback(tmp_path):
             if 'full-native-backup' not in self.files:
                 self.native_copies.append(fid)
                 self.add('full-native-backup', self.get(fid), DOC)
+                # Faithful to Drive.ensure_copy: the copy lives under the
+                # requested parent (F-01 repair: facade readback enforces this).
+                self.files['full-native-backup']['parents']=[parent]
             return 'full-native-backup'
     d=NativeDrive();p=tmp_path/'native.txt';p.write_text(wrap('Current facts'))
     r=tmp_path/'native-release'

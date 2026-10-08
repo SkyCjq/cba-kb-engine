@@ -24,6 +24,7 @@ from cba_kb.current_state import (
 from cba_kb.consumer_manifest import PRODUCT_VERSION as LEGACY_PRODUCT_VERSION
 from cba_kb.drive import Drive
 from cba_kb.instance import load_instance
+from cba_kb.placement_facade import placement_enforced
 from cba_kb.native import wrap
 from cba_kb.release import (
     PLANNED_TARGET_ROLES, PreMutationAbort, ReleaseContractError, _inventory,
@@ -2129,8 +2130,10 @@ def main(argv=None):
             parser.error("--projection is required")
         projection = read(args.projection)
         if args.step == "reserve-staging":
+            # F-01 bounded repair: reserve-staging creation chain must pass
+            # through mandatory placement enforcement. Transparent proxy.
             result = reserve_staging(
-                Drive(root, instance),
+                placement_enforced(Drive(root, instance)),
                 instance,
                 release_id=args.release,
                 projection=projection,
