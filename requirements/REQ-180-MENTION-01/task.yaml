@@ -123,11 +123,11 @@ rights_contract:
   private_acceptance_changes_public_export_allowed: false
   unauthorized_or_blocked_explicit: true
 private_instance_contract:
-  root: /Users/skychengneo/Agent/CBA_kb_instance
-  runtime_evidence_root: /Users/skychengneo/Agent/CBA_kb_instance/evidence/REQ-180-MENTION-01/
+  root: ${CBA_KB_INSTANCE_ROOT}
+  runtime_evidence_root: ${CBA_KB_INSTANCE_ROOT}/evidence/REQ-180-MENTION-01/
   real_mapping_repo_copy: forbidden
 human_runbook:
-  dev_workspace: /Users/skychengneo/Agent/CBA_kb_dev/REQ-180-MENTION-01
+  dev_workspace: ${CBA_KB_DEV_WORKSPACE}
   local_runtime_root: /Users/skychengneo/Agent/CBA_kb
   private_instance_root: /Users/skychengneo/Agent/CBA_kb_instance
   local_prepare_command: NOT_IMPLEMENTED

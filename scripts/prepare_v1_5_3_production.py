@@ -323,7 +323,7 @@ def corrected_execution_state(commit, release_id):
 
 `tests/test_midseason_md.py::test_real_source_records` 曾因仓库工作树未布置
 `.staging/review-0910/bayi.md` 而跳过。使用外部真实来源
-`/Users/skychengneo/Documents/ChatGPT/CBA_kb/.staging/review-0910/bayi.md`
+`<external-source>/bayi.md`
 （SHA-256 `d7272639a8503f60c3608e7ad914c891e3bda455994968b305027fdbe3994781`）
 补跑后通过：14 条 domestic、14 条 event、9 个 club，窗口截止日
 `2021-02-27` 保持为 event 字段，domestic `notice_deadline` 为 `None`。
