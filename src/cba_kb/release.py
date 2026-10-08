@@ -9,6 +9,7 @@ import re
 import subprocess
 import time
 from .common import atomic, child, digest, lock, read, save
+from .placement_facade import placement_enforced
 from .transport import stage
 from .current_state import clean
 
@@ -1193,6 +1194,10 @@ def set_status(drive, plan, state, previous_snapshot, release_execution_sha=None
 
 
 def publish(drive, root, single_writer=False, execution_authority=None):
+    # F-01 bounded repair: all creation chains in the publish flow must pass
+    # through mandatory placement enforcement. Transparent proxy: reads
+    # delegate unchanged; ensure/ensure_copy are fail-closed enforced.
+    drive = placement_enforced(drive)
     root=Path(root)
     if not single_writer: raise RuntimeError('Single-writer maintenance window must be acknowledged')
     with lock(root.parent/'publish.lock'):

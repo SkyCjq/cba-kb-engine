@@ -170,9 +170,13 @@ class GoogleDriveStore:
         try:
             from cba_kb.drive import Drive
             from cba_kb.instance import load_instance
+            from cba_kb.placement_facade import placement_enforced
 
             instance = load_instance(engine_root, instance_root)
-            return cls(Drive(engine_root, instance=instance))
+            # F-01 bounded repair: provider creation chain (store.create ->
+            # handoff history, provider canary) must pass through mandatory
+            # placement enforcement. Transparent proxy; store logic unchanged.
+            return cls(placement_enforced(Drive(engine_root, instance=instance)))
         except Exception as exc:
             raise P2AError("PROVIDER_AUTH_UNAVAILABLE", "Authenticated Google Drive provider is unavailable", error=type(exc).__name__) from exc
 
