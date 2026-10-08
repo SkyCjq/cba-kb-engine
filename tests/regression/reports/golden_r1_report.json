@@ -1,0 +1,270 @@
+{
+  "categories": {
+    "Claim": {
+      "passed": 2,
+      "total": 2
+    },
+    "Document": {
+      "passed": 2,
+      "total": 2
+    },
+    "Fact": {
+      "passed": 2,
+      "total": 2
+    },
+    "Identity": {
+      "passed": 2,
+      "total": 2
+    },
+    "Player-season Stats": {
+      "passed": 2,
+      "total": 2
+    },
+    "Statement": {
+      "passed": 2,
+      "total": 2
+    },
+    "Stats 与媒体数字冲突": {
+      "passed": 2,
+      "total": 2
+    },
+    "Unknown": {
+      "passed": 2,
+      "total": 2
+    },
+    "coverage 局限": {
+      "passed": 1,
+      "total": 1
+    },
+    "duplicate / revision": {
+      "passed": 2,
+      "total": 2
+    },
+    "missing vs zero": {
+      "passed": 2,
+      "total": 2
+    },
+    "rights": {
+      "passed": 1,
+      "total": 1
+    },
+    "unresolved": {
+      "passed": 1,
+      "total": 1
+    },
+    "因果陷阱": {
+      "passed": 2,
+      "total": 2
+    },
+    "跨粒度": {
+      "passed": 2,
+      "total": 2
+    }
+  },
+  "evaluation_mode": "FROZEN_REFERENCE_REPLAY",
+  "hard_gates": {
+    "false_fact_promotion": {
+      "count": 0,
+      "required": 0,
+      "status": "PASS"
+    },
+    "identity_fail_safe": {
+      "status": "PASS"
+    },
+    "missing_vs_zero": {
+      "status": "PASS"
+    },
+    "rights_boundary": {
+      "status": "PASS"
+    },
+    "stats_statement_separation": {
+      "status": "PASS"
+    }
+  },
+  "items": [
+    {
+      "answer_correct": true,
+      "category": "Fact",
+      "false_fact_promotion": false,
+      "id": "R1-001"
+    },
+    {
+      "answer_correct": true,
+      "category": "Fact",
+      "false_fact_promotion": false,
+      "id": "R1-002"
+    },
+    {
+      "answer_correct": true,
+      "category": "Identity",
+      "false_fact_promotion": false,
+      "id": "R1-003"
+    },
+    {
+      "answer_correct": true,
+      "category": "Identity",
+      "false_fact_promotion": false,
+      "id": "R1-004"
+    },
+    {
+      "answer_correct": true,
+      "category": "Document",
+      "false_fact_promotion": false,
+      "id": "R1-005"
+    },
+    {
+      "answer_correct": true,
+      "category": "Document",
+      "false_fact_promotion": false,
+      "id": "R1-006"
+    },
+    {
+      "answer_correct": true,
+      "attribution_correct": true,
+      "category": "Statement",
+      "false_fact_promotion": false,
+      "id": "R1-007"
+    },
+    {
+      "answer_correct": true,
+      "attribution_correct": true,
+      "category": "Statement",
+      "false_fact_promotion": false,
+      "id": "R1-008"
+    },
+    {
+      "answer_correct": true,
+      "category": "Claim",
+      "false_fact_promotion": false,
+      "id": "R1-009"
+    },
+    {
+      "answer_correct": true,
+      "category": "Claim",
+      "false_fact_promotion": false,
+      "id": "R1-010"
+    },
+    {
+      "answer_correct": true,
+      "category": "Player-season Stats",
+      "false_fact_promotion": false,
+      "id": "R1-011"
+    },
+    {
+      "answer_correct": true,
+      "category": "Player-season Stats",
+      "false_fact_promotion": false,
+      "id": "R1-012"
+    },
+    {
+      "answer_correct": true,
+      "category": "Unknown",
+      "false_fact_promotion": false,
+      "id": "R1-013"
+    },
+    {
+      "answer_correct": true,
+      "category": "Unknown",
+      "false_fact_promotion": false,
+      "id": "R1-014"
+    },
+    {
+      "answer_correct": true,
+      "category": "跨粒度",
+      "false_fact_promotion": false,
+      "id": "R1-015"
+    },
+    {
+      "answer_correct": true,
+      "category": "跨粒度",
+      "false_fact_promotion": false,
+      "id": "R1-016"
+    },
+    {
+      "answer_correct": true,
+      "category": "missing vs zero",
+      "false_fact_promotion": false,
+      "id": "R1-017"
+    },
+    {
+      "answer_correct": true,
+      "category": "missing vs zero",
+      "false_fact_promotion": false,
+      "id": "R1-018"
+    },
+    {
+      "answer_correct": true,
+      "category": "unresolved",
+      "false_fact_promotion": false,
+      "id": "R1-019"
+    },
+    {
+      "answer_correct": true,
+      "category": "rights",
+      "false_fact_promotion": false,
+      "id": "R1-020"
+    },
+    {
+      "answer_correct": true,
+      "category": "duplicate / revision",
+      "false_fact_promotion": false,
+      "id": "R1-021"
+    },
+    {
+      "answer_correct": true,
+      "category": "duplicate / revision",
+      "false_fact_promotion": false,
+      "id": "R1-022"
+    },
+    {
+      "answer_correct": true,
+      "category": "coverage 局限",
+      "false_fact_promotion": false,
+      "id": "R1-023"
+    },
+    {
+      "answer_correct": true,
+      "category": "因果陷阱",
+      "false_fact_promotion": false,
+      "id": "R1-024"
+    },
+    {
+      "answer_correct": true,
+      "category": "因果陷阱",
+      "false_fact_promotion": false,
+      "id": "R1-025"
+    },
+    {
+      "answer_correct": true,
+      "category": "Stats 与媒体数字冲突",
+      "false_fact_promotion": false,
+      "id": "R1-026"
+    },
+    {
+      "answer_correct": true,
+      "category": "Stats 与媒体数字冲突",
+      "false_fact_promotion": false,
+      "id": "R1-027"
+    }
+  ],
+  "performance_claim": false,
+  "replay": {
+    "answer_comparison": "Unicode NFC + whitespace collapse + exact match",
+    "golden_path": "tests/regression/golden_set_r1.json",
+    "golden_sha256_actual": "78d68240d00db797b67f8a3219cf4e3cc711f9647dcf8def4f5811601449112d",
+    "golden_sha256_expected": "78d68240d00db797b67f8a3219cf4e3cc711f9647dcf8def4f5811601449112d",
+    "responses_sha256": "df52cae8246a72d1d90d13a4d8491b41034a23fd10a1bb3ffb5a4f87baea4e10"
+  },
+  "requirement": "REQ-202-REGRESSION-BASELINE-01",
+  "schema_version": "cba-kb.regression-report.v1",
+  "status": "PASS",
+  "summary": {
+    "attribution_precision": 1.0,
+    "failed": 0,
+    "false_fact_promotions": 0,
+    "passed": 27,
+    "score": 1.0,
+    "statement_precision": 1.0,
+    "total": 27
+  }
+}
