@@ -32,13 +32,13 @@ stage2_authorized: false
 requirement_revision: r1-20260917-v180-identity-stage1
 optional_overlays.release_performance.enabled: false
 
-human_runbook.dev_workspace: /Users/skychengneo/Agent/CBA_kb_dev/REQ-180-IDENTITY-01
-human_runbook.local_runtime_root: /Users/skychengneo/Agent/CBA_kb
-human_runbook.private_instance_root: /Users/skychengneo/Agent/CBA_kb_instance
+human_runbook.dev_workspace: <user-home>/Agent/CBA_kb_dev/REQ-180-IDENTITY-01
+human_runbook.local_runtime_root: <user-home>/Agent/CBA_kb
+human_runbook.private_instance_root: <user-home>/Agent/CBA_kb_instance
 human_runbook.local_prepare_command: NOT_IMPLEMENTED
 human_runbook.publish_command: NOT_IMPLEMENTED
 human_runbook.rollback_command: NOT_IMPLEMENTED
-runtime_evidence_ledger: /Users/skychengneo/Agent/CBA_kb_instance/evidence/REQ-180-IDENTITY-01/
+runtime_evidence_ledger: <user-home>/Agent/CBA_kb_instance/evidence/REQ-180-IDENTITY-01/
 ```
 
 ## 1. Problem
@@ -162,7 +162,7 @@ relevant workflow:
 config readers:
   existing Instance.data_root is sufficient; no new config file is required
 private-material dependency:
-  /Users/skychengneo/Agent/CBA_kb_instance/data/player_identity/
+  <user-home>/Agent/CBA_kb_instance/data/player_identity/
 minimal change set:
   new identity module + CLI surface + focused tests only
 lane: CODE_CONFIG / HIGH
@@ -235,9 +235,9 @@ canonical facts / event products / source_registry semantics / production manife
 
 ```text
 execution_mode: CODEX_EXECUTOR
-DEV_WORKSPACE: /Users/skychengneo/Agent/CBA_kb_dev/REQ-180-IDENTITY-01
-LOCAL_RUNTIME_ROOT: /Users/skychengneo/Agent/CBA_kb
-PRIVATE_INSTANCE_ROOT: /Users/skychengneo/Agent/CBA_kb_instance
+DEV_WORKSPACE: <user-home>/Agent/CBA_kb_dev/REQ-180-IDENTITY-01
+LOCAL_RUNTIME_ROOT: <user-home>/Agent/CBA_kb
+PRIVATE_INSTANCE_ROOT: <user-home>/Agent/CBA_kb_instance
 local_prepare_command: NOT_IMPLEMENTED
 publish_command: NOT_IMPLEMENTED
 rollback_command: NOT_IMPLEMENTED

@@ -39,12 +39,12 @@ optional_overlays:
     proposal: REQ-RELEASE-PERF-01
     activation_reason: null
 
-runtime_evidence_ledger: /Users/skychengneo/Agent/CBA_kb_instance/evidence/REQ-180-MENTION-01/
+runtime_evidence_ledger: <user-home>/Agent/CBA_kb_instance/evidence/REQ-180-MENTION-01/
 
 human_runbook:
-  dev_workspace: /Users/skychengneo/Agent/CBA_kb_dev/REQ-180-MENTION-01
-  local_runtime_root: /Users/skychengneo/Agent/CBA_kb
-  private_instance_root: /Users/skychengneo/Agent/CBA_kb_instance
+  dev_workspace: <user-home>/Agent/CBA_kb_dev/REQ-180-MENTION-01
+  local_runtime_root: <user-home>/Agent/CBA_kb
+  private_instance_root: <user-home>/Agent/CBA_kb_instance
   local_prepare_command: NOT_IMPLEMENTED
   publish_command: NOT_IMPLEMENTED
   rollback_command: NOT_IMPLEMENTED
@@ -291,9 +291,9 @@ Revalidation verdict: `READY_TO_CODE` after this r2 re-freeze. Stage 2 still req
 ## 8. Frozen Human Runbook
 
 ```text
-DEV_WORKSPACE=/Users/skychengneo/Agent/CBA_kb_dev/REQ-180-MENTION-01
-LOCAL_RUNTIME_ROOT=/Users/skychengneo/Agent/CBA_kb
-PRIVATE_INSTANCE_ROOT=/Users/skychengneo/Agent/CBA_kb_instance
+DEV_WORKSPACE=<user-home>/Agent/CBA_kb_dev/REQ-180-MENTION-01
+LOCAL_RUNTIME_ROOT=<user-home>/Agent/CBA_kb
+PRIVATE_INSTANCE_ROOT=<user-home>/Agent/CBA_kb_instance
 
 local_prepare_command=NOT_IMPLEMENTED
 publish_command=NOT_IMPLEMENTED

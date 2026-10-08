@@ -104,10 +104,10 @@ real_document_corpus:
     native_google_docs: 3
     ocr_required_reviews: 9
 private_instance_contract:
-  root: /Users/skychengneo/Agent/CBA_kb_instance
-  input_root: /Users/skychengneo/Agent/CBA_kb_instance/inbox/documents
-  archive_root: /Users/skychengneo/Agent/CBA_kb_instance/data/document_lane/archive
-  credentials_store: /Users/skychengneo/Agent/CBA_kb_instance/.credentials
+  root: <user-home>/Agent/CBA_kb_instance
+  input_root: <user-home>/Agent/CBA_kb_instance/inbox/documents
+  archive_root: <user-home>/Agent/CBA_kb_instance/data/document_lane/archive
+  credentials_store: <user-home>/Agent/CBA_kb_instance/.credentials
 execution_mode: CODEX_EXECUTOR
 full_regression_owner: github_actions
 max_ci_repair_cycles: 3
@@ -124,7 +124,7 @@ ci_verified_code_commit: 26ce9acc7452d1ac9879e7052e8277c43a45af94
 conditional_local_precheck:
   status: PASS
   execution_sha: 26ce9acc7452d1ac9879e7052e8277c43a45af94
-  evidence_root: /Users/skychengneo/Agent/CBA_kb_instance/evidence/REQ-160/local-precheck-r3-26ce9ac
+  evidence_root: <user-home>/Agent/CBA_kb_instance/evidence/REQ-160/local-precheck-r3-26ce9ac
   facts_zero_diff: PASS
   real_document_corpus: PASS
   count_reporting: PASS

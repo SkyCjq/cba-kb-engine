@@ -36,16 +36,16 @@ execution_mode: CODEX_EXECUTOR
 production_authority_contract: N/A
 
 runtime_evidence_ledger:
-  /Users/skychengneo/Agent/CBA_kb_instance/evidence/REQ-170-CONSUMER-PROFILE-01/
+  <user-home>/Agent/CBA_kb_instance/evidence/REQ-170-CONSUMER-PROFILE-01/
 
 optional_overlays.release_performance.enabled: false
 
 human_runbook.dev_workspace:
-  /Users/skychengneo/Agent/CBA_kb_dev/REQ-170-CONSUMER-PROFILE-01
+  <user-home>/Agent/CBA_kb_dev/REQ-170-CONSUMER-PROFILE-01
 human_runbook.local_runtime_root:
-  /Users/skychengneo/Agent/CBA_kb
+  <user-home>/Agent/CBA_kb
 human_runbook.private_instance_root:
-  /Users/skychengneo/Agent/CBA_kb_instance
+  <user-home>/Agent/CBA_kb_instance
 human_runbook.local_prepare_command: NOT_IMPLEMENTED
 human_runbook.publish_command: NOT_IMPLEMENTED
 human_runbook.rollback_command: NOT_IMPLEMENTED
@@ -637,13 +637,13 @@ live release_status / manifest / production target inventory
 execution_mode: CODEX_EXECUTOR
 
 DEV_WORKSPACE:
-/Users/skychengneo/Agent/CBA_kb_dev/REQ-170-CONSUMER-PROFILE-01
+<user-home>/Agent/CBA_kb_dev/REQ-170-CONSUMER-PROFILE-01
 
 LOCAL_RUNTIME_ROOT:
-/Users/skychengneo/Agent/CBA_kb
+<user-home>/Agent/CBA_kb
 
 PRIVATE_INSTANCE_ROOT:
-/Users/skychengneo/Agent/CBA_kb_instance
+<user-home>/Agent/CBA_kb_instance
 
 remote:
 https://github.com/SkyCjq/cba-kb-engine.git
@@ -676,8 +676,8 @@ export REQ_ID="REQ-170-CONSUMER-PROFILE-01"
 export BASE_BRANCH="main"
 export BASE_SHA="4103ce2aaa6dba3e12ca59ff3c9a8da2d2db1538"
 export FEATURE_BRANCH="feat/REQ-170-CONSUMER-PROFILE-01"
-export LOCAL_RUNTIME_ROOT="/Users/skychengneo/Agent/CBA_kb"
-export DEV_ROOT="/Users/skychengneo/Agent/CBA_kb_dev"
+export LOCAL_RUNTIME_ROOT="<user-home>/Agent/CBA_kb"
+export DEV_ROOT="<user-home>/Agent/CBA_kb_dev"
 export DEV_WORKSPACE="$DEV_ROOT/$REQ_ID"
 
 git -C "$LOCAL_RUNTIME_ROOT" fetch origin

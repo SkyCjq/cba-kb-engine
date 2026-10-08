@@ -66,7 +66,7 @@ execution_mode: CODEX_EXECUTOR
 
 production_authority_contract: this Requirement §5.3 + frozen task.yaml
 
-runtime_evidence_ledger: /Users/skychengneo/Agent/CBA_kb_instance/evidence/REQ-161-CLOSEOUT-01/runtime-ledger/
+runtime_evidence_ledger: <user-home>/Agent/CBA_kb_instance/evidence/REQ-161-CLOSEOUT-01/runtime-ledger/
 
 optional_overlays.release_performance.enabled: true
 
@@ -74,11 +74,11 @@ optional_overlays.release_performance.proposal: REQ-RELEASE-PERF-01
 
 optional_overlays.release_performance.activation_reason: release infrastructure + archive/checkpoint/recovery (H/J)
 
-human_runbook.dev_workspace: /Users/skychengneo/Agent/CBA_kb
+human_runbook.dev_workspace: <user-home>/Agent/CBA_kb
 
-human_runbook.local_runtime_root: /Users/skychengneo/Agent/CBA_kb
+human_runbook.local_runtime_root: <user-home>/Agent/CBA_kb
 
-human_runbook.private_instance_root: /Users/skychengneo/Agent/CBA_kb_instance
+human_runbook.private_instance_root: <user-home>/Agent/CBA_kb_instance
 
 ```
 
@@ -794,11 +794,11 @@ Private Instance /evidence/REQ-161-CLOSEOUT-01/runtime-ledger = RUNTIME EVIDENCE
 
 execution_mode: CODEX_EXECUTOR
 
-DEV_WORKSPACE: /Users/skychengneo/Agent/CBA_kb
+DEV_WORKSPACE: <user-home>/Agent/CBA_kb
 
-LOCAL_RUNTIME_ROOT: /Users/skychengneo/Agent/CBA_kb
+LOCAL_RUNTIME_ROOT: <user-home>/Agent/CBA_kb
 
-PRIVATE_INSTANCE_ROOT: /Users/skychengneo/Agent/CBA_kb_instance
+PRIVATE_INSTANCE_ROOT: <user-home>/Agent/CBA_kb_instance
 
 local_prepare_command:
 

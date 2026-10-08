@@ -172,13 +172,13 @@ usage_gate:
   - SPLIT_NEW_REQUIREMENT
   - HOLD_AND_KEEP_USING
 private_instance_contract:
-  root: /Users/skychengneo/Agent/CBA_kb_instance
-  runtime_evidence_root: /Users/skychengneo/Agent/CBA_kb_instance/evidence/REQ-170-CONSUMER-PROFILE-01/
+  root: <user-home>/Agent/CBA_kb_instance
+  runtime_evidence_root: <user-home>/Agent/CBA_kb_instance/evidence/REQ-170-CONSUMER-PROFILE-01/
   real_fixture_repo_copy: forbidden
 human_runbook:
-  dev_workspace: /Users/skychengneo/Agent/CBA_kb_dev/REQ-170-CONSUMER-PROFILE-01
-  local_runtime_root: /Users/skychengneo/Agent/CBA_kb
-  private_instance_root: /Users/skychengneo/Agent/CBA_kb_instance
+  dev_workspace: <user-home>/Agent/CBA_kb_dev/REQ-170-CONSUMER-PROFILE-01
+  local_runtime_root: <user-home>/Agent/CBA_kb
+  private_instance_root: <user-home>/Agent/CBA_kb_instance
   local_prepare_command: NOT_IMPLEMENTED
   publish_command: NOT_IMPLEMENTED
   rollback_command: NOT_IMPLEMENTED

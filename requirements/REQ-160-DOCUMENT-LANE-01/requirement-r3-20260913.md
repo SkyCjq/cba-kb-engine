@@ -291,9 +291,9 @@ inside this repair.
 ## Human Runbook
 
 ```text
-DEV_WORKSPACE=/Users/skychengneo/Agent/CBA_kb_dev/REQ-160-DOCUMENT-LANE-01
-LOCAL_RUNTIME_ROOT=/Users/skychengneo/Agent/CBA_kb
-PRIVATE_INSTANCE_ROOT=/Users/skychengneo/Agent/CBA_kb_instance
+DEV_WORKSPACE=<user-home>/Agent/CBA_kb_dev/REQ-160-DOCUMENT-LANE-01
+LOCAL_RUNTIME_ROOT=<user-home>/Agent/CBA_kb
+PRIVATE_INSTANCE_ROOT=<user-home>/Agent/CBA_kb_instance
 ```
 
 `local_prepare_command = NOT_IMPLEMENTED`

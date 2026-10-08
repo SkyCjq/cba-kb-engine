@@ -15,7 +15,7 @@ publish_allowed: false
 restore_allowed: false
 stage2_authorized: false
 new_dependency_allowed: false
-private_instance_root: /Users/skychengneo/Agent/CBA_kb_instance
+private_instance_root: <user-home>/Agent/CBA_kb_instance
 identity_semantics:
   auto_same_from_web: false
   auto_same_from_exact_name: false
