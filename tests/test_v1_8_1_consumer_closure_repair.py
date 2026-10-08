@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import pytest
 
@@ -66,7 +67,10 @@ def sample_repaired_documents(release_id=RELEASE_ID, code_commit=SHA):
 
 def sample_real_identity_registry():
     # Load actual instance identity registry if present, or self-contained real replica
-    instance_reg_path = Path("/Users/skychengneo/Agent/CBA_kb_instance/data/player_identity/registry.json")
+    instance_reg_path = Path(os.environ.get(
+        "CBA_KB_IDENTITY_REGISTRY",
+        "../CBA_kb_instance/data/player_identity/registry.json",
+    ))
     if instance_reg_path.is_file():
         return json.loads(instance_reg_path.read_text(encoding="utf-8"))
     return new_registry(
