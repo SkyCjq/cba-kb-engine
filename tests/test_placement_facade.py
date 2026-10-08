@@ -10,6 +10,8 @@ Two layers:
    this is the falsification pair: these tests MUST fail on old HEAD.
 """
 
+import os
+
 import pytest
 
 from cba_kb.placement import PlacementError
@@ -224,3 +226,141 @@ def test_store_create_chain_audited():
     assert result.content == b"data"
     assert len(facade.guarded_creations()) == 1
     assert facade.guarded_creations()[0].operation == "ensure"
+
+# ----------------------------------------------------------------------
+# 3. round-2: residual-root counterexamples (exact set equality, D1)
+#
+# Independent Q2 (new HEAD) upheld F-01: membership check accepted
+# ["folder-1", "root"]. The facade now requires exact set equality.
+# ----------------------------------------------------------------------
+
+class ResidualRootDrive(FakeDrive):
+    """New files read back with a residual root parent."""
+
+    def __init__(self):
+        super().__init__()
+        self._created = set()
+
+    def ensure(self, parent, key, name, mime, content=None, *, index=None):
+        fid = super().ensure(parent, key, name, mime, content, index=index)
+        self._created.add(fid)
+        return fid
+
+    def ensure_copy(self, parent, key, file_id, name, *, index=None):
+        fid = super().ensure_copy(parent, key, file_id, name, index=index)
+        self._created.add(fid)
+        return fid
+
+    def meta(self, file_id):
+        m = super().meta(file_id)
+        if file_id in self._created:
+            m["parents"] = m["parents"] + ["root"]
+        return m
+
+
+def test_ensure_residual_root_rejected():
+    PlacementEnforcedDrive, _ = _facade()
+    facade = PlacementEnforcedDrive(ResidualRootDrive())
+    with pytest.raises(PlacementError) as exc:
+        facade.ensure("folder-1", "k1", "a.txt", "text/plain", b"x")
+    assert exc.value.code == "INVALID_PLACEMENT"
+    assert facade.guarded_creations() == []
+
+
+def test_ensure_copy_residual_root_rejected():
+    PlacementEnforcedDrive, _ = _facade()
+    raw = ResidualRootDrive()
+    facade = PlacementEnforcedDrive(raw)
+    src = raw.ensure("folder-1", "src", "s.txt", "text/plain", b"x")
+    with pytest.raises(PlacementError) as exc:
+        facade.ensure_copy("folder-1", "k2", src, "b.txt")
+    assert exc.value.code == "INVALID_PLACEMENT"
+    assert facade.guarded_creations() == []
+
+
+def test_publish_chain_residual_root_rejected(tmp_path):
+    """Residual root through the REAL publish chain is blocked (entry-chain
+    behavioral test, not just facade unit test)."""
+    from cba_kb.release import publish
+
+    drive, root = release_setup(tmp_path)
+
+    class ResidualRootReleaseDrive(ReleaseFakeDrive):
+        def __init__(self):
+            super().__init__()
+            self._created = set()
+
+        def ensure(self, parent, key, name, mime, content=None, *, index=None):
+            fid = super().ensure(parent, key, name, mime, content, index=index)
+            self._created.add(fid)
+            return fid
+
+        def ensure_copy(self, parent, key, fid, name, *, index=None):
+            new_id = super().ensure_copy(parent, key, fid, name, index=index)
+            self._created.add(new_id)
+            return new_id
+
+        def meta(self, fid):
+            m = super().meta(fid)
+            if fid in self._created:
+                m["parents"] = m["parents"] + ["root"]
+            return m
+
+    bad = ResidualRootReleaseDrive()
+    bad.files = drive.files
+    with pytest.raises(PlacementError) as exc:
+        publish(bad, root, True)
+    assert exc.value.code == "INVALID_PLACEMENT"
+
+
+# ----------------------------------------------------------------------
+# 4. entry-point wiring regression tests (reviewer recommendation)
+# ----------------------------------------------------------------------
+
+def test_from_trusted_runtime_wires_facade():
+    """Regression: from_trusted_runtime must hand the store a
+    PlacementEnforcedDrive, so the wiring cannot be silently removed."""
+    from unittest import mock
+    from automation.drive_io import GoogleDriveStore
+    PlacementEnforcedDrive, _ = _facade()
+
+    with mock.patch("cba_kb.drive.Drive") as MockDrive, \
+         mock.patch("cba_kb.instance.load_instance"):
+        store = GoogleDriveStore.from_trusted_runtime("/engine", "/instance")
+    assert isinstance(store.drive, PlacementEnforcedDrive)
+    assert MockDrive.called
+
+
+def test_reserve_staging_dispatch_wires_facade(tmp_path):
+    """Regression: the reserve-staging CLI dispatch must hand reserve_staging
+    a PlacementEnforcedDrive, so the wiring cannot be silently removed."""
+    import importlib.util
+    from unittest import mock
+    PlacementEnforcedDrive, _ = _facade()
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    script = os.path.join(here, "..", "scripts", "prepare_production.py")
+    spec = importlib.util.spec_from_file_location("prepare_production", script)
+    pp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pp)
+
+    captured = {}
+
+    def fake_reserve_staging(drive, *a, **k):
+        captured["drive"] = drive
+        return {"ok": True}
+
+    proj = tmp_path / "projection.json"
+    proj.write_text("{}")
+
+    with mock.patch.object(pp, "load_instance"), \
+         mock.patch.object(pp, "_private_output"), \
+         mock.patch.object(pp, "read", return_value={}), \
+         mock.patch.object(pp, "Drive"), \
+         mock.patch.object(pp, "reserve_staging", side_effect=fake_reserve_staging), \
+         mock.patch.object(pp, "_require_release"):
+        pp.main(["reserve-staging",
+                 "--instance-root", str(tmp_path),
+                 "--output", str(tmp_path / "out"),
+                 "--projection", str(proj)])
+    assert isinstance(captured["drive"], PlacementEnforcedDrive)

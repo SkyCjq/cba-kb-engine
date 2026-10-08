@@ -10,7 +10,9 @@ Every read operation delegates unchanged. The two creation operations
 1. Parent validation (fail-closed): empty / root / forbidden parents are
    rejected with INVALID_PLACEMENT via ``PlacementRegistry.validate_parent``.
 2. Post-creation readback (fail-closed): the created object's parents are read
-   back and must contain the requested parent; otherwise INVALID_PLACEMENT.
+   back and must EXACTLY equal {requested parent}; otherwise INVALID_PLACEMENT.
+   (PlacementGuard D1: residual extra parents, e.g. ["folder-1", "root"], are
+   misplacements and must fail closed.)
 3. Audit trail: every guarded creation is recorded for placement auditing.
 
 What this does NOT do (by design, per the frozen contract's
@@ -102,10 +104,11 @@ class PlacementEnforcedDrive:
                 cause=str(exc),
             ) from exc
         actual_parents = set(meta.get("parents") or [])
-        # Membership (not strict set equality): Drive.ensure's own contract for
-        # idempotent hits is parent-membership, and this facade must not be
-        # stricter than the operation it wraps.
-        if parent_id not in actual_parents:
+        # Exact set equality (PlacementGuard D1 contract): a residual extra
+        # parent -- e.g. ["folder-1", "root"] -- IS a misplacement and must
+        # fail closed. An enforcement layer is meant to be stricter than the
+        # raw operation it wraps; "not stricter" was the round-1 error.
+        if actual_parents != {parent_id}:
             raise PlacementError(
                 "INVALID_PLACEMENT",
                 f"Readback parents {sorted(actual_parents)} do not contain requested parent '{parent_id}'",
