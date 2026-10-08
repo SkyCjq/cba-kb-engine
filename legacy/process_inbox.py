@@ -303,9 +303,10 @@ def register_source(
     extraction_method: str = "",
     processed: bool = False,
     current_parent_id: str | None = None,
+    excluded_ids=None,
 ) -> dict[str, str]:
     """Upsert one source by Drive file ID without downgrading imported/verified state."""
-    if excluded_from_current(item):
+    if excluded_from_current(item, excluded_ids=excluded_ids):
         raise ValueError(f"Source {item['id']} is excluded from current processing")
     indexes = registry_index(rows)
     existing = (

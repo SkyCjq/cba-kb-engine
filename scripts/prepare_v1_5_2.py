@@ -87,19 +87,34 @@ def validate_domain_candidate():
     return workbook, acceptance
 
 
-def merged_registry(root, raw):
+def merged_registry(root, raw, *, excluded_ids=None):
     """Merge every committed registry proposal without duplicating source IDs."""
     reader = base.csv.DictReader(base.io.StringIO(raw.decode('utf-8-sig')))
     columns = reader.fieldnames
-    rows = [row for row in reader if not excluded_from_current(row)]
+    rows = [
+        row for row in reader
+        if not excluded_from_current(row, excluded_ids=excluded_ids)
+    ]
     added = []
     proposals = [
         root / 'config/v1.5.2_registry_proposal.json',
     ]
-    proposal_rows = [row for path in proposals for row in read(path)]
+    proposal_rows = []
+    for path in proposals:
+        payload = read(path)
+        if isinstance(payload, list):
+            proposal_rows.extend(payload)
+        elif (
+            isinstance(payload, dict)
+            and payload.get('visibility') == 'public_safe_example'
+            and isinstance(payload.get('sources'), list)
+        ):
+            proposal_rows.extend(payload['sources'])
+        else:
+            raise RuntimeError('SOURCE_REGISTRY_PROPOSAL_SCHEMA_INVALID')
     known = {row['source_id'] for row in rows}
     for row in proposal_rows:
-        if excluded_from_current(row) or row['source_id'] in known:
+        if excluded_from_current(row, excluded_ids=excluded_ids) or row['source_id'] in known:
             continue
         rows.append({key: row.get(key, '') for key in columns})
         known.add(row['source_id'])

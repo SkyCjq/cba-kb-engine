@@ -17,13 +17,14 @@ cd cba-kb-engine
 
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.lock
+python -m pip install -r requirements.lock
+python -m pip install --no-deps --no-build-isolation -e .
 ```
 
 ### 1.2 System Health Check
 Verify your local runtime environment and Python dependencies:
 ```bash
-cba-kb doctor
+make doctor
 ```
 
 ### 1.3 Running Offline Verification
@@ -36,14 +37,88 @@ make test
 Run source normalization, statement extraction, and research view synthesis using local fixtures:
 ```bash
 # Normalize input document
-cba-kb source-intake --input <SOURCE_FILE> --output normalized.json
+cba-kb source-intake \
+  --input <SOURCE_FILE> \
+  --source-provider local_file \
+  --source-locator <PUBLIC_OR_LOCAL_LOCATOR> \
+  --output normalized.json
 
 # Extract statements and claims
-cba-kb statement-extract --input normalized.json --output statements.json
-cba-kb claim-extract --input statements.json --output claims.json
+cba-kb statement-extract \
+  --normalized-document normalized.json \
+  --output statements.json
+cba-kb claim-extract \
+  --statements statements.json \
+  --claim-text "Unverified research claim" \
+  --output claim.json
 
 # Build read-only research view
-cba-kb research-view --statements statements.json --claims claims.json --output research_view.json
+cba-kb research-view \
+  --name <SUBJECT_NAME> \
+  --statements statements.json \
+  --claims claim.json \
+  --output research_view.json
+```
+
+### 1.5 Clean-room Synthetic Smoke
+
+This procedure uses only the repository's CC0-1.0 fixtures. It must be run with
+no `CBA_KB_INSTANCE_ROOT`, `CBA_KB_SOURCE_POLICY_JSON`, `CBA_STATS_AES_KEY`, or
+`GOOGLE_APPLICATION_CREDENTIALS` value in the environment.
+
+```bash
+unset CBA_KB_INSTANCE_ROOT CBA_KB_SOURCE_POLICY_JSON CBA_STATS_AES_KEY GOOGLE_APPLICATION_CREDENTIALS
+
+# Initialize a local synthetic instance and output directory.
+rm -rf .cleanroom
+mkdir -p .cleanroom/synthetic-instance/config .cleanroom/output
+
+# Identity example and validation.
+cba-kb --instance-root .cleanroom/synthetic-instance identity-write \
+  --input tests/fixtures/cleanroom/identity_registry.json
+cba-kb --instance-root .cleanroom/synthetic-instance identity-validate \
+  --input tests/fixtures/cleanroom/identity_registry.json
+
+# Source import and normalization with explicit public rights.
+cba-kb source-intake \
+  --input tests/fixtures/cleanroom/source.txt \
+  --source-provider synthetic_fixture \
+  --source-locator cc0://cleanroom/source.txt \
+  --rights-classification public \
+  --public-export-allowed \
+  --output .cleanroom/output/normalized.json
+
+# Statement extraction with known and unresolved actors.
+cba-kb statement-extract \
+  --normalized-document .cleanroom/output/normalized.json \
+  --identity-registry tests/fixtures/cleanroom/identity_registry.json \
+  --output .cleanroom/output/statements.json
+
+# Offline Stats sample, validation, and missing-versus-zero preservation.
+cba-kb stats-ingest \
+  --season 2099 \
+  --offline-payload tests/fixtures/cleanroom/stats_payload.json \
+  --identity-registry tests/fixtures/cleanroom/identity_registry.json \
+  --output .cleanroom/output/stats.json
+cba-kb stats-validate \
+  --input .cleanroom/output/stats.json \
+  --output .cleanroom/output/stats_validation.json
+
+# Generate the read-only output.
+cba-kb research-view \
+  --name 合成球员甲 \
+  --player-uid SYNTH_PLAYER_0001 \
+  --statements .cleanroom/output/statements.json \
+  --stats .cleanroom/output/stats.json \
+  --output .cleanroom/output/research_view.json
+```
+
+The CI-equivalent semantic assertions, including `review_required` and private
+configuration fail-closed behavior, are run with:
+
+```bash
+python scripts/run_cleanroom_smoke.py --output .cleanroom/ci-smoke
+python -m pytest -q tests/test_cleanroom_operations.py
 ```
 
 ---

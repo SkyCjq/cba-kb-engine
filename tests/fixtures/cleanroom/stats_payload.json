@@ -1,0 +1,19 @@
+{
+  "records": [
+    {
+      "playerId": 900001,
+      "cnAlias": "合成球员甲",
+      "season": "2099",
+      "teamId": 900,
+      "teamCnAlias": "合成队",
+      "playerTimes": 3,
+      "gameStartNum": 0,
+      "minutes": "10.0",
+      "seconds": "600.0",
+      "points": "0.0",
+      "rebounds": null,
+      "assists": null,
+      "blocked": "0.0"
+    }
+  ]
+}

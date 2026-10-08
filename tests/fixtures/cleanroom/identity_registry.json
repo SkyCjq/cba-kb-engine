@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "identity_version": "v1.8",
+  "players": [
+    {
+      "schema_version": 1,
+      "player_uid": "SYNTH_PLAYER_0001",
+      "canonical_name": "合成球员甲",
+      "status": "ACTIVE",
+      "redirect_to": null
+    }
+  ],
+  "aliases": [],
+  "record_links": [
+    {
+      "schema_version": 1,
+      "record_key": "cba_player_id:900001",
+      "player_uid": "SYNTH_PLAYER_0001",
+      "link_status": "same",
+      "method": "EXTERNAL_IDENTIFIER",
+      "confidence": "HIGH",
+      "evidence_refs": [
+        "cc0:cleanroom-fixture"
+      ]
+    }
+  ],
+  "registry_sha256": "d1a6debd3d2d22c07b808f0b198ba82f9bd924f0b4f259289f5955f6118d7c9f"
+}

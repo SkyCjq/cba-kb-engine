@@ -41,8 +41,12 @@ def test_commands_exist():
         ROOT / "docs/operations/OPERATIONS.zh-CN.md",
     ]
 
-    # Command reference regex: `cba-kb <subcommand>`
-    cmd_pattern = re.compile(r'\bcba-kb\s+([a-z0-9_-]+)')
+    # Command reference regex: `cba-kb [global options] <subcommand>`.
+    # The public manual legitimately uses --instance-root for a local synthetic
+    # instance, so skip supported global option/value pairs before capturing.
+    cmd_pattern = re.compile(
+        r'\bcba-kb(?:\s+--(?:root|instance-root)\s+\S+)*\s+([a-z0-9_-]+)'
+    )
 
     checked_commands = set()
     for doc in doc_paths:
