@@ -13,7 +13,7 @@ from scripts.prepare_v1_5_2 import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_v1_5_2_registry_proposal_is_complete():
+def test_v1_5_2_registry_proposal_is_public_safe():
     header = (
         'source_id,drive_file_id,source_title,source_url,current_parent_id,'
         'original_discovery_path,source_type,source_role,season,club_id,'
@@ -21,13 +21,13 @@ def test_v1_5_2_registry_proposal_is_complete():
         'extraction_method,validation_status,records_generated,records_imported,'
         'discovered_at,registered_at,processed_at,verified_at,notes\n'
     )
-    content, added = merged_registry(ROOT, header.encode('utf-8-sig'))
-    assert added == [
-        'drive:1dOvVJBVahuyq0L2fI4WRhRy7QJOxdOUR',
-        'drive:1eGrMDep9YMfPNy66M6-6Jwm9iYaF_gQj',
-    ]
-    assert '46 domestic_registrations' in content.decode('utf-8-sig')
-    assert '227 foreign_priority_right_snapshots' in content.decode('utf-8-sig')
+    content, added = merged_registry(
+        ROOT,
+        header.encode('utf-8-sig'),
+        excluded_ids=(),
+    )
+    assert added == []
+    assert list(content.decode('utf-8-sig').splitlines()) == [header.strip()]
 
 
 @pytest.mark.skipif(

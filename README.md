@@ -56,14 +56,19 @@ cd cba-kb-engine
 # 2. Set up virtual environment
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.lock
+python -m pip install -r requirements.lock
+python -m pip install --no-deps --no-build-isolation -e .
 
 # 3. Verify environment
-cba-kb doctor
+make doctor
 
 # 4. Run offline tests
 make test
 ```
+
+The editable install creates the documented `cba-kb` command. To reproduce the
+public workflow with CC0 synthetic data and no private configuration, follow the
+[clean-room smoke procedure](docs/operations/OPERATIONS.md#15-clean-room-synthetic-smoke).
 
 ### Try the CLI:
 ```bash

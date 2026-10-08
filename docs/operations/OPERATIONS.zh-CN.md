@@ -19,13 +19,14 @@ cd cba-kb-engine
 
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.lock
+python -m pip install -r requirements.lock
+python -m pip install --no-deps --no-build-isolation -e .
 ```
 
 ### 1.2 环境体检
 检查 Python 运行时与依赖状态：
 ```bash
-cba-kb doctor
+make doctor
 ```
 
 ### 1.3 运行离线回归测试
@@ -38,14 +39,87 @@ make test
 使用本地文件或合成样例运行事实与声明抽取：
 ```bash
 # 规范化输入文档
-cba-kb source-intake --input <SOURCE_FILE> --output normalized.json
+cba-kb source-intake \
+  --input <SOURCE_FILE> \
+  --source-provider local_file \
+  --source-locator <公开或本地定位符> \
+  --output normalized.json
 
 # 抽取声明 (Statement) 与主张 (Claim)
-cba-kb statement-extract --input normalized.json --output statements.json
-cba-kb claim-extract --input statements.json --output claims.json
+cba-kb statement-extract \
+  --normalized-document normalized.json \
+  --output statements.json
+cba-kb claim-extract \
+  --statements statements.json \
+  --claim-text "尚未核验的研究主张" \
+  --output claim.json
 
 # 生成只读研究视图 (Research View)
-cba-kb research-view --statements statements.json --claims claims.json --output research_view.json
+cba-kb research-view \
+  --name <对象名称> \
+  --statements statements.json \
+  --claims claim.json \
+  --output research_view.json
+```
+
+### 1.5 Clean-room 合成冒烟
+
+此流程只使用仓库内的 CC0-1.0 合成 fixtures。执行环境不得包含
+`CBA_KB_INSTANCE_ROOT`、`CBA_KB_SOURCE_POLICY_JSON`、`CBA_STATS_AES_KEY`
+或 `GOOGLE_APPLICATION_CREDENTIALS`。
+
+```bash
+unset CBA_KB_INSTANCE_ROOT CBA_KB_SOURCE_POLICY_JSON CBA_STATS_AES_KEY GOOGLE_APPLICATION_CREDENTIALS
+
+# 初始化本地合成实例和输出目录。
+rm -rf .cleanroom
+mkdir -p .cleanroom/synthetic-instance/config .cleanroom/output
+
+# 身份示例与校验。
+cba-kb --instance-root .cleanroom/synthetic-instance identity-write \
+  --input tests/fixtures/cleanroom/identity_registry.json
+cba-kb --instance-root .cleanroom/synthetic-instance identity-validate \
+  --input tests/fixtures/cleanroom/identity_registry.json
+
+# 导入并规范化显式声明为公开安全的 Source。
+cba-kb source-intake \
+  --input tests/fixtures/cleanroom/source.txt \
+  --source-provider synthetic_fixture \
+  --source-locator cc0://cleanroom/source.txt \
+  --rights-classification public \
+  --public-export-allowed \
+  --output .cleanroom/output/normalized.json
+
+# 抽取包含已知身份与 unresolved actor 的 Statement。
+cba-kb statement-extract \
+  --normalized-document .cleanroom/output/normalized.json \
+  --identity-registry tests/fixtures/cleanroom/identity_registry.json \
+  --output .cleanroom/output/statements.json
+
+# 离线 Stats 样本、校验以及 missing 与 zero 保真。
+cba-kb stats-ingest \
+  --season 2099 \
+  --offline-payload tests/fixtures/cleanroom/stats_payload.json \
+  --identity-registry tests/fixtures/cleanroom/identity_registry.json \
+  --output .cleanroom/output/stats.json
+cba-kb stats-validate \
+  --input .cleanroom/output/stats.json \
+  --output .cleanroom/output/stats_validation.json
+
+# 生成只读输出。
+cba-kb research-view \
+  --name 合成球员甲 \
+  --player-uid SYNTH_PLAYER_0001 \
+  --statements .cleanroom/output/statements.json \
+  --stats .cleanroom/output/stats.json \
+  --output .cleanroom/output/research_view.json
+```
+
+CI 同等的语义断言（含 `review_required` 和无私有配置时 fail-closed）执行：
+
+```bash
+python scripts/run_cleanroom_smoke.py --output .cleanroom/ci-smoke
+python -m pytest -q tests/test_cleanroom_operations.py
 ```
 
 ---

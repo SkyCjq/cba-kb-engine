@@ -56,14 +56,19 @@ cd cba-kb-engine
 # 2. 创建并激活虚拟环境
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.lock
+python -m pip install -r requirements.lock
+python -m pip install --no-deps --no-build-isolation -e .
 
 # 3. 运行环境自检
-cba-kb doctor
+make doctor
 
 # 4. 运行离线测试套件
 make test
 ```
+
+可编辑安装会创建文档所使用的 `cba-kb` 命令。若要在无任何私有配置的
+条件下，用 CC0 合成数据复现公开流程，请继续执行
+[clean-room 冒烟步骤](docs/operations/OPERATIONS.zh-CN.md#15-clean-room-合成冒烟)。
 
 ### 查看 CLI 命令：
 ```bash

@@ -18,6 +18,14 @@ class SourceRegistryLocationTest(unittest.TestCase):
 
 
 class SourceRegistryTest(unittest.TestCase):
+    def register(self, rows, item, **kwargs):
+        return process_inbox.register_source(
+            rows,
+            item,
+            excluded_ids=(),
+            **kwargs,
+        )
+
     def item(self, file_id="abc123", parent="inbox-parent"):
         return {
             "id": file_id,
@@ -33,13 +41,13 @@ class SourceRegistryTest(unittest.TestCase):
     def test_registry_is_idempotent_by_drive_file_id(self):
         rows = []
         item = self.item()
-        process_inbox.register_source(
+        self.register(
             rows,
             item,
             relative_path=item["relative_path"],
             extraction_status="not_started",
         )
-        process_inbox.register_source(
+        self.register(
             rows,
             item,
             relative_path=item["relative_path"],
@@ -54,7 +62,7 @@ class SourceRegistryTest(unittest.TestCase):
     def test_parent_change_does_not_change_source_identity(self):
         rows = []
         item = self.item()
-        first = process_inbox.register_source(
+        first = self.register(
             rows,
             item,
             relative_path=item["relative_path"],
@@ -62,7 +70,7 @@ class SourceRegistryTest(unittest.TestCase):
             extraction_method="pdf_text_layer",
             processed=True,
         )
-        second = process_inbox.register_source(
+        second = self.register(
             rows,
             item,
             relative_path=item["relative_path"],
@@ -77,7 +85,7 @@ class SourceRegistryTest(unittest.TestCase):
     def test_processing_never_downgrades_imported(self):
         rows = []
         item = self.item()
-        row = process_inbox.register_source(
+        row = self.register(
             rows,
             item,
             relative_path=item["relative_path"],
@@ -87,7 +95,7 @@ class SourceRegistryTest(unittest.TestCase):
         )
         row["business_status"] = "IMPORTED"
         row["records_imported"] = "344"
-        process_inbox.register_source(
+        self.register(
             rows,
             item,
             relative_path=item["relative_path"],
@@ -101,7 +109,7 @@ class SourceRegistryTest(unittest.TestCase):
     def test_registry_round_trip(self):
         rows = []
         item = self.item()
-        process_inbox.register_source(
+        self.register(
             rows,
             item,
             relative_path=item["relative_path"],

@@ -1331,7 +1331,15 @@ def main():
         elif a.command=='research-view':
             from .research_view import ResearchView
             stmts = json.loads(a.statements.read_text(encoding='utf-8')) if a.statements else []
-            clms = json.loads(a.claims.read_text(encoding='utf-8')) if a.claims else []
+            clms = []
+            if a.claims:
+                claim_data = json.loads(a.claims.read_text(encoding='utf-8'))
+                if isinstance(claim_data, list):
+                    clms = claim_data
+                elif isinstance(claim_data, dict):
+                    clms = [claim_data]
+                else:
+                    raise ValueError('Expected claim object or list in claims input')
             v_items = []
             if a.queue:
                 from .verification_queue import VerificationQueue
@@ -1383,8 +1391,8 @@ def main():
             adapter = CBAStatsAdapter(key=key_bytes)
             registry = None
             if a.identity_registry:
-                from .player_identity import PlayerRegistry
-                registry = PlayerRegistry.load(a.identity_registry)
+                from .player_identity import load_registry
+                registry = load_registry(a.identity_registry)
 
             records = []
             if a.offline_payload:

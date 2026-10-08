@@ -9,6 +9,26 @@ permissions:
   contents: read
 
 jobs:
+  cleanroom-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install documented public environment
+        run: |
+          python -m pip install -r requirements.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+      - name: Public doctor without private configuration
+        run: make doctor
+      - name: REQ-202 clean-room operations smoke
+        run: |
+          python scripts/run_cleanroom_smoke.py --output "$RUNNER_TEMP/cba-kb-cleanroom"
+          python -m pytest -q tests/test_cleanroom_operations.py
+
   tests:
     runs-on: ubuntu-latest
     timeout-minutes: 15
