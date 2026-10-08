@@ -117,13 +117,13 @@ project:
 python scripts/prepare_production.py project \
   --release v1.6.0-1 \
   --engine-sha <release_execution_sha> \
-  --instance-root /Users/skychengneo/Agent/CBA_kb_instance \
+  --instance-root <user-home>/Agent/CBA_kb_instance \
   --output <private-instance>/data/<prepare-root>/projection.json
 
 reserve-staging:
 python scripts/prepare_production.py reserve-staging \
   --release v1.6.0-1 \
-  --instance-root /Users/skychengneo/Agent/CBA_kb_instance \
+  --instance-root <user-home>/Agent/CBA_kb_instance \
   --output <private-instance>/data/<prepare-root>/allocation \
   --projection <projection.json> \
   --single-writer
@@ -132,7 +132,7 @@ freeze:
 python scripts/prepare_production.py freeze \
   --release v1.6.0-1 \
   --engine-sha <release_execution_sha> \
-  --instance-root /Users/skychengneo/Agent/CBA_kb_instance \
+  --instance-root <user-home>/Agent/CBA_kb_instance \
   --output <private-instance>/data/<prepare-root>/freeze \
   --projection <projection.json> \
   --allocation <allocation.json>

@@ -109,14 +109,14 @@ identity_contract:
   exact_name_lookup: candidate_only
   canonical_mutation: forbidden
 private_instance_contract:
-  root: /Users/skychengneo/Agent/CBA_kb_instance
-  identity_root: /Users/skychengneo/Agent/CBA_kb_instance/data/player_identity/
-  runtime_evidence_root: /Users/skychengneo/Agent/CBA_kb_instance/evidence/REQ-180-IDENTITY-01/
+  root: <user-home>/Agent/CBA_kb_instance
+  identity_root: <user-home>/Agent/CBA_kb_instance/data/player_identity/
+  runtime_evidence_root: <user-home>/Agent/CBA_kb_instance/evidence/REQ-180-IDENTITY-01/
   real_fixture_repo_copy: forbidden
 human_runbook:
-  dev_workspace: /Users/skychengneo/Agent/CBA_kb_dev/REQ-180-IDENTITY-01
-  local_runtime_root: /Users/skychengneo/Agent/CBA_kb
-  private_instance_root: /Users/skychengneo/Agent/CBA_kb_instance
+  dev_workspace: <user-home>/Agent/CBA_kb_dev/REQ-180-IDENTITY-01
+  local_runtime_root: <user-home>/Agent/CBA_kb
+  private_instance_root: <user-home>/Agent/CBA_kb_instance
   local_prepare_command: NOT_IMPLEMENTED
   publish_command: NOT_IMPLEMENTED
   rollback_command: NOT_IMPLEMENTED

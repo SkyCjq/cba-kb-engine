@@ -24,7 +24,7 @@ optional_overlays:
       - H
       - J
 
-runtime_evidence_ledger: /Users/skychengneo/Agent/CBA_kb_instance/evidence/REQ-161-CLOSEOUT-01/runtime-ledger/
+runtime_evidence_ledger: <user-home>/Agent/CBA_kb_instance/evidence/REQ-161-CLOSEOUT-01/runtime-ledger/
 
 typed_sha_roles:
   baseline_development_sha: 80451930765442512d87db50621319bf94f39c26

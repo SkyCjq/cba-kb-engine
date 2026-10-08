@@ -89,10 +89,10 @@ external_fixtures:
 - watcher_source_contract
 - private_instance_contract
 private_instance_contract:
-  root: /Users/skychengneo/Agent/CBA_kb_instance
-  config_root: /Users/skychengneo/Agent/CBA_kb_instance/config
-  credentials_store: /Users/skychengneo/Agent/CBA_kb_instance/.credentials
-  real_fixture_root: /Users/skychengneo/Agent/CBA_kb_instance/fixtures/real
+  root: <user-home>/Agent/CBA_kb_instance
+  config_root: <user-home>/Agent/CBA_kb_instance/config
+  credentials_store: <user-home>/Agent/CBA_kb_instance/.credentials
+  real_fixture_root: <user-home>/Agent/CBA_kb_instance/fixtures/real
   executor: local_trusted_runtime
 source_watcher_contract:
   revision: r5-20260912-detail-discovery

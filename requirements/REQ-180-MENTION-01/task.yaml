@@ -128,8 +128,8 @@ private_instance_contract:
   real_mapping_repo_copy: forbidden
 human_runbook:
   dev_workspace: ${CBA_KB_DEV_WORKSPACE}
-  local_runtime_root: /Users/skychengneo/Agent/CBA_kb
-  private_instance_root: /Users/skychengneo/Agent/CBA_kb_instance
+  local_runtime_root: <user-home>/Agent/CBA_kb
+  private_instance_root: <user-home>/Agent/CBA_kb_instance
   local_prepare_command: NOT_IMPLEMENTED
   publish_command: NOT_IMPLEMENTED
   rollback_command: NOT_IMPLEMENTED

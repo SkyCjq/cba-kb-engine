@@ -241,7 +241,7 @@ These risks must appear in Conditional Local Precheck evidence.
 Private Instance topology remains:
 
 ```text
-/Users/skychengneo/Agent/CBA_kb_instance
+<user-home>/Agent/CBA_kb_instance
 ```
 
 It is not currently established. Before merge, Conditional Local Precheck must

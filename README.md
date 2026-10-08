@@ -31,7 +31,7 @@ The public repository contains the reusable open-source **Engine**: schemas, ada
 | **Code & Tools** | Open source under **Apache-2.0** | Operational configurations & private scripts |
 | **Documentation** | Public documentation under **CC BY 4.0** | Private research notes & internal runbooks |
 | **Data & Fixtures** | Synthetic & mock fixtures under **CC0-1.0** | Real raw corpora, copyrighted news, private Drive IDs |
-| **Storage & Secrets**| Zero credentials, zero cloud IDs committed | Private Google Drive mappings, OAuth tokens |
+| **Storage & Secrets**| No credentials committed; legacy non-secret Drive IDs are documented in [`DATA_LICENSE.md`](DATA_LICENSE.md) | Private Google Drive mappings, OAuth tokens |
 
 ## 4. Capability Evolution
 

@@ -242,7 +242,7 @@ All real web evidence remains private.
 
 Suggested private root:
 
-`/Users/skychengneo/Agent/CBA_kb_instance/data/player_identity/web_evidence/`
+`<user-home>/Agent/CBA_kb_instance/data/player_identity/web_evidence/`
 
 Each run uses an immutable directory.
 
