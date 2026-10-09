@@ -1,0 +1,58 @@
+# Mode 2.1 pr-gate 隔离执行层（Untrusted Execution Plane）— rev3
+# 触发：pull_request。无 secrets、最小权限，只产出证据，不做判断。
+# rev2 修复：set -o pipefail；显式 checkout PR head SHA；展示 tier 传入 bundle。
+# rev3 变更：
+# - 新增门禁自测（PR 版 gate_selftest.py，快速反馈；权威自测在可信层跑 base 版）。
+# - 注释修正：可信层确实用 base 版 integrity-scan 重跑并比对基线（policy-gate.py
+#   check_integrity_baseline），注释与实现已对齐。
+# DRAFT：pytest 命令/依赖安装方式待与仓库现状对齐后回填。
+name: pr-gate-untrusted
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.11"
+      - name: 安装依赖
+        run: |
+          pip install "pyyaml==6.0.3"
+          pip install -r requirements.lock
+      - name: 单元/回归测试
+        run: |
+          set -o pipefail
+          pytest tests/ -q 2>&1 | tee pytest.log
+      - name: 门禁自测（PR 版，快速反馈）
+        run: python .github/scripts/gate_selftest.py
+      - name: 测试完整性指标采集
+        run: python .github/scripts/integrity-scan.py --out integrity.json
+        # NOTE: 脚本取自 PR（不可信）；可信层用 base 版重跑并比对基线。见 pr-gate-trusted.yml
+      - name: 敏感信息扫描
+        run: python scripts/check_secrets.py
+      - name: 计算展示用 tier
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python .github/scripts/display-tier.py
+      - name: 生成审查材料包
+        run: python .github/scripts/build-review-bundle.py --pytest-log pytest.log --tier "$(cat tier.txt)" --out review-bundle.md
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - name: 上传材料包与证据
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: review-bundle-${{ github.event.pull_request.head.sha }}
+          path: |
+            review-bundle.md
+            integrity.json
+            tier.txt
