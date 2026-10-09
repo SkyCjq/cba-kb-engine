@@ -1,0 +1,99 @@
+{
+  "_comment": "契约锁定：Human Review Decisions & Audit Queue 契约 schema，锁定 candidate_id、risk_category、proposed_relation 与人工裁决闭环；覆盖 APPROVE/REJECT/DEFER、空人工意见与非法冲突状态",
+  "schema_version": 1,
+  "review_queue_version": "v1.8",
+  "requirement_id": "REQ-180-IDENTITY-01",
+  "review_candidates": [
+    {
+      "candidate_id": "CANDIDATE-001",
+      "risk_category": "stable_longitudinal",
+      "canonical_name_for_review": "合成球员甲",
+      "record_count": 5,
+      "record_keys": [
+        "2021-2022|synth_club_alpha|合成球员甲",
+        "2022-2023|synth_club_alpha|合成球员甲",
+        "2023-2024|synth_club_alpha|合成球员甲",
+        "2024-2025|synth_club_beta|合成球员甲",
+        "2025-2026|synth_club_beta|合成球员甲"
+      ],
+      "seasons": [
+        "2021-2022",
+        "2022-2023",
+        "2023-2024",
+        "2024-2025",
+        "2025-2026"
+      ],
+      "teams": [
+        "synth_club_alpha",
+        "synth_club_beta"
+      ],
+      "evidence_refs": [
+        "synth:doc_001"
+      ],
+      "proposed_relation": "KEEP_UNDECIDED",
+      "confidence": "MEDIUM",
+      "machine_reason": "Exact-name candidate with longitudinal multi-season multi-club records.",
+      "human_decision": "APPROVE",
+      "human_note": "Verified by historical registration documents."
+    },
+    {
+      "candidate_id": "CANDIDATE-002",
+      "risk_category": "name_variant",
+      "canonical_name_for_review": "合成球员乙",
+      "record_count": 1,
+      "record_keys": [
+        "2020-2021|bayi|合成球员乙"
+      ],
+      "seasons": [
+        "2020-2021"
+      ],
+      "teams": [
+        "bayi"
+      ],
+      "evidence_refs": [],
+      "proposed_relation": "PROPOSED_SAME",
+      "confidence": "LOW",
+      "machine_reason": "One-character variant candidate without direct alias evidence.",
+      "human_decision": "DEFER",
+      "human_note": null
+    },
+    {
+      "candidate_id": "CANDIDATE-003",
+      "risk_category": "ocr_corruption",
+      "canonical_name_for_review": "合成球员丙",
+      "record_count": 1,
+      "record_keys": [
+        "2026-2027|synth_club_gamma|合成球员丙"
+      ],
+      "seasons": [
+        "2026-2027"
+      ],
+      "teams": [
+        "synth_club_gamma"
+      ],
+      "evidence_refs": [
+        "synth:corrupted_ocr_line"
+      ],
+      "proposed_relation": "PROPOSED_SAME",
+      "confidence": "LOW",
+      "machine_reason": "Suspected OCR artifact character.",
+      "human_decision": "REJECT",
+      "human_note": "OCR artifact rejected, keep as distinct entity."
+    },
+    {
+      "candidate_id": "CANDIDATE-INVALID",
+      "risk_category": "UNKNOWN_RISK",
+      "canonical_name_for_review": "非法待审实体",
+      "record_count": 0,
+      "record_keys": [],
+      "seasons": [],
+      "teams": [],
+      "evidence_refs": [],
+      "proposed_relation": "ILLEGAL_RELATION",
+      "confidence": "UNKNOWN",
+      "machine_reason": "Malformed candidate record.",
+      "human_decision": "INVALID_DECISION",
+      "human_note": "Contradictory state."
+    }
+  ]
+}
