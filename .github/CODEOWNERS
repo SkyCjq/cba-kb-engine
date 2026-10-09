@@ -1,2 +1,32 @@
-# v2.0.2 G5: default owner for all paths
-* @SkyCjq
+# Mode 2.1 CODEOWNERS — 以下路径必须 Human review
+# 与 risk-tiers.yml 的 T2 路径镜像；T2 变更走 13 阶段前也须 owner 先看
+# @SkyCjq 已确认为 owner 本人 GitHub 账号（2026-10-09）
+
+.github/ @SkyCjq
+**/AGENTS.md @SkyCjq
+**/CLAUDE.md @SkyCjq
+**/.claude/** @SkyCjq
+**/.cursor/** @SkyCjq
+Makefile @SkyCjq
+Dockerfile @SkyCjq
+docker-compose*.yml @SkyCjq
+compose*.yml @SkyCjq
+setup.py @SkyCjq
+setup.cfg @SkyCjq
+pyproject.toml @SkyCjq
+requirements*.txt @SkyCjq
+requirements/ @SkyCjq
+requirements.lock @SkyCjq
+uv.lock @SkyCjq
+docs/mode2/ @SkyCjq
+tests/acceptance/ @SkyCjq
+tests/conftest.py @SkyCjq
+tests/fixtures/ @SkyCjq
+src/**/release/** @SkyCjq
+src/**/drive*.py @SkyCjq
+src/**/schema/** @SkyCjq
+src/**/evidence/** @SkyCjq
+automation/drive_io.py @SkyCjq
+automation/verify.py @SkyCjq
+scripts/prepare_production.py @SkyCjq
+scripts/check_secrets.py @SkyCjq

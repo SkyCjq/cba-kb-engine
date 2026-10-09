@@ -1,0 +1,59 @@
+# Mode 2.1 风险路径规则（T_path，机器判定部分）— rev3
+#
+# 判定算法（见 .github/scripts/tiering.py，确定性实现，不依赖 Python 版本）：
+#   1. 每个变更文件单独定级：按 T2 > T1 > T0 顺序匹配，命中即定级；
+#   2. 未命中任何模式的路径 -> 保守定为 T2（fail-closed）；
+#   3. 整个 PR 的 T_path = 所有文件 tier 的最大值。
+#      ——混合 PR（未知文件 + 普通文档）不会被"洗"成低 tier（rev2 漏洞已修）。
+# 最终等级 = max(T_path, T_capability, T_semantic)，单调上升，Muse 不可下调。
+#
+# glob 语义（gitignore 风格，tiering.py 实现）：
+#   - 含 "/" 的模式锚定仓库根；不含 "/" 的模式匹配任意层级 basename；
+#   - "*" 匹配除 "/" 外任意字符；"?" 匹配除 "/" 外单个字符；
+#   - "**/" 匹配零或多层目录；尾部 "/**" 匹配该目录下任意深度。
+#
+# 注：tests/acceptance/** 故意不在 T2——验收测试受 freeze test_sha256 哈希绑定
+# （policy-gate 从 base 重算），改动即阻断；tests/fixtures/** 则列为 T2，
+# 因为 fixture 数据变更不受单文件哈希绑定，且可能混入真实数据。
+
+T2:
+  - ".github/**"                 # 门禁本身
+  - "**/AGENTS.md"               # AI 执行指令入口（含嵌套）
+  - "**/CLAUDE.md"               # AI 执行指令入口（含嵌套）
+  - "**/.claude/**"              # AI 指令目录
+  - "**/.cursor/**"              # AI 指令目录
+  - "Makefile"                   # 构建入口
+  - "Dockerfile"                 # 构建/部署（basename 语义，任意层级）
+  - "docker-compose*.yml"        # 编排
+  - "compose*.yml"               # 编排
+  - "setup.py"                   # 构建
+  - "setup.cfg"                  # 构建配置
+  - "pyproject.toml"             # 构建/测试配置
+  - "requirements*.txt"          # 依赖（basename 语义）
+  - "requirements/**"            # 依赖
+  - "requirements.lock"
+  - "uv.lock"                    # 依赖锁定
+  - "src/**/release/**"          # 发布链路
+  - "src/**/drive*.py"           # Drive 写入
+  - "src/**/schema/**"           # 数据 schema
+  - "src/**/evidence/**"         # 证据核心规则
+  - "automation/drive_io.py"     # Drive IO（实际落点）
+  - "automation/verify.py"       # 核验引擎（证据链心脏；136KB schema/binding/sha256 校验）
+  - "scripts/prepare_production.py"  # 生产链路脚本
+  - "scripts/check_secrets.py"   # 安全扫描自身（致盲它等于关掉警报）
+  - "tests/conftest.py"          # 测试架构（可颠覆全部测试）
+  - "tests/fixtures/**"          # fixture 数据（可能混入真实数据；变更走人工）
+  - "docs/mode2/**"              # AI 指令文件
+
+T1:
+  - "src/**"
+  - "automation/**"              # 注：automation/git_io.py 在此（纯只读采集器，经代码实证无写操作，故 T1）；
+                                 # automation/verify.py 例外上调 T2（核验引擎），见 T2 列表
+  - "scripts/**"
+  - "config/**"
+
+T0:
+  - "docs/**"                    # docs/mode2/** 已被 T2 覆盖（max 规则）
+  - "tests/**"                   # tests/conftest.py、tests/fixtures/** 已被 T2 覆盖
+  - "*.md"                       # AGENTS.md 已被 T2 覆盖
+  - ".gitignore"

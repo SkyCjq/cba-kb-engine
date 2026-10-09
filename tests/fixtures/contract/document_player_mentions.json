@@ -1,0 +1,130 @@
+{
+  "_comment": "契约锁定：Player Mention & Review Queue 契约 schema，锁定跨目标实体引用授权(rights)、undecided 边界、空值/非本人(not_same) 与非法未授权实体关联",
+  "schema_version": 1,
+  "mention_version": "v1.8",
+  "artifact_sha256": "UNKNOWN",
+  "coverage": {
+    "blocked_relation_count": 1,
+    "by_target": {
+      "Target_LLM_A": {
+        "blocked": [],
+        "confirmed_player_centric": [],
+        "counts": {
+          "blocked": 0,
+          "confirmed_player_centric": 1,
+          "documents_reachable": 2,
+          "not_same": 1,
+          "unauthorized": 1,
+          "undecided": 1
+        },
+        "document_level_reachable": [
+          "synth_doc_001",
+          "synth_doc_002"
+        ],
+        "not_same_document_level": [
+          [
+            "synth_doc_002",
+            "SYNTH_PLAYER_0002"
+          ]
+        ],
+        "unauthorized": [
+          "synth_doc_private_003"
+        ],
+        "undecided_document_level": [
+          [
+            "synth_doc_001",
+            "SYNTH_PLAYER_0003"
+          ]
+        ]
+      }
+    },
+    "confirmed": 1,
+    "documents_declared": 3,
+    "documents_reachable": 2,
+    "mentions_declared": 4,
+    "not_same": 1,
+    "silent_drop_count": 0,
+    "unauthorized_relation_count": 1,
+    "undecided": 1
+  },
+  "documents": [
+    {
+      "authorized_targets": [
+        "Target_LLM_A"
+      ],
+      "doc_id": "synth_doc_001",
+      "rights": {
+        "classification": "public",
+        "evidence": [
+          "synth:public_evidence"
+        ],
+        "public_export_allowed": true
+      },
+      "rights_availability": "PUBLIC"
+    },
+    {
+      "authorized_targets": [
+        "Target_LLM_A"
+      ],
+      "doc_id": "synth_doc_002",
+      "rights": {
+        "classification": "copyrighted",
+        "evidence": [],
+        "public_export_allowed": false
+      },
+      "rights_availability": "METADATA_ONLY"
+    },
+    {
+      "authorized_targets": [],
+      "doc_id": "synth_doc_private_003",
+      "rights": {
+        "classification": "private",
+        "evidence": [],
+        "public_export_allowed": false
+      },
+      "rights_availability": "PRIVATE"
+    }
+  ],
+  "mentions": [
+    {
+      "schema_version": 1,
+      "doc_id": "synth_doc_001",
+      "evidence_ref": "candidate:synth_hash_001",
+      "mention_confidence": "HIGH",
+      "mention_method": "exact_name",
+      "mention_role": "subject",
+      "mention_status": "confirmed",
+      "player_uid": "SYNTH_PLAYER_0001"
+    },
+    {
+      "schema_version": 1,
+      "doc_id": "synth_doc_001",
+      "evidence_ref": "candidate:synth_hash_002",
+      "mention_confidence": "LOW",
+      "mention_method": "fuzzy_name",
+      "mention_role": "mentioned",
+      "mention_status": "undecided",
+      "player_uid": "SYNTH_PLAYER_0003"
+    },
+    {
+      "schema_version": 1,
+      "doc_id": "synth_doc_002",
+      "evidence_ref": "candidate:synth_hash_003",
+      "mention_confidence": "HIGH",
+      "mention_method": "exact_name",
+      "mention_role": "mentioned",
+      "mention_status": "not_same",
+      "player_uid": "SYNTH_PLAYER_0002"
+    },
+    {
+      "schema_version": 1,
+      "doc_id": "synth_doc_private_003",
+      "evidence_ref": "candidate:illegal_hash",
+      "mention_confidence": "UNKNOWN",
+      "mention_method": "unknown_method",
+      "mention_role": "unauthorized_role",
+      "mention_status": "unauthorized",
+      "player_uid": "SYNTH_PLAYER_0001"
+    }
+  ]
+}
