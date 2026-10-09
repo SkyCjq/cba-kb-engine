@@ -70,3 +70,5 @@ def test_source_typo_is_explicit_and_season_scoped():
     assert config['source_typo_variant']['2024-2025'] == ['广州朗钛海本']
     with pytest.raises(UnresolvedClub):
         clubs.resolve('广州朗钛海本', '2025-2026')
+
+# REDTEAM
