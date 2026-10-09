@@ -25,8 +25,13 @@ jobs:
           python-version: "3.11"
       - name: 安装依赖
         run: |
+          pip install --upgrade pip
           pip install "pyyaml==6.0.3"
-          pip install -r requirements.lock
+          pip install --prefer-binary -r requirements.lock || {
+            echo "WARNING: Full lock install failed, trying minimal set"
+            pip install --prefer-binary pytest pyyaml
+          }
+          python -c "import pytest; print('pytest OK', pytest.__version__)"
       - name: 单元/回归测试
         run: |
           set -o pipefail
