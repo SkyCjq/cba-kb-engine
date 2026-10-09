@@ -1,0 +1,86 @@
+{
+  "_comment": "契约锁定：Player Identity 核心契约 schema (v1.8)，锁定 player_uid 永久主键分配规则、record_links 映射与 review_queue/undecided 状态；覆盖标准合并、跨赛季多俱乐部关联、空值证据链与非法/冲突链接",
+  "schema_version": 1,
+  "identity_version": "v1.8",
+  "players": [
+    {
+      "schema_version": 1,
+      "player_uid": "SYNTH_PLAYER_0001",
+      "canonical_name": "合成球员甲",
+      "status": "ACTIVE",
+      "redirect_to": null
+    },
+    {
+      "schema_version": 1,
+      "player_uid": "SYNTH_PLAYER_0002",
+      "canonical_name": "合成球员乙",
+      "status": "ACTIVE",
+      "redirect_to": null
+    },
+    {
+      "schema_version": 1,
+      "player_uid": "SYNTH_PLAYER_0003",
+      "canonical_name": "合成球员丙",
+      "status": "REVIEW_PENDING",
+      "redirect_to": null
+    },
+    {
+      "schema_version": 1,
+      "player_uid": "SYNTH_PLAYER_0004_OBSOLETE",
+      "canonical_name": "合成球员丁_历史重名",
+      "status": "MERGED",
+      "redirect_to": "SYNTH_PLAYER_0001"
+    }
+  ],
+  "aliases": [
+    {
+      "schema_version": 1,
+      "alias": "合成球员甲别名",
+      "player_uid": "SYNTH_PLAYER_0001",
+      "evidence_ref": "synth:alias-doc-001"
+    }
+  ],
+  "record_links": [
+    {
+      "schema_version": 1,
+      "record_key": "2025-2026|synth_club_alpha|合成球员甲",
+      "player_uid": "SYNTH_PLAYER_0001",
+      "link_status": "same",
+      "method": "MANUAL_REVIEW",
+      "confidence": "HIGH",
+      "evidence_refs": [
+        "synth:doc_evidence_001"
+      ]
+    },
+    {
+      "schema_version": 1,
+      "record_key": "2020-2021|bayi|合成球员乙",
+      "player_uid": "SYNTH_PLAYER_0002",
+      "link_status": "same",
+      "method": "EXTERNAL_IDENTIFIER",
+      "confidence": "HIGH",
+      "evidence_refs": []
+    },
+    {
+      "schema_version": 1,
+      "record_key": "2026-2027|synth_club_gamma|合成球员丙",
+      "player_uid": "SYNTH_PLAYER_0003",
+      "link_status": "undecided",
+      "method": "REVIEW_PENDING",
+      "confidence": "UNKNOWN",
+      "evidence_refs": []
+    },
+    {
+      "schema_version": 1,
+      "record_key": "INVALID_SEASON|synth_club_err|非法链接",
+      "player_uid": "NON_EXISTENT_PLAYER",
+      "link_status": "conflict_unresolved",
+      "method": "FAILED_AUTOMATION",
+      "confidence": "UNKNOWN",
+      "evidence_refs": [
+        "synth:corrupted_evidence"
+      ]
+    }
+  ],
+  "registry_sha256": "UNKNOWN"
+}
