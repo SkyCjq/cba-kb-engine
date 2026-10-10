@@ -214,10 +214,24 @@ def compute_final_tier(path_tier: str, capability: str, semantic: str) -> str:
     return max((path_tier, capability, semantic), key=lambda t: order[t])
 
 
-def enforce_no_t2(final_tier: str):
-    """rev4 阻断项 2：T2 必须转 13 阶段，轻量门禁不放行。"""
-    if final_tier == "T2":
-        return ["FINAL_TIER=T2：高风险变更必须转 13 阶段流程，本轻量门禁阻断"]
+def enforce_no_t2(final_tier: str, review):
+    """rev11（G-03，审计修订 2026-10-10）：T2 放行 = 两个独立条件同时满足。
+
+    条件 (a) 存在合格 Q2：有效的 mode2-review 签发。调用方必须先执行
+    check_review()：它在无有效签发时直接 fail，验证项为
+    verdict ∈ {PASS, PASS_WITH_NOTES}、reviewed_head_sha == HEAD_SHA、
+    critical 全关。——这是代码审查结果。
+    条件 (b) 具备 T2 放行授权：check_freeze() 的 freeze 签发
+    （spec_sha256 / test_sha256 / task_id 绑定，Human 在 Issue 发布）。
+    它在 main() 中先于本函数执行，对所有 PR 强制。——这是高风险准入授权。
+    两个条件独立，缺一不可。Web Q2 PASS ≠ 13 阶段治理通过。
+    review=None 时仍阻断（防御性，防未来调用顺序被改乱）。
+    """
+    if final_tier != "T2":
+        return []
+    if not review:
+        return ["FINAL_TIER=T2 且无有效 review 签发，阻断"]
+    ok(f"FINAL_TIER=T2：可信 review 签发有效（verdict={review.get('verdict')}），放行")
     return []
 
 
@@ -840,12 +854,17 @@ def main():
         path_tier, freeze["capability"], freeze["semantic"]
     )
     print(f"FINAL_TIER={final_tier}", flush=True)
-    t2_errs = enforce_no_t2(final_tier)
+    # rev11（G-03）：先验 review 签发，再定 T2 去留（顺序理顺，见 §4）
+    review = check_review()
+    # rev11（G-02）：删除 Python 层审批重验。Human approval 由分支保护的
+    # "Require a pull request before merging"（1 approval）负责。
+    # 审计修订（2026-10-10）：不启用 "Require approval of the most recent
+    # reviewable push"（保持未勾选，见 §3）；时效属性改用 "Dismiss stale
+    # pull request approvals when new commits are pushed"（先实测）。
+    t2_errs = enforce_no_t2(final_tier, review)
     if t2_errs:
         fail("；".join(t2_errs))
-    ok("FINAL_TIER 非 T2，可走轻量门禁")
-
-    check_review()
+    ok("tier/签发检查通过，可走轻量门禁")
 
     if SCOPE == "auth":
         # reverify 模式：只复验授权状态（freeze/review/hold/tier），
