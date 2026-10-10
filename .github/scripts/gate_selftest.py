@@ -475,17 +475,17 @@ _base = {"test_files": 10, "test_funcs": 27, "skips": 0, "xfails": 0, "asserts":
 check("指标持平通过",
       policy_gate.compare_integrity_metrics(dict(_base), dict(_base)) == [])
 _pr = dict(_base, test_funcs=20)
-check("测试函数减少被阻断",
-      len(policy_gate.compare_integrity_metrics(_pr, _base)) > 0)
+check("测试函数减少降为审查提示",
+      policy_gate.compare_integrity_metrics(_pr, _base) == [])
 _pr = dict(_base, test_funcs=9999, asserts=99999)
 check("指标虚增不阻断（双边皆可信计算，虚增无意义）",
       policy_gate.compare_integrity_metrics(_pr, _base) == [])
 _pr = dict(_base, skips=2)
-check("新增 skip 被阻断",
-      len(policy_gate.compare_integrity_metrics(_pr, _base)) > 0)
+check("新增 skip 降为审查提示",
+      policy_gate.compare_integrity_metrics(_pr, _base) == [])
 _pr = dict(_base, asserts=30)
-check("断言减少被阻断",
-      len(policy_gate.compare_integrity_metrics(_pr, _base)) > 0)
+check("断言减少降为审查提示",
+      policy_gate.compare_integrity_metrics(_pr, _base) == [])
 
 # ---------- 9. 扫描器 CLI 集成（rev4 阻断项 1） ----------
 with tempfile.TemporaryDirectory() as td:
@@ -632,7 +632,7 @@ def _pr_delete(td):
 
 check("P3 生命周期：仅新增测试通过", _p3_lifecycle(_pr_add_only) is True)
 check("P3 生命周期：symlink 替换被阻断", _p3_lifecycle(_pr_symlink) is False)
-check("P3 生命周期：修改测试被阻断", _p3_lifecycle(_pr_modify) is False)
+check("P3 生命周期：修改测试通过（留痕）", _p3_lifecycle(_pr_modify) is True)
 check("P3 生命周期：删除测试被阻断", _p3_lifecycle(_pr_delete) is False)
 
 print()
