@@ -1,0 +1,297 @@
+{
+  "$defs": {
+    "evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "evidence_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "file_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "OBJECT",
+            "SOURCE",
+            "DOCUMENT",
+            "PROCESS",
+            "FINAL_LOCATION",
+            "REVIEW_REASON"
+          ]
+        },
+        "locator": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "reason_code": {
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "evidence_id",
+        "file_id",
+        "kind",
+        "locator",
+        "observed_at",
+        "reason_code",
+        "detail"
+      ],
+      "type": "object"
+    },
+    "nullableId": {
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "object": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "disposition": {
+                "const": "PROCESSED"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "final_parent": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "processing_status": {
+                "const": "COMPLETED"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "disposition": {
+                "const": "UNPROCESSED"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "final_parent": {
+                "type": "null"
+              },
+              "processing_status": {
+                "const": "PENDING"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "disposition": {
+          "enum": [
+            "UNPROCESSED",
+            "PROCESSED",
+            "REVIEW_REQUIRED"
+          ]
+        },
+        "document_id": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "evidence_reference": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "file_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "final_parent": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "mime_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "parent_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "processing_status": {
+          "enum": [
+            "PENDING",
+            "PROCESSING",
+            "COMPLETED",
+            "FAILED",
+            "UNKNOWN"
+          ]
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_id": {
+          "$ref": "#/$defs/nullableId"
+        }
+      },
+      "required": [
+        "file_id",
+        "name",
+        "mime_type",
+        "sha256",
+        "parent_ids",
+        "source_id",
+        "document_id",
+        "processing_status",
+        "disposition",
+        "final_parent",
+        "evidence_reference"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "backend": {
+      "const": "local_filesystem"
+    },
+    "evidence": {
+      "items": {
+        "$ref": "#/$defs/evidence"
+      },
+      "type": "array"
+    },
+    "finished_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "objects": {
+      "items": {
+        "$ref": "#/$defs/object"
+      },
+      "type": "array"
+    },
+    "run_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "scan_errors": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "locator": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "reason_code": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "locator",
+          "reason_code",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "scope_bindings": {
+      "additionalProperties": false,
+      "properties": {
+        "binding_reference": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "inbox_root": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "record_stores": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "sources_root": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "inbox_root",
+        "sources_root",
+        "record_stores",
+        "binding_reference"
+      ],
+      "type": "object"
+    },
+    "scope_complete": {
+      "type": "boolean"
+    },
+    "spec_version": {
+      "const": "2.0.3-2-R1-Q1"
+    },
+    "started_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "trigger": {
+      "const": "manual"
+    }
+  },
+  "required": [
+    "spec_version",
+    "run_id",
+    "backend",
+    "trigger",
+    "started_at",
+    "finished_at",
+    "scope_complete",
+    "scope_bindings",
+    "scan_errors",
+    "objects",
+    "evidence"
+  ],
+  "type": "object"
+}
