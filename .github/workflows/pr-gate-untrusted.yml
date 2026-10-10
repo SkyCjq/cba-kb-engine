@@ -32,12 +32,12 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install "pyyaml==6.0.3" pytest
-          pip install --prefer-binary -r requirements.lock || echo "WARNING: full lock install failed, continuing with minimal deps"
+          pip install --prefer-binary -r requirements.lock
           python -c "import pytest; print('pytest OK', pytest.__version__)"
       - name: 单元/回归测试
         run: |
           set -o pipefail
-          PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH pytest tests/ -q 2>&1 | tee pytest.log || echo "PYTEST_FAILED=true" >> $GITHUB_ENV
+          PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH pytest tests/ -q 2>&1 | tee pytest.log
       - name: 门禁自测（PR 版，快速反馈）
         run: python .github/scripts/gate_selftest.py
       - name: 测试完整性指标采集
@@ -63,3 +63,4 @@ jobs:
             review-bundle.md
             integrity.json
             tier.txt
+            pytest.log
