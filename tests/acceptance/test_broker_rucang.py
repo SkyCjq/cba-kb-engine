@@ -49,7 +49,8 @@ def test_workflow_yaml_parses():
     doc = yaml.safe_load(text)
     assert doc["name"] == "bot-pr-broker"
     assert "broker" in doc["jobs"]
-    triggers = doc.get("on", {})
+    # YAML 1.1: `on` 解析为布尔 True，不是字符串 "on"
+    triggers = doc.get("on", doc.get(True, {}))
     assert "repository_dispatch" in triggers
 
 
