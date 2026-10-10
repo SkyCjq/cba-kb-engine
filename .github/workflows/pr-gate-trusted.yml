@@ -9,6 +9,7 @@
 # - 审批变化不自动重核验是 GitHub 信任模型的固有限制（见 queue-runbook 的
 #   诚实说明与缓解）；绝不用低信任事件冒充可信检查。
 # rev4：base 前置守卫；Action pin 到 commit SHA；pyyaml==6.0.3。
+# Stage3（2026-10-10）：增 issues: read——policy-gate 需读需求 Issue 评论取 freeze 签发，缺之则 403 崩溃。
 # DRAFT：App 审批机制（纯 T0）待 #10 实测；在通过前所有 tier 均需 Human approval。
 name: pr-gate-trusted
 on:
@@ -18,6 +19,7 @@ permissions:
   contents: read
   pull-requests: read
   actions: read
+  issues: read
 jobs:
   policy:
     runs-on: ubuntu-latest
