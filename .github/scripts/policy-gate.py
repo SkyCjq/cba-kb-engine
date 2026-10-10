@@ -544,9 +544,24 @@ def find_verified_untrusted_run():
         time.sleep(30)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """禁止自动跟随重定向，由调用方显式处理。
+
+    背景（2026-10-10 Stage 3 真机）：urllib 默认在 302 时把
+    Authorization 头原样转发给重定向目标；GitHub artifact 下载
+    302 到 Azure Blob 预签名 URL，Azure 见到无法解析的
+    Authorization 头直接 401（"Server failed to authenticate"），
+    而预签名 URL 自带签名、不需要也不接受 Authorization。
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def download_run_artifacts(run_id: int):
     arts = gh_api(f"/repos/{REPO}/actions/runs/{run_id}/artifacts").get("artifacts", [])
     files = {}
+    opener = urllib.request.build_opener(_NoRedirect)
     for a in arts:
         if a.get("expired"):
             continue
@@ -558,10 +573,22 @@ def download_run_artifacts(run_id: int):
                 "X-GitHub-Api-Version": "2022-11-28",
             },
         )
-        with urllib.request.urlopen(req) as resp:
-            zf = zipfile.ZipFile(io.BytesIO(resp.read()))
-            for name in zf.namelist():
-                files[name] = zf.read(name).decode("utf-8", errors="replace")
+        try:
+            with opener.open(req, timeout=60) as resp:
+                data = resp.read()
+        except urllib.error.HTTPError as e:
+            if e.code in (301, 302, 303, 307, 308):
+                loc = e.headers.get("Location")
+                if not loc:
+                    raise
+                # 预签名 URL 自带签名：不得转发 Authorization（否则 Azure 401）。
+                with urllib.request.urlopen(loc, timeout=120) as r2:
+                    data = r2.read()
+            else:
+                raise
+        zf = zipfile.ZipFile(io.BytesIO(data))
+        for name in zf.namelist():
+            files[name] = zf.read(name).decode("utf-8", errors="replace")
     return files
 
 
