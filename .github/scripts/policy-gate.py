@@ -39,7 +39,7 @@ TRUSTED_AUTHORS = {
     a.strip() for a in os.environ.get("TRUSTED_AUTHORS", "").split(",") if a.strip()
 }
 POLL_MINUTES = int(os.environ.get("GATE_POLL_MINUTES", "30"))
-# SCOPE: full（默认，全部检查）| auth（授权状态复验：tier/freeze/review/审批/hold；
+# SCOPE: full（默认，全部检查）| auth（授权状态复验：tier/freeze/review/hold；
 #   供 reverify workflow 在 issue_comment 事件后调用，不含 CI/bundle/完整性，
 #   那些是 commit 绑定的，由 trusted workflow 负责）
 SCOPE = os.environ.get("GATE_SCOPE", "full")
@@ -214,10 +214,24 @@ def compute_final_tier(path_tier: str, capability: str, semantic: str) -> str:
     return max((path_tier, capability, semantic), key=lambda t: order[t])
 
 
-def enforce_no_t2(final_tier: str):
-    """rev4 阻断项 2：T2 必须转 13 阶段，轻量门禁不放行。"""
-    if final_tier == "T2":
-        return ["FINAL_TIER=T2：高风险变更必须转 13 阶段流程，本轻量门禁阻断"]
+def enforce_no_t2(final_tier: str, review):
+    """rev11（G-03，审计修订 2026-10-10）：T2 放行 = 两个独立条件同时满足。
+
+    条件 (a) 存在合格 Q2：有效的 mode2-review 签发。调用方必须先执行
+    check_review()：它在无有效签发时直接 fail，验证项为
+    verdict ∈ {PASS, PASS_WITH_NOTES}、reviewed_head_sha == HEAD_SHA、
+    critical 全关。——这是代码审查结果。
+    条件 (b) 具备 T2 放行授权：check_freeze() 的 freeze 签发
+    （spec_sha256 / test_sha256 / task_id 绑定，Human 在 Issue 发布）。
+    它在 main() 中先于本函数执行，对所有 PR 强制。——这是高风险准入授权。
+    两个条件独立，缺一不可。Web Q2 PASS ≠ 13 阶段治理通过。
+    review=None 时仍阻断（防御性，防未来调用顺序被改乱）。
+    """
+    if final_tier != "T2":
+        return []
+    if not review:
+        return ["FINAL_TIER=T2 且无有效 review 签发，阻断"]
+    ok(f"FINAL_TIER=T2：可信 review 签发有效（verdict={review.get('verdict')}），放行")
     return []
 
 
@@ -245,7 +259,11 @@ def verify_bundle_checksum(bundle: str):
 
 
 def compare_integrity_metrics(pr_m, base_m):
-    """rev4 阻断项 7：双边可信指标比对（纯函数）。任一退化 → 错误列表。"""
+    """rev11（G-04 审计修订）：双边可信指标比对。数量变化降为审查提示，
+    不自动判作弊。验收测试仍受 check_freeze() 的 test_sha256 严格哈希绑定；
+    普通回归测试修改后 CI 必须真实通过（G-01 已保证 pytest 红灯）。
+    （注：ok() 仅打印日志行，原"纯函数"无其他副作用。）
+    """
     errs = []
     for name, op in (("test_funcs", ">="), ("test_files", ">="),
                      ("asserts", ">="), ("skips", "<="), ("xfails", "<=")):
@@ -255,7 +273,7 @@ def compare_integrity_metrics(pr_m, base_m):
             continue
         bad = (pv < bv) if op == ">=" else (pv > bv)
         if bad:
-            errs.append(f"测试完整性退化：{name} PR={pv} base={bv}（测试弱化，转人工）")
+            ok(f"测试完整性变化（审查提示，非阻断）：{name} PR={pv} base={bv}")
     return errs
 
 
@@ -736,9 +754,16 @@ def git_blob_identity(repo: str, rel: str, ref: str = "HEAD"):
 
 
 def check_test_identities(base_ids, pr_ids):
-    """纯函数：比对 {rel: (mode, blob_sha)}；不一致时 fail()。
+    """纯函数：比对 {rel: (mode, blob_sha)}；删除/类型改变时 fail()。
 
     base_ids: base 侧身份；pr_ids: PR head 侧身份（必须在 worktree 存活时采集）。
+
+    rev11（G-04）：普通测试文件的内容修改不再硬阻断。理由：
+    验收测试（freeze test_path）仍受 check_freeze() 的 test_sha256 绑定
+    （:408-445），"改测试修到绿"在验收测试上不可能；
+    其他测试文件的修改在 PR diff 中对 Human 完全可见，
+    且 compare_integrity_metrics()（:247）的计数比对保留为二级信号。
+    删除仍阻断（证据销毁不可逆）；类型改变仍阻断（symlink 替换攻击，A1 P3）。
     """
     for rel in sorted(base_ids):
         b_mode, b_blob = base_ids[rel]
@@ -749,8 +774,8 @@ def check_test_identities(base_ids, pr_ids):
             fail(f"测试文件类型被改变：tests/{rel}"
                  f"（{b_mode}→{p_mode}，转人工审查）")
         if p_blob != b_blob:
-            fail(f"测试文件内容被修改：tests/{rel}（转人工审查；"
-                 f"实现者不应改测试来修到绿）")
+            ok(f"测试文件内容被修改：tests/{rel}（rev11 起允许；"
+               f"diff 对 Human 可见，验收测试另受 freeze 哈希绑定）")
 
 
 def check_integrity_baseline():
@@ -810,17 +835,6 @@ def check_integrity_baseline():
        f"skips {base_m['skips']}->{pr_m['skips']}")
 
 
-def check_approval():
-    reviews = gh_api(f"/repos/{REPO}/pulls/{PR_NUMBER}/reviews")
-    valid, errors = evaluate_approvals(reviews, PR_AUTHOR, HEAD_SHA)
-    if errors:
-        fail("；".join(errors))
-    if not valid:
-        fail("缺少 Human approval（授权 Human 在当前 head 的有效 APPROVED）")
-    ok(f"Human approval（当前 head，已验授权）：{valid}")
-    return valid
-
-
 def main():
     check_env()
     pr = fetch_pr()
@@ -851,16 +865,20 @@ def main():
         path_tier, freeze["capability"], freeze["semantic"]
     )
     print(f"FINAL_TIER={final_tier}", flush=True)
-    t2_errs = enforce_no_t2(final_tier)
+    # rev11（G-03）：先验 review 签发，再定 T2 去留（顺序理顺，见 §4）
+    review = check_review()
+    # rev11（G-02）：删除 Python 层审批重验。Human approval 由分支保护的
+    # "Require a pull request before merging"（1 approval）负责。
+    # 审计修订（2026-10-10）：不启用 "Require approval of the most recent
+    # reviewable push"（保持未勾选，见 §3）；时效属性改用 "Dismiss stale
+    # pull request approvals when new commits are pushed"（先实测）。
+    t2_errs = enforce_no_t2(final_tier, review)
     if t2_errs:
         fail("；".join(t2_errs))
-    ok("FINAL_TIER 非 T2，可走轻量门禁")
-
-    check_review()
-    check_approval()
+    ok("tier/签发检查通过，可走轻量门禁")
 
     if SCOPE == "auth":
-        # reverify 模式：只复验授权状态（freeze/review/审批/hold/tier），
+        # reverify 模式：只复验授权状态（freeze/review/hold/tier），
         # CI/bundle/完整性是 commit 绑定的，由 trusted workflow 负责。
         print("POLICY-GATE RESULT: PASS (SCOPE=auth)", flush=True)
         return
