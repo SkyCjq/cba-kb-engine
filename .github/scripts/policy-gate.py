@@ -259,7 +259,11 @@ def verify_bundle_checksum(bundle: str):
 
 
 def compare_integrity_metrics(pr_m, base_m):
-    """rev4 阻断项 7：双边可信指标比对（纯函数）。任一退化 → 错误列表。"""
+    """rev11（G-04 审计修订）：双边可信指标比对。数量变化降为审查提示，
+    不自动判作弊。验收测试仍受 check_freeze() 的 test_sha256 严格哈希绑定；
+    普通回归测试修改后 CI 必须真实通过（G-01 已保证 pytest 红灯）。
+    （注：ok() 仅打印日志行，原"纯函数"无其他副作用。）
+    """
     errs = []
     for name, op in (("test_funcs", ">="), ("test_files", ">="),
                      ("asserts", ">="), ("skips", "<="), ("xfails", "<=")):
@@ -269,7 +273,7 @@ def compare_integrity_metrics(pr_m, base_m):
             continue
         bad = (pv < bv) if op == ">=" else (pv > bv)
         if bad:
-            errs.append(f"测试完整性退化：{name} PR={pv} base={bv}（测试弱化，转人工）")
+            ok(f"测试完整性变化（审查提示，非阻断）：{name} PR={pv} base={bv}")
     return errs
 
 
@@ -750,9 +754,16 @@ def git_blob_identity(repo: str, rel: str, ref: str = "HEAD"):
 
 
 def check_test_identities(base_ids, pr_ids):
-    """纯函数：比对 {rel: (mode, blob_sha)}；不一致时 fail()。
+    """纯函数：比对 {rel: (mode, blob_sha)}；删除/类型改变时 fail()。
 
     base_ids: base 侧身份；pr_ids: PR head 侧身份（必须在 worktree 存活时采集）。
+
+    rev11（G-04）：普通测试文件的内容修改不再硬阻断。理由：
+    验收测试（freeze test_path）仍受 check_freeze() 的 test_sha256 绑定
+    （:408-445），"改测试修到绿"在验收测试上不可能；
+    其他测试文件的修改在 PR diff 中对 Human 完全可见，
+    且 compare_integrity_metrics()（:247）的计数比对保留为二级信号。
+    删除仍阻断（证据销毁不可逆）；类型改变仍阻断（symlink 替换攻击，A1 P3）。
     """
     for rel in sorted(base_ids):
         b_mode, b_blob = base_ids[rel]
@@ -763,8 +774,8 @@ def check_test_identities(base_ids, pr_ids):
             fail(f"测试文件类型被改变：tests/{rel}"
                  f"（{b_mode}→{p_mode}，转人工审查）")
         if p_blob != b_blob:
-            fail(f"测试文件内容被修改：tests/{rel}（转人工审查；"
-                 f"实现者不应改测试来修到绿）")
+            ok(f"测试文件内容被修改：tests/{rel}（rev11 起允许；"
+               f"diff 对 Human 可见，验收测试另受 freeze 哈希绑定）")
 
 
 def check_integrity_baseline():
