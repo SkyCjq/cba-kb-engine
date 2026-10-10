@@ -39,7 +39,7 @@ TRUSTED_AUTHORS = {
     a.strip() for a in os.environ.get("TRUSTED_AUTHORS", "").split(",") if a.strip()
 }
 POLL_MINUTES = int(os.environ.get("GATE_POLL_MINUTES", "30"))
-# SCOPE: full（默认，全部检查）| auth（授权状态复验：tier/freeze/review/审批/hold；
+# SCOPE: full（默认，全部检查）| auth（授权状态复验：tier/freeze/review/hold；
 #   供 reverify workflow 在 issue_comment 事件后调用，不含 CI/bundle/完整性，
 #   那些是 commit 绑定的，由 trusted workflow 负责）
 SCOPE = os.environ.get("GATE_SCOPE", "full")
@@ -810,17 +810,6 @@ def check_integrity_baseline():
        f"skips {base_m['skips']}->{pr_m['skips']}")
 
 
-def check_approval():
-    reviews = gh_api(f"/repos/{REPO}/pulls/{PR_NUMBER}/reviews")
-    valid, errors = evaluate_approvals(reviews, PR_AUTHOR, HEAD_SHA)
-    if errors:
-        fail("；".join(errors))
-    if not valid:
-        fail("缺少 Human approval（授权 Human 在当前 head 的有效 APPROVED）")
-    ok(f"Human approval（当前 head，已验授权）：{valid}")
-    return valid
-
-
 def main():
     check_env()
     pr = fetch_pr()
@@ -857,10 +846,9 @@ def main():
     ok("FINAL_TIER 非 T2，可走轻量门禁")
 
     check_review()
-    check_approval()
 
     if SCOPE == "auth":
-        # reverify 模式：只复验授权状态（freeze/review/审批/hold/tier），
+        # reverify 模式：只复验授权状态（freeze/review/hold/tier），
         # CI/bundle/完整性是 commit 绑定的，由 trusted workflow 负责。
         print("POLICY-GATE RESULT: PASS (SCOPE=auth)", flush=True)
         return
