@@ -225,7 +225,7 @@ jobs:
           fi
           # 标题/正文仅为元数据：只含已校验的 issue/branch，不含任何敏感信息（AC18）。
           TITLE="Bot PR for issue #${ISSUE} (${BRANCH})"
-          BODY="由 bot-pr-broker 以 GitHub App 身份创建。关联 Issue #${ISSUE}，候选分支 ${BRANCH}。请求已通过 Broker 校验。"
+          BODY="由 bot-pr-broker 以 GitHub App 身份创建。关联 Issue #${ISSUE}，候选分支 ${BRANCH}。请求已通过 Broker 校验。\n\nCloses #${ISSUE}"
           if CREATE_OUT="$(gh pr create --repo "${REPO}" --head "${BRANCH}" --base main \
               --title "${TITLE}" --body "${BODY}")"; then
             echo "PR created; verifying created PR attribution..."
