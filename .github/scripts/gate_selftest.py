@@ -82,11 +82,14 @@ for files, exp in WASH_CASES:
     got = tiering.compute_tier(files, tiers)
     check(f"tier {files} == {exp}", got == exp)
 
-# T2 硬约束（rev4 阻断项 2）
-check("T2 被硬阻断",
-      len(policy_gate.enforce_no_t2("T2")) > 0)
+# T2 约束（rev11 G-03 审计修订：两个独立条件——合格 Q2 签发 + freeze 准入授权；
+# 无签发阻断）
+check("T2 无签发被阻断",
+      len(policy_gate.enforce_no_t2("T2", None)) > 0)
+check("T2 有有效签发放行",
+      policy_gate.enforce_no_t2("T2", {"verdict": "PASS"}) == [])
 check("T1/T0 不阻断",
-      policy_gate.enforce_no_t2("T1") == [] and policy_gate.enforce_no_t2("T0") == [])
+      policy_gate.enforce_no_t2("T1", None) == [] and policy_gate.enforce_no_t2("T0", None) == [])
 
 # ---------- 3. 审批：决策语义 + 授权主体（rev5 P0-2） ----------
 def _rev(login, state, sha="abc", assoc="OWNER", ts="2026-10-09T01:00:00Z"):
