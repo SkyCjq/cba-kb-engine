@@ -1,0 +1,297 @@
+# bot-pr-broker.yml — Bot Broker（改良版 A）：GitHub App 独立身份代建 PR
+#
+# 安全边界（T2 F1.0 冻结，不可弱化）：
+# - 唯一触发入口：repository_dispatch / request_bot_pr。不监听 pull_request 等事件（AC01）。
+# - 只运行 main 分支的可信代码；绝不 checkout、不执行候选分支的任何内容（AC02）。
+# - 与无私钥的 pr-gate 双工作流完全隔离；私钥只以 Secret 名引用，永不落盘/日志（AC03）。
+# - Muse 不持有私钥；Broker 仅建 PR，不审批、不合并、不改保护规则（AC20）。
+# - 全程 fail-closed：任何校验/API 失败 → 拒绝建 PR，无降级通道（AC21）。
+# - 幂等入口一律复用校验器的完整归属核验（FND-02）：state/author/head.repo/base.repo/
+#   ref/sha，任一不符 → 拒绝并报告冲突，绝不"找到编号就成功"。
+name: bot-pr-broker
+
+# A+ 协议：run-name 携带 request_id，仅作调用方结果关联的线索，
+# 不单独作为终态证明（终态以 Issue 回执 + PR 实际状态 + run 状态三源对账为准）。
+run-name: "bot-pr-broker ${{ github.event.client_payload.request_id }}"
+
+on:
+  repository_dispatch:
+    types: [request_bot_pr]
+
+# 最小权限：校验只需要读分支 / Issue / PR 列表。
+# issues: write 仅供回执步骤以 GITHUB_TOKEN（github-actions[bot] 身份）
+# 写结构化结果回执评论（A+ 协议）；建 PR 一律使用 App installation token，
+# 绝不使用 GITHUB_TOKEN（AC14/AC15）。App 自身权限不受 workflow permissions 影响。
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+# 串行化：同一时间只跑一个 Broker，收敛并发建 PR 的竞态窗口（Q8/F17 缓解）。
+# FND-06 R2 实证（GitHub 官方文档原文）：concurrency 支持 `queue` 键。
+# 默认 queue:single 只保留最新一个 pending（更早的 pending 被取消 —— 不是真队列）；
+# queue:max 最多保留 100 个 pending 按 FIFO 执行，超限后到达的 run 被取消。
+# queue:max 不能与 cancel-in-progress:true 同用（会报 workflow validation error），
+# 此处 cancel-in-progress:false，兼容。
+# 诚实边界：超限被取消的请求无 PR、无编号、无回调 —— 但"无编号返回"绝不等于"未创建"
+# （R3 FND-06/FND-12 教训：repository_dispatch 只返回 204；请求可能在排队、可能被取消、
+# 可能创建成功但确认丢失）。调用方必须走 A+ 结果协议：先对账（Issue 回执 +
+# PR state=all 全量查询 + workflow run 状态），后决定；重发 dispatch 仅在"已确认
+# 安全"时（无匹配 PR 且无有效 PENDING/RUNNING 回执且 run 无活跃迹象），attempt_id 递增。
+# 旧约定"无编号返回即视为未创建"已废止（R3 修复）。
+concurrency:
+  group: bot-pr-broker
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  broker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          ref: main  # 只取可信 base；绝不碰候选分支代码（AC02）
+          persist-credentials: false
+
+      # R4 D3-① / FND-17：sender 白名单先行。失败 → 直接失败，
+      # 不写任何回执（回执 marker 本身可被滥用来污染/审计污染）。
+      - name: 断言 sender 白名单（失败不写回执）
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.sender.login }}" != "SkyCjq" ]; then
+            echo "FATAL: sender '${{ github.event.sender.login }}' is not in the allowed set; refusing without receipt" >&2
+            exit 1
+          fi
+
+      - name: 校验请求（AC04–AC13、AC16–AC17）
+        id: validate
+        # R4 D3-②：校验失败不再直接终止 job（continue-on-error），改由后续步骤
+        # 按 D3 决策：可派生 → 写 REJECTED 回执；不可派生 → 静默失败
+        # （调用方按"无终态回执"走对账/超时 → UNKNOWN/HOLD，安全）。
+        # 下游所有敏感步骤以 steps.validate.outcome == 'success' gating；
+        # token 签发另需 decision == 'approve'。等价于原来的 fail-closed。
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PAYLOAD: ${{ toJson(github.event.client_payload) }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+          REPO: ${{ github.repository }}
+          # A+ 协议：deny 时校验器把 deny JSON 同步落盘，供终态回执步骤读取
+          # 机器可读的拒绝原因（REJECTED 回执的 error_class / error_detail）。
+          BROKER_DENY_FILE: ${{ runner.temp }}/broker-deny.json
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/bot-broker-validate.py
+          # deny 时脚本 exit 非零 → outcome == 'failure' → 走 REJECTED/静默分支。
+
+      # R4 D3-② / FND-17：校验失败 → 仅当可派生合法 request_id 时写 REJECTED
+      # （marker 用重算的派生 ID）；不可派生 → 静默退出 0，不写回执。
+      # R5 FND-17 修订：AC04（契约层）/AC05（身份层）的非法请求不得碰 marker；
+      # sender 不在白名单同样不写。见 bot-broker-receipt.py --rejected-if-derivable。
+      - name: 写回执 REJECTED（校验失败且可派生时）
+        if: steps.validate.outcome == 'failure'
+        env:
+          # A+ 协议：仅用 GITHUB_TOKEN；本步骤 env 中绝不出现 App token。
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+          PAYLOAD: ${{ toJson(github.event.client_payload) }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DENY_FILE: ${{ runner.temp }}/broker-deny.json
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/bot-broker-receipt.py --rejected-if-derivable
+
+      # FND-24 R5：校验拒绝后 job 必须显示失败结论。validate 步骤用了
+      # continue-on-error: true（为了能走到写 REJECTED 回执的分支），其失败
+      # 不会终止 job，且 GitHub 会把该步骤的 conclusion 记为 success →
+      # job 可能显示绿色"成功"，与"拒绝"语义矛盾（AC_MAPPING 曾误写
+      # "deny→非零退出→job 停止"）。本步骤在拒绝证据已写之后强制 exit 1，
+      # 确保可派生/不可派生两条拒绝路径的 job conclusion 均为 failure。
+      # 注意：本步骤无 continue-on-error；if 保证只在 validate 失败时运行。
+      - name: 拒绝后标记 job 失败（FND-24）
+        if: always() && steps.validate.outcome == 'failure'
+        run: |
+          echo "FATAL: request validation failed; REJECTED receipt written or skipped, see run logs" >&2
+          exit 1
+
+      - name: 写回执 PENDING（校验通过后）
+        # FND-26 R6：approve_idempotent 路径跳过 PENDING —— 幂等命中时已有
+        # CREATED 回执，写 PENDING 会被终态守卫拒绝（exit 1）导致合法重跑的
+        # job 失败。幂等命中直达终态 finalize（写 CREATED，同状态覆盖允许）。
+        if: steps.validate.outcome == 'success' && steps.validate.outputs.decision != 'approve_idempotent'
+        env:
+          # A+ 协议：仅用 GITHUB_TOKEN（github-actions[bot] 身份）写回执评论。
+          # 本步骤 env 中绝不出现 App 签发步骤的 token 输出（签发步骤尚未运行，且此处不引用）。
+          # R4 D3：回执脚本复用校验器做防御性复验（sender 白名单 + 完整契约），
+          # marker 用重算的派生 ID。
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+          PAYLOAD: ${{ toJson(github.event.client_payload) }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/bot-broker-receipt.py --status PENDING
+
+      - name: 幂等命中（无需建 PR）
+        if: steps.validate.outcome == 'success' && steps.validate.outputs.decision == 'approve_idempotent'
+        run: |
+          echo "Idempotent: PR #${{ steps.validate.outputs.pr_number }} already satisfies this request; nothing to do."
+
+      - name: 断言 App ID 冻结值（AC14/FND-05）
+        if: steps.validate.outcome == 'success' && steps.validate.outputs.decision == 'approve'
+        run: |
+          set -euo pipefail
+          if [ "${{ vars.MODE2_BOT_APP_ID }}" != "5245332" ]; then
+            echo "FATAL: MODE2_BOT_APP_ID is not the frozen value 5245332; refusing to sign token" >&2
+            exit 1
+          fi
+          echo "App ID assertion passed: 5245332"
+
+      - name: 签发 App installation token（AC14）
+        if: steps.validate.outcome == 'success' && steps.validate.outputs.decision == 'approve'
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ vars.MODE2_BOT_APP_ID }}
+          private-key: ${{ secrets.MODE2_BOT_APP_PRIVATE_KEY }}
+          # FND-05 R2 实证：该 Action 在冻结 SHA 的 action.yml 中确有 permission-*
+          # 输入（54 个；语义为"授予该 token 的权限级别，可设 read/write"），只能相对
+          # installation 已授权限收窄，不能提权。建 PR 仅需 pull-requests:write；
+          # contents 收窄为 read（installation 级 Contents R&W 的进一步收窄仍需
+          # Human 在 App 设置中操作，见 R6）。
+          permission-pull-requests: write
+          permission-contents: read
+
+      - name: 建 PR 前重验 HEAD 与 diff 基准（AC10/FND-04）
+        if: steps.validate.outcome == 'success' && steps.validate.outputs.decision == 'approve'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ steps.validate.outputs.branch }}
+          SHA: ${{ steps.validate.outputs.sha }}
+          BASE_SHA: ${{ steps.validate.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/bot-broker-validate.py --recheck-head
+          # HEAD 已移动或 diff 基准（merge-base）变化 → exit 非零 → job 停止，不建 PR。
+
+      - name: 写回执 RUNNING（即将创建）
+        if: steps.validate.outcome == 'success' && steps.validate.outputs.decision == 'approve'
+        env:
+          # A+ 协议：仅用 GITHUB_TOKEN；本步骤 env 中绝不出现 App token。
+          # R4 D3：回执脚本复用校验器做防御性复验，marker 用重算的派生 ID。
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+          PAYLOAD: ${{ toJson(github.event.client_payload) }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BASE_SHA: ${{ steps.validate.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/bot-broker-receipt.py --status RUNNING
+
+      - name: 以 App 身份创建 PR（幂等，AC15/AC16/Q8）
+        id: create
+        if: steps.validate.outcome == 'success' && steps.validate.outputs.decision == 'approve'
+        env:
+          # App 身份；绝不使用 PAT / GITHUB_TOKEN 建 PR（AC15 作弊定义）。
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ steps.validate.outputs.branch }}
+          ISSUE: ${{ steps.validate.outputs.issue }}
+          SHA: ${{ steps.validate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # FND-02：防御性二次幂等检查复用校验器的完整归属核验
+          # （state/author/head.repo/base.repo/ref/sha）。
+          # 校验器发现冲突 PR 时直接 deny（非零退出）→ job 停止，绝不"找到编号就成功"。
+          # FND-09：拒绝 JSON 不得被吞 —— 捕获到的 deny JSON（含 decision/ac/reason/
+          # 冲突编号）原样输出到 stderr，保留证据。
+          if ! FIND_OUT="$(python3 .github/scripts/bot-broker-validate.py --find-idempotent)"; then
+            echo "FATAL: pre-create idempotency re-check denied the request" >&2
+            echo "DENY_EVIDENCE: ${FIND_OUT}" >&2
+            exit 1
+          fi
+          if [ -n "${FIND_OUT}" ]; then
+            echo "PR already exists: #${FIND_OUT} (idempotent, fully verified)"
+            # A+ 协议：竞态恢复的编号同样输出，供终态回执绑定。
+            echo "pr_number=${FIND_OUT}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # 标题/正文仅为元数据：只含已校验的 issue/branch，不含任何敏感信息（AC18）。
+          TITLE="Bot PR for issue #${ISSUE} (${BRANCH})"
+          BODY="由 bot-pr-broker 以 GitHub App 身份创建。关联 Issue #${ISSUE}，候选分支 ${BRANCH}。请求已通过 Broker 校验。"
+          if CREATE_OUT="$(gh pr create --repo "${REPO}" --head "${BRANCH}" --base main \
+              --title "${TITLE}" --body "${BODY}")"; then
+            echo "PR created; verifying created PR attribution..."
+            # FND-04 R2：绑定本次创建 —— 从 `gh pr create` 的输出解析 PR 编号，
+            # 再按该编号回读核验（head.sha==审核 sha 且作者==冻结 bot），
+            # 而不是按分支查列表（列表可能返回并发创建的其他 PR）。
+            PR_NUM="$(printf '%s\n' "${CREATE_OUT}" | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+' | head -n 1 || true)"
+            if [ -z "${PR_NUM}" ]; then
+              echo "FATAL: gh pr create succeeded but PR number could not be parsed from its output" >&2
+              echo "CREATE_OUTPUT: ${CREATE_OUT}" >&2
+              exit 1
+            fi
+            echo "Created PR #${PR_NUM}; verifying attribution..."
+            # 不符 → 明确报错（含 PR 编号），Human 人工处置；绝不静默（R9：只报不关）。
+            PR_NUMBER="${PR_NUM}" python3 .github/scripts/bot-broker-validate.py --verify-created
+            # A+ 协议：本次创建的编号输出，供终态回执绑定（CREATED 必须含编号/URL/SHA）。
+            echo "pr_number=${PR_NUM}" >> "$GITHUB_OUTPUT"
+          else
+            # FND-02：创建失败回读必须区分"并发已建"与"其他失败"：
+            # 只有回读到的 PR 满足全部归属条件才算幂等成功，否则失败退出。
+            # FND-09：回读拒绝的 JSON 同样保留证据。
+            echo "gh pr create failed; attempting attributed re-read..." >&2
+            if ! REREAD_OUT="$(python3 .github/scripts/bot-broker-validate.py --find-idempotent)"; then
+              echo "FATAL: create failed and re-read denied the request" >&2
+              echo "DENY_EVIDENCE: ${REREAD_OUT}" >&2
+              exit 1
+            fi
+            if [ -n "${REREAD_OUT}" ]; then
+              echo "PR already exists (race resolved): #${REREAD_OUT} (idempotent, fully verified)"
+              # A+ 协议：竞态恢复的编号同样输出，供终态回执绑定。
+              echo "pr_number=${REREAD_OUT}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "FATAL: gh pr create failed and no existing PR found" >&2
+            exit 1
+          fi
+
+      - name: 写回执终态（CREATED / REJECTED）
+        # R4 D3/D4：校验失败时由专用的 REJECTED 步骤处理；此处只处理校验通过路径。
+        # always() 保证创建步骤失败时仍尝试写终态；run 被取消时本步骤可能不执行 →
+        # 调用方按"无终态回执"走对账/超时路径。
+        # R4 FND-20：不再写 FAILED —— 创建已尝试但未确认时，--finalize 做 PR 对账：
+        # 找到匹配 PR → CREATED（绑定）；找不到 → 不写终态（调用方判 UNKNOWN/HOLD）。
+        if: always() && steps.validate.outcome == 'success'
+        env:
+          # A+ 协议：仅用 GITHUB_TOKEN（github-actions[bot] 身份）写回执评论。
+          # 本步骤 env 中绝不出现 App 签发步骤的 token 输出。
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+          PAYLOAD: ${{ toJson(github.event.client_payload) }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BASE_SHA: ${{ steps.validate.outputs.base_sha }}
+          VALIDATE_DECISION: ${{ steps.validate.outputs.decision }}
+          VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
+          VALIDATE_PR_NUMBER: ${{ steps.validate.outputs.pr_number }}
+          CREATE_PR_NUMBER: ${{ steps.create.outputs.pr_number }}
+          DENY_FILE: ${{ runner.temp }}/broker-deny.json
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/bot-broker-receipt.py --finalize
+          # 决策规则（见脚本 --finalize，R4 D4 修订）：
+          #   CREATE_PR_NUMBER 非空 → CREATED（绑定本次创建/竞态恢复的编号）
+          #   validate == approve_idempotent → CREATED（幂等命中，绑定既有编号）
+          #   validate outcome == failure → 仅有可信 deny 证据时写 REJECTED，
+          #     无证据 → 不写（调用方走 UNKNOWN/HOLD）
+          #   校验通过但无 CREATED 证据 → PR 对账：找到匹配 PR → CREATED；
+          #     找不到 → 不写终态（禁止 FND-20 式的 FAILED 伪装）
