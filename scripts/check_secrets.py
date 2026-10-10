@@ -19,7 +19,7 @@ from xml.etree import ElementTree
 KEY = r'(?:api[_-]?key|client[_-]?secret|refresh[_-]?token|access[_-]?token|id[_-]?token|private[_-]?key|password|passwd|session(?:[_-]?(?:token|id|cookie))?|cookie)'
 ASSIGNMENT = re.compile(
     r'(?i)(?<![\w])([\w.-]*' + KEY + r')[\"\']?[ \t]*[:=]'
-    r'(?:\s*\"([^\"\r\n]*)\"|\s*\'([^\'\r\n]*)\'|[ \t]*(\$\{[A-Z_][A-Z0-9_]*\}|[^\s,;\}\]\r\n]+))'
+    r'(?:\s*\"([^\"\r\n]*)\"|\s*\'([^\'\r\n]*)\'|[ \t]*(\$\{[A-Z_][A-Z0-9_]*\}|\$\{\{\s*[^}]+\s*\}\}|[^\s,;\}\]\r\n]+))'
 )
 PATTERNS = {
     'S_PRIVATE_KEY': re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----'),
@@ -27,7 +27,7 @@ PATTERNS = {
     'S_PROVIDER_TOKEN': re.compile(r'\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{30,}|AKIA[A-Z0-9]{16})\b'),
     'S_URL_CREDENTIAL': re.compile(r'https?://[^\s/@:]+:[^\s/@]+@'),
 }
-REFERENCE = re.compile(r'(?:\$\{[A-Z_][A-Z0-9_]*\}|\$[A-Z_][A-Z0-9_]*|<[A-Z_][A-Z0-9_]*>|\{\{[^}]+\}\})\Z')
+REFERENCE = re.compile(r'(?:\$\{[A-Z_][A-Z0-9_]*\}|\$[A-Z_][A-Z0-9_]*|<[A-Z_][A-Z0-9_]*>|\{\{[^}]+\}\}|\$\{\{\s*[^}]+\s*\}\})\Z')
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_MEMBERS = 2000
 
