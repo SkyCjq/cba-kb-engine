@@ -728,14 +728,19 @@ def _get_repo_root() -> Path:
 
 
 def _resolve_reports_dir(arg: str | None) -> Path:
-    """§6.3: 报告目录授权规则（F-01/F-02 修复版）。
+    """§6.3: 报告目录授权规则（F-01/F-02 修复版，N-01 加固）。
     
     - 仓库根从模块 __file__ 推导，不依赖 cwd
     - 先检查原始路径是否为符号链接，再 resolve（F-01）
     - 确保最终目标在仓库根内，不逃逸
+    - N-01: 测试覆盖仅在 pytest 下生效，防止生产滥用
     """
-    # 测试钩子：允许测试用临时目录模拟授权根（仅测试环境使用）
-    test_override = os.environ.get("R2_TEST_REPORTS_ROOT")
+    # N-01: 测试钩子仅在 pytest 环境下生效
+    # PYTEST_CURRENT_TEST 由 pytest 自动设置，生产环境不存在
+    # 防止生产调用者通过设置 R2_TEST_REPORTS_ROOT 绕过授权目录限制
+    test_override = None
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        test_override = os.environ.get("R2_TEST_REPORTS_ROOT")
     if test_override:
         raw = Path(test_override)
         # F-01: 先检查原始路径是否为符号链接
@@ -848,7 +853,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # F-06: 原子独占发布（防 TOCTOU）
+    # N-02: 确保 JSON+MD 作为一对原子发布，处理短写，失败时清理
     # 使用 O_CREAT|O_EXCL 确保不覆盖已存在文件
+    def _write_all(fd, data: bytes):
+        """处理短写，确保全部写入。"""
+        view = memoryview(data)
+        while view:
+            n = os.write(fd, view)
+            view = view[n:]
+    
     json_bytes = (json.dumps(rep, ensure_ascii=False, indent=2, sort_keys=False) + "\n").encode("utf-8")
     md_bytes = md_text.encode("utf-8")
     if not md_text.endswith("\n"):
@@ -857,24 +870,31 @@ def main(argv: list[str] | None = None) -> int:
     for attempt in range(6):
         json_path = reports_dir / f"{run_id}.reconciliation.json"
         md_path = reports_dir / f"{run_id}.reconciliation.md"
+        json_created = False
         try:
+            # 原子独占创建 JSON
             fd_j = os.open(json_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
             try:
-                os.write(fd_j, json_bytes)
+                _write_all(fd_j, json_bytes)
             finally:
                 os.close(fd_j)
+            json_created = True
+            # 原子独占创建 Markdown
             try:
                 fd_m = os.open(md_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
                 try:
-                    os.write(fd_m, md_bytes)
+                    _write_all(fd_m, md_bytes)
                 finally:
                     os.close(fd_m)
-            except FileExistsError:
-                try:
-                    json_path.unlink()
-                except OSError:
-                    pass
+            except (FileExistsError, OSError):
+                # MD 创建失败：删除已创建的 JSON，避免孤立文件（N-02）
+                if json_created:
+                    try:
+                        json_path.unlink()
+                    except OSError:
+                        pass
                 raise
+            # 成功：JSON+MD 配对完整
             break
         except FileExistsError:
             if attempt >= 5:

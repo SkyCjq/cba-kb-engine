@@ -413,6 +413,26 @@ def test_N06_cross_id_collision(tmp_path):
     assert "IDENTITY_CROSS_ID_COLLISION" in r["inbox/old"]["reason_codes"]
 
 
+def test_N06b_same_locator_diff_id(tmp_path):
+    # N-03: 不同 file_id、相同 SHA、相同 locator → 必须标记身份冲突
+    # 这是 F-03 移除 locator 豁免后的关键回归测试
+    bo = make_object("inbox/a", sha="e" * 64)
+    co = make_object("sources/b", sha="e" * 64)
+    # 相同 locator！
+    bev = make_evidence_for(bo, locator="loc://same")
+    cev = make_evidence_for(co, locator="loc://same")
+    b = make_manifest("r1-b", [bo], bev)
+    c = make_manifest("r1-c", [co], cev)
+    rc, rep, out, err = run_r2(b, c, tmp_path)
+    assert rc == 0, err
+    r = by_id(rep)
+    # 即使 locator 相同，不同 file_id + 同 SHA 必须冲突
+    assert r["inbox/a"]["status"] == "REVIEW_REQUIRED"
+    assert r["sources/b"]["status"] == "REVIEW_REQUIRED"
+    assert "IDENTITY_CROSS_ID_COLLISION" in r["inbox/a"]["reason_codes"]
+    assert "IDENTITY_CROSS_ID_COLLISION" in r["sources/b"]["reason_codes"]
+
+
 def test_N07_missing_object_evidence(tmp_path):
     o = make_object("m-1")
     # 只有 SOURCE 证据，无 OBJECT
@@ -452,14 +472,29 @@ def test_N09_process_conflict(tmp_path):
 
 
 def test_N10_dup_file_id(tmp_path):
+    # F-07: 确保重复 file_id 是唯一的错误条件（证据 ID 必须唯一）
     o1 = make_object("dup-1", sha="a" * 64)
     o2 = make_object("dup-1", sha="b" * 64)
-    ev = make_evidence_for(o1) + make_evidence_for(o2)
+    # 手动创建唯一证据 ID，避免与 file_id 重复混杂
+    ev1 = []
+    for k in ("OBJECT", "PROCESS"):
+        eid = f"ev-dup-1-{k.lower()}-a"
+        rc = f"PROCESS:{o1['processing_status']}" if k == "PROCESS" else None
+        ev1.append(make_evidence(eid, "dup-1", k, reason_code=rc))
+    o1["evidence_reference"] = [e["evidence_id"] for e in ev1]
+    ev2 = []
+    for k in ("OBJECT", "PROCESS"):
+        eid = f"ev-dup-1-{k.lower()}-b"
+        rc = f"PROCESS:{o2['processing_status']}" if k == "PROCESS" else None
+        ev2.append(make_evidence(eid, "dup-1", k, reason_code=rc))
+    o2["evidence_reference"] = [e["evidence_id"] for e in ev2]
+    ev = ev1 + ev2
     b = make_manifest("r1-b", [o1, o2], ev)
     c = make_manifest("r1-c", [], [])
     rc, rep, out, err = run_r2(b, c, tmp_path)
     assert rc == 1
-    assert rep is None  # 整体失败，不发布正式报告
+    assert rep is None
+    assert "duplicate" in err.lower() or "file_id" in err.lower()
 
 
 def test_N11_dup_evidence_id(tmp_path):
@@ -482,10 +517,28 @@ def test_N12_bad_reference(tmp_path):
 
 
 def test_N13_bad_json(tmp_path):
+    # F-09: Baseline 非法 JSON，Current 为有效 R1 manifest
+    # 隔离条件：只有 baseline 无效，确保拒绝原因明确
+    o = make_object("x-1")
+    ev = make_evidence_for(o)
+    c = make_manifest("r1-c", [o], ev)  # 有效 R1 manifest
     bp = tmp_path / "baseline.json"
     cp = tmp_path / "current.json"
     bp.write_text("{invalid json", encoding="utf-8")
-    cp.write_text("{}", encoding="utf-8")
+    cp.write_text(json.dumps(c), encoding="utf-8")
+    rdir = tmp_path / "reports"
+    rdir.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO / "src") + os.pathsep + env.get("PYTHONPATH", "")
+    env["R2_TEST_REPORTS_ROOT"] = str(rdir)
+    # pytest 自动设置 PYTEST_CURRENT_TEST，测试覆盖生效
+    p = subprocess.run([str(CLI), "--baseline", str(bp), "--current", str(cp)],
+                       cwd=tmp_path, capture_output=True, text=True, timeout=60,
+                       env=env)
+    assert p.returncode == 1
+    assert "json" in p.stderr.lower()
+    # 确认未发布正式报告（隔离：不是因 current 无效）
+    assert list(rdir.glob("*.reconciliation.json")) == []
     rdir = tmp_path / "reports"
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO / "src") + os.pathsep + env.get("PYTHONPATH", "")

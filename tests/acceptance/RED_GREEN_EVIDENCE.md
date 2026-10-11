@@ -17,7 +17,7 @@ FileNotFoundError: [Errno 2] No such file or directory: '/tmp/kb/scripts/r2-reco
 **结论**：无实现时测试失败，符合证伪要求。失败原因是 CLI 不存在（环境级），
 而非业务逻辑错误。这证明测试确实依赖真实 CLI，而非 mock。
 
-## GREEN（2026-10-11 15:18Z，Q2 FAIL 修复后）
+## GREEN（2026-10-11，Q2 FAIL 修复后）
 
 **条件**：恢复实现文件，完成 F-01～F-11 修复
 
