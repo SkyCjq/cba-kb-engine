@@ -340,12 +340,21 @@ def find_identity_conflicts(b_objs, c_objs, b_ev, c_ev) -> dict[str, set[str]]:
         sides = {s for s, _ in lst}
         if "b" not in sides or "c" not in sides:
             continue
-        # F-03: 不同 file_id + 同 SHA = 身份冲突，必须人工复核
-        # file_id 是主键；两个不同主键对应相同内容哈希，本质上可疑
-        fids_b = {f for s, f in lst if s == "b"}
-        fids_c = {f for s, f in lst if s == "c"}
-        # 如果两侧的 file_id 集合不完全相同（存在跨 ID），则标记冲突
-        if fids_b != fids_c:
+        # F-03 (Round 3): 严格成对检查
+        # 只要存在跨侧、不同 file_id 的组合共享同 SHA，就标记冲突
+        # 不再比较集合是否相等；即使集合相等，只要有交叉配对就标记
+        # 反例：baseline {A(h), B(h)} vs current {A(h), B(h)}
+        #   (b,A) vs (c,B): 不同侧、不同 ID → 冲突
+        #   (b,B) vs (c,A): 不同侧、不同 ID → 冲突
+        cross_found = False
+        for s1, f1 in lst:
+            for s2, f2 in lst:
+                if s1 != s2 and f1 != f2:
+                    cross_found = True
+                    break
+            if cross_found:
+                break
+        if cross_found:
             for s, fid in lst:
                 add(fid, "IDENTITY_CROSS_ID_COLLISION")
         # 注意：同 file_id 的情况已在 IDENTITY_PATH_CONFLICT 中处理
@@ -853,13 +862,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # F-06: 原子独占发布（防 TOCTOU）
-    # N-02: 确保 JSON+MD 作为一对原子发布，处理短写，失败时清理
+    # N-02/R3-N-01/R3-N-02/R3-N-03: 确保 JSON+MD 作为一对原子发布
     # 使用 O_CREAT|O_EXCL 确保不覆盖已存在文件
     def _write_all(fd, data: bytes):
-        """处理短写，确保全部写入。"""
+        """处理短写，确保全部写入。R3-N-03: 检测零写入。"""
         view = memoryview(data)
         while view:
             n = os.write(fd, view)
+            if n == 0:
+                raise OSError("os.write returned 0 (no progress)")
             view = view[n:]
     
     json_bytes = (json.dumps(rep, ensure_ascii=False, indent=2, sort_keys=False) + "\n").encode("utf-8")
@@ -871,32 +882,33 @@ def main(argv: list[str] | None = None) -> int:
         json_path = reports_dir / f"{run_id}.reconciliation.json"
         md_path = reports_dir / f"{run_id}.reconciliation.md"
         json_created = False
+        md_created = False
         try:
             # 原子独占创建 JSON
+            # R3-N-01: os.open 成功后立即标记，写入失败也要清理
             fd_j = os.open(json_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            json_created = True  # 文件已创建（即使写入失败也要清理）
             try:
                 _write_all(fd_j, json_bytes)
             finally:
                 os.close(fd_j)
-            json_created = True
             # 原子独占创建 Markdown
+            fd_m = os.open(md_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            md_created = True  # R3-N-02: 同样立即标记
             try:
-                fd_m = os.open(md_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-                try:
-                    _write_all(fd_m, md_bytes)
-                finally:
-                    os.close(fd_m)
-            except (FileExistsError, OSError):
-                # MD 创建失败：删除已创建的 JSON，避免孤立文件（N-02）
-                if json_created:
-                    try:
-                        json_path.unlink()
-                    except OSError:
-                        pass
-                raise
+                _write_all(fd_m, md_bytes)
+            finally:
+                os.close(fd_m)
             # 成功：JSON+MD 配对完整
             break
         except FileExistsError:
+            # run_id 碰撞：清理已创建的文件（如果有），生成新 ID 重试
+            for p, created in ((json_path, json_created), (md_path, md_created)):
+                if created:
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
             if attempt >= 5:
                 print("error: cannot allocate unused run_id", file=sys.stderr)
                 return 1
@@ -913,6 +925,13 @@ def main(argv: list[str] | None = None) -> int:
             if not md_text.endswith("\n"):
                 md_bytes += b"\n"
         except OSError as e:
+            # R3-N-01/R3-N-02: 写入失败时清理所有已创建的文件
+            for p, created in ((json_path, json_created), (md_path, md_created)):
+                if created:
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
             print(f"error: write failed: {e}", file=sys.stderr)
             return 1
 
