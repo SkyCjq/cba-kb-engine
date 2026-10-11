@@ -9,7 +9,7 @@ permissions:
   contents: read       # Read trusted workflow metadata at the execution SHA.
   pull-requests: read  # Read live PR and commit-to-PR associations.
   issues: read         # Read the original comment and the complete comment list.
-  actions: write       # Read runs/jobs and POST only rerun-failed-jobs.
+  actions: read       # Read runs/jobs and POST only rerun-failed-jobs.
 concurrency:
   group: 'm2c-pr-${{ github.repository_id }}-${{ github.event.issue.number }}'
   cancel-in-progress: false
