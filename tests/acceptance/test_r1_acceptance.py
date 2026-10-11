@@ -62,6 +62,98 @@ def anchor(file_id):
     return "obj-" + hashlib.sha256(file_id.encode("utf-8")).hexdigest()
 
 
+def validate_manifest(schema, manifest):
+    import re
+    from datetime import datetime
+
+    types = {
+        "object": lambda value: isinstance(value, dict),
+        "array": lambda value: isinstance(value, list),
+        "string": lambda value: isinstance(value, str),
+        "null": lambda value: value is None,
+        "boolean": lambda value: isinstance(value, bool),
+    }
+    timestamp = re.compile(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt]"
+        r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
+        r"(?:\.[0-9]+)?(?:[Zz]|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])"
+    )
+
+    def check(node, value, path):
+        if "$ref" in node:
+            ref = node["$ref"]
+            require(ref.startswith("#/$defs/"), f"{path}: unsupported $ref: {ref}")
+            name = ref[len("#/$defs/"):].replace("~1", "/").replace("~0", "~")
+            require(name in schema["$defs"], f"{path}: unresolved $ref: {ref}")
+            check(schema["$defs"][name], value, path)
+        if "type" in node:
+            allowed = node["type"]
+            if isinstance(allowed, str):
+                allowed = [allowed]
+            require(all(kind in types for kind in allowed),
+                    f"{path}: unsupported schema type")
+            require(any(types[kind](value) for kind in allowed),
+                    f"{path}: expected type {allowed}")
+        if "enum" in node:
+            require(value in node["enum"], f"{path}: invalid enum value {value!r}")
+        if "const" in node:
+            require(value == node["const"], f"{path}: expected const {node['const']!r}")
+        if isinstance(value, str):
+            if "minLength" in node:
+                require(len(value) >= node["minLength"],
+                        f"{path}: minLength {node['minLength']} violated")
+            if "pattern" in node:
+                require(re.search(node["pattern"], value) is not None,
+                        f"{path}: pattern {node['pattern']!r} violated")
+            if "format" in node:
+                require(node["format"] == "date-time", f"{path}: unsupported format")
+                require(timestamp.fullmatch(value) is not None,
+                        f"{path}: invalid date-time {value!r}")
+                normalized = value[:10] + "T" + value[11:]
+                if normalized.endswith(("Z", "z")):
+                    normalized = normalized[:-1] + "+00:00"
+                try:
+                    parsed = datetime.fromisoformat(normalized)
+                except ValueError:
+                    require(False, f"{path}: invalid date-time {value!r}")
+                require(parsed.tzinfo is not None,
+                        f"{path}: date-time requires a timezone")
+        if isinstance(value, dict):
+            for key in node.get("required", []):
+                require(key in value, f"{path}.{key}: missing required field")
+            properties = node.get("properties", {})
+            if node.get("additionalProperties") is False:
+                for key in value:
+                    require(key in properties, f"{path}.{key}: additional property")
+            for key, child in properties.items():
+                if key in value:
+                    check(child, value[key], f"{path}.{key}")
+        if isinstance(value, list):
+            if "minItems" in node:
+                require(len(value) >= node["minItems"],
+                        f"{path}: minItems {node['minItems']} violated")
+            if "items" in node:
+                for index, item in enumerate(value):
+                    check(node["items"], item, f"{path}[{index}]")
+            if node.get("uniqueItems") is True:
+                for index, item in enumerate(value):
+                    require(item not in value[:index],
+                            f"{path}[{index}]: duplicate item")
+        for child in node.get("allOf", []):
+            check(child, value, path)
+        if "if" in node:
+            try:
+                check(node["if"], value, path)
+            except AssertionError:
+                matches = False
+            else:
+                matches = True
+            if matches and "then" in node:
+                check(node["then"], value, path)
+
+    check(schema, manifest, "$")
+
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
@@ -71,11 +163,7 @@ def main(argv=None):
     oracle = read_json(oracle_path)
     report = Path(report_path).read_text(encoding="utf-8")
 
-    from jsonschema import Draft202012Validator, FormatChecker
-    Draft202012Validator.check_schema(schema)
-    Draft202012Validator(
-        schema, format_checker=FormatChecker()
-    ).validate(manifest)
+    validate_manifest(schema, manifest)
 
     # Common gate: independent review, not scanner self-attestation.
     review = oracle["runtime_review"]
