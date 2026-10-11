@@ -1,0 +1,304 @@
+# 2.0.3-3-P0 / frozen specification v1
+# Default-branch control plane. Never checkout or execute PR content.
+name: mode2-review-coordinator
+run-name: 'm2c:${{ github.event.issue.number }}:${{ github.event.comment.id }}'
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read       # Read trusted workflow metadata at the execution SHA.
+  pull-requests: read  # Read live PR and commit-to-PR associations.
+  issues: read         # Read the original comment and the complete comment list.
+  actions: write       # Read runs/jobs and POST only rerun-failed-jobs.
+concurrency:
+  group: 'm2c-pr-${{ github.repository_id }}-${{ github.event.issue.number }}'
+  cancel-in-progress: false
+  queue: max
+jobs:
+  coordinate:
+    name: mode2-review-coordinate
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      EXECUTION_SHA: ${{ github.sha }}
+      TRUSTED_IDENTITIES: '[{"login":"SkyCjq","id":5900732,"type":"User"}]'
+      TRUSTED_WORKFLOW_BLOB: '419dd9d05a80a74779d577278078ca8a3f12f412'
+    steps:
+      - name: Validate, reserve, rerun original failure, and observe
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          work=$(mktemp -d)
+          event_id=null; pr=null; head=''; original=null
+          old_attempt=null; new_attempt=null; http=''; post_http=''
+          state=HOLD; reason=UNEXPECTED_ERROR; seq=0
+          finish() {
+            rc=$?
+            trap - EXIT
+            jq -nc --arg task '2.0.3-3-P0' --arg state "$state" \
+              --arg reason "$reason" --arg head "$head" --arg http "$http" \
+              --arg post_http "$post_http" --arg repo "$REPO" \
+              --argjson event_id "$event_id" --argjson pr "$pr" \
+              --argjson run "$original" --argjson old "$old_attempt" \
+              --argjson new "$new_attempt" --argjson coordinator "$GITHUB_RUN_ID" \
+              --argjson coordinator_attempt "$GITHUB_RUN_ATTEMPT" \
+              '{task_id:$task,repository:$repo,event_id:$event_id,
+                comment_id:$event_id,pr_number:$pr,head_sha:
+                (if $head=="" then null else $head end),original_run_id:$run,
+                original_attempt:$old,new_attempt:$new,final_state:$state,
+                reason:$reason,last_http:$http,rerun_http:$post_http,
+                coordinator_run_id:$coordinator,
+                coordinator_attempt:$coordinator_attempt}' > "$work/result.json"
+            cat "$work/result.json"
+            { echo '### Mode2 review coordination'; echo '```json';
+              cat "$work/result.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            rm -rf "$work"
+            if [[ "$state" == PASS ]]; then exit 0; fi
+            if [[ "$rc" == 0 ]]; then exit 1; fi
+            exit "$rc"
+          }
+          trap finish EXIT
+          hold() { state=HOLD; reason="$1"; exit 1; }
+          api() {
+            local method="$1" path="$2" out="$3" code rc tries request_id
+            for tries in 1 2 3; do
+              rc=0
+              code=$(curl --silent --show-error --proto '=https' \
+                --connect-timeout 10 --max-time 30 \
+                -X "$method" -H "Authorization: Bearer $GH_TOKEN" \
+                -H 'Accept: application/vnd.github+json' \
+                -H 'X-GitHub-Api-Version: 2022-11-28' \
+                -D "$work/headers" -o "$out" -w '%{http_code}' \
+                "https://api.github.com/repos/$REPO/$path") || rc=$?
+              http="${code:-000}"
+              request_id=$(awk 'tolower($1)=="x-github-request-id:" {gsub(/\r/,"",$2); print $2}' "$work/headers")
+              seq=$((seq+1))
+              jq -nc --argjson seq "$seq" --arg method "$method" \
+                --arg endpoint "$path" --arg code "$http" --arg request_id "$request_id" --argjson transport "$rc" \
+                '{kind:"HTTP",seq:$seq,method:$method,endpoint:$endpoint,
+                  http_status:$code,github_request_id:$request_id,
+                  transport_exit:$transport}' | tee -a "$work/http.jsonl"
+              if [[ "$http" == 401 || "$http" == 403 ]]; then
+                jq -c '{kind:"AUTH_RESPONSE",message,documentation_url,status}' "$out" || true
+                [[ "$method" != POST ]] || post_http="$http"
+                state=AUTH_FAIL; reason=AUTHORIZATION_DENIED; exit 1
+              fi
+              if [[ "$method" == POST ]]; then
+                post_http="$http"
+                # Never retry a write: a timeout/5xx may follow an accepted request.
+                [[ "$rc" == 0 && "$http" == 201 ]] || hold POST_UNCONFIRMED
+                return
+              fi
+              if [[ "$rc" == 0 && "$http" == 200 ]]; then
+                jq -e . "$out" >/dev/null || hold API_JSON_INVALID
+                return
+              fi
+              if [[ "$rc" == 0 && "$http" != 429 && "$http" != 5?? ]]; then
+                hold API_READ_REJECTED
+              fi
+              [[ "$tries" != 3 ]] || hold API_READ_RETRY_EXHAUSTED
+              sleep $((2**tries))
+            done
+          }
+          list_object() {
+            local path="$1" key="$2" out="$3" page count total joined separator
+            separator='?'
+            [[ "$path" != *\?* ]] || separator='&'
+            echo '[]' > "$out"
+            for page in {1..10}; do
+              api GET "${path}${separator}per_page=100&page=$page" "$work/page.json"
+              jq -e --arg key "$key" \
+                '(.total_count|type)=="number" and (.[$key]|type)=="array"' \
+                "$work/page.json" >/dev/null || hold API_LIST_INVALID
+              total=$(jq -r .total_count "$work/page.json")
+              ((total<1000)) || hold ENUMERATION_LIMIT
+              count=$(jq --arg key "$key" '.[$key]|length' "$work/page.json")
+              jq -s --arg key "$key" '.[0]+.[1][$key]' "$out" "$work/page.json" > "$work/joined"
+              mv "$work/joined" "$out"
+              if ((count<100)); then
+                joined=$(jq length "$out")
+                ((joined==total)) || hold ENUMERATION_CHANGED
+                jq -e 'length==([.[].id]|unique|length)' "$out" >/dev/null || hold DUPLICATE_API_ID
+                return
+              fi
+            done
+            hold ENUMERATION_LIMIT
+          }
+          list_array() {
+            local path="$1" out="$2" page count
+            echo '[]' > "$out"
+            for page in {1..10}; do
+              api GET "$path?per_page=100&page=$page" "$work/page.json"
+              jq -e 'type=="array"' "$work/page.json" >/dev/null || hold API_LIST_INVALID
+              count=$(jq length "$work/page.json")
+              jq -s '.[0]+.[1]' "$out" "$work/page.json" > "$work/joined"
+              mv "$work/joined" "$out"
+              if ((count<100)); then
+                jq -e 'length==([.[].id]|unique|length)' "$out" >/dev/null || hold DUPLICATE_API_ID
+                return
+              fi
+            done
+            hold ENUMERATION_LIMIT
+          }
+          jq -e '.comment.id>0 and .issue.number>0' "$GITHUB_EVENT_PATH" >/dev/null || hold EVENT_INVALID
+          event_id=$(jq -r .comment.id "$GITHUB_EVENT_PATH")
+          pr=$(jq -r .issue.number "$GITHUB_EVENT_PATH")
+          [[ "$REPO" == SkyCjq/cba-kb-engine ]] || hold REPOSITORY_MISMATCH
+          jq -e '.action=="created" and .issue.pull_request!=null' \
+            "$GITHUB_EVENT_PATH" >/dev/null || hold NOT_PR_CREATED_COMMENT
+          api GET "pulls/$pr" "$work/pr.json"
+          head=$(jq -r '.head.sha // ""' "$work/pr.json")
+          jq -e --argjson pr "$pr" --arg repo "$REPO" \
+            '.number==$pr and .state=="open" and .base.ref=="main" and
+             .base.repo.full_name==$repo and .head.repo.full_name==$repo and
+             (.head.sha|test("^[0-9a-f]{40}$"))' "$work/pr.json" >/dev/null || hold PR_CONTEXT_REJECTED
+          api GET "issues/comments/$event_id" "$work/comment.json"
+          jq -e --arg repo "$REPO" --argjson pr "$pr" --slurpfile e "$GITHUB_EVENT_PATH" \
+            '.id==$e[0].comment.id and .user.id==$e[0].comment.user.id and
+             .body==$e[0].comment.body and .created_at==.updated_at and
+             .issue_url==("https://api.github.com/repos/"+$repo+"/issues/"+($pr|tostring))' \
+            "$work/comment.json" >/dev/null || hold COMMENT_CHANGED_OR_MISBOUND
+          jq -e --argjson trusted "$TRUSTED_IDENTITIES" \
+            '.user as $u | any($trusted[]; .id==$u.id and .login==$u.login and .type==$u.type)' \
+            "$work/comment.json" >/dev/null || hold UNTRUSTED_AUTHOR
+          created=$(jq -r .created_at "$work/comment.json")
+          born=$(date -u -d "$created" +%s) || hold COMMENT_TIME_INVALID
+          age=$(($(date -u +%s)-born))
+          ((age>=0 && age<=3600)) || hold COMMENT_EXPIRED
+          # The existing gate binds task_id to the Issue referenced in the PR body.
+          jq '[((.body // "") | match("(?:closes|fixes|resolves)\\s+#([0-9]+)";"ig"))
+               | .captures[0].string] | unique' "$work/pr.json" > "$work/issues.json"
+          [[ $(jq length "$work/issues.json") == 1 ]] || hold TASK_BINDING_AMBIGUOUS
+          issue=$(jq -r '.[0]' "$work/issues.json")
+          cat > "$work/marker.jq" <<'JQ'
+          def marker:
+            (.body // "") as $b |
+            if ($b|utf8bytelength)>16384 or
+               ([$b|scan("<!--[ \\t]*mode2-review")]|length)!=1
+            then null else
+              try ($b | capture("\\A[ \\t\\r\\n]*<!-- mode2-review (?<json>[^\\r\\n]+) -->[ \\t]*(?:\\r?\\n[\\s\\S]*)?\\z")
+                | .json as $raw |
+                if ($raw | gsub("\"([^\"\\\\]|\\\\.)*\""; "") |
+                  test("(^|[^A-Za-z0-9_])(NaN|Infinity)([^A-Za-z0-9_]|$)"))
+                then null else ($raw | fromjson) end) catch null
+            end;
+          def valid($head;$issue;$pr):
+            type=="object" and .reviewed_head_sha==$head and
+            (.reviewed_head_sha|type)=="string" and
+            (.reviewed_head_sha|test("^[0-9a-f]{40}$")) and
+            .task_id==("ISSUE-"+$issue) and
+            (.verdict=="PASS" or .verdict=="PASS_WITH_NOTES") and
+            (.critical|type)=="array" and (.critical|length)<=100 and
+            all(.critical[]; type=="object" and
+              (.status=="CLOSED" or .status=="RESOLVED" or .status=="FIXED")) and
+            ((has("pr_number")|not) or
+              ((.pr_number|type)=="number" and .pr_number==$pr));
+          JQ
+          jq -e -L "$work" --arg head "$head" --arg issue "$issue" --argjson pr "$pr" \
+            'include "marker"; marker | valid($head;$issue;$pr)' "$work/comment.json" \
+            >/dev/null || hold MARKER_INVALID_OR_STALE
+          # API metadata ties workflow identity to the controlled path, not its name.
+          api GET "contents/.github/workflows/pr-gate-trusted.yml?ref=$EXECUTION_SHA" "$work/definition.json"
+          jq -e --arg blob "$TRUSTED_WORKFLOW_BLOB" '.type=="file" and .sha==$blob' \
+            "$work/definition.json" >/dev/null || hold TRUSTED_DEFINITION_DRIFT
+          api GET 'actions/workflows/pr-gate-trusted.yml' "$work/workflow.json"
+          jq -e '.path==".github/workflows/pr-gate-trusted.yml" and .state=="active"' \
+            "$work/workflow.json" >/dev/null || hold WORKFLOW_IDENTITY_REJECTED
+          workflow_id=$(jq -r .id "$work/workflow.json")
+          api GET 'actions/workflows/mode2-review-coordinator.yml' "$work/coordinator.json"
+          coordinator_id=$(jq -r .id "$work/coordinator.json")
+          jq -e '.path==".github/workflows/mode2-review-coordinator.yml" and .state=="active"' \
+            "$work/coordinator.json" >/dev/null || hold COORDINATOR_IDENTITY_REJECTED
+          api GET "actions/runs/$GITHUB_RUN_ID" "$work/self.json"
+          jq -e --argjson wf "$coordinator_id" '.workflow_id==$wf and .event=="issue_comment"' \
+            "$work/self.json" >/dev/null || hold COORDINATOR_RUN_REJECTED
+          [[ "$GITHUB_RUN_ATTEMPT" == 1 ]] || hold DUPLICATE_COORDINATOR_ATTEMPT
+          lower=$(date -u -d "@$((born-120))" '+%Y-%m-%dT%H:%M:%SZ')
+          list_object "actions/workflows/$coordinator_id/runs?event=issue_comment&created=%3E%3D$lower" \
+            workflow_runs "$work/history.json"
+          title="m2c:$pr:$event_id"
+          jq -e --argjson self "$GITHUB_RUN_ID" 'any(.[]; .id==$self)' \
+            "$work/history.json" >/dev/null || hold HISTORY_INCOMPLETE
+          winner=$(jq --arg title "$title" '[.[]|select(.display_title==$title)]|min_by(.id)|.id' "$work/history.json")
+          [[ "$winner" == "$GITHUB_RUN_ID" ]] || hold DUPLICATE_COMMENT_EVENT
+          # Distinct fast comments elect one immutable valid review for this HEAD.
+          list_array "issues/$pr/comments" "$work/comments.json"
+          elected=$(jq -r -L "$work" --argjson trusted "$TRUSTED_IDENTITIES" \
+            --arg head "$head" --arg issue "$issue" --argjson pr "$pr" \
+            'include "marker"; [.[] | select(.created_at==.updated_at) |
+              select(.user as $u | any($trusted[]; .id==$u.id and .login==$u.login and .type==$u.type)) |
+              select((marker | valid($head;$issue;$pr))==true)] |
+              sort_by(.created_at,.id) | .[0].id // 0' "$work/comments.json")
+          [[ "$elected" == "$event_id" ]] || hold REVIEW_ALREADY_RESERVED
+          # Strict unique HEAD->PR association; closed competing PRs also cause HOLD.
+          list_array "commits/$head/pulls" "$work/associations.json"
+          jq -e --argjson pr "$pr" --arg head "$head" --arg repo "$REPO" \
+            'length==1 and .[0].number==$pr and .[0].state=="open" and
+             .[0].head.sha==$head and .[0].base.ref=="main" and
+             .[0].base.repo.full_name==$repo and .[0].head.repo.full_name==$repo' \
+            "$work/associations.json" >/dev/null || hold RUN_PR_ASSOCIATION_AMBIGUOUS
+          list_object "actions/runs?head_sha=$head&event=pull_request_target" \
+            workflow_runs "$work/runs.json"
+          jq --argjson wf "$workflow_id" --arg head "$head" --slurpfile pr "$work/pr.json" \
+            '[.[]|select(.workflow_id==$wf and .path==".github/workflows/pr-gate-trusted.yml" and
+              .event=="pull_request_target" and .head_sha==$head and
+              .head_branch==$pr[0].head.ref and .head_repository.id==$pr[0].head.repo.id and
+              .repository.id==$pr[0].base.repo.id)]' "$work/runs.json" > "$work/candidates.json"
+          jq -e 'length>0 and all(.[]; .status=="completed")' \
+            "$work/candidates.json" >/dev/null || hold NO_COMPLETED_UNAMBIGUOUS_RUN
+          jq 'sort_by(.created_at,.id)|last' "$work/candidates.json" > "$work/target.json"
+          original=$(jq -r .id "$work/target.json")
+          old_attempt=$(jq -r .run_attempt "$work/target.json")
+          jq -e --argjson pr "$pr" '.conclusion=="failure" and .run_attempt==1 and
+            (.pull_requests|type)=="array" and
+            ((.pull_requests|length)==0 or
+             ((.pull_requests|length)==1 and .pull_requests[0].number==$pr))' \
+            "$work/target.json" >/dev/null || hold TARGET_NOT_INITIAL_POLICY_FAILURE
+          list_object "actions/runs/$original/attempts/$old_attempt/jobs" jobs "$work/jobs.json"
+          jq -e 'length==1 and .[0].name=="policy" and .[0].status=="completed" and
+            .[0].conclusion=="failure" and
+            any(.[0].steps[]; .name=="目标分支守卫（checkout 前）" and .conclusion=="success")' \
+            "$work/jobs.json" >/dev/null || hold POLICY_OR_BASE_GUARD_NOT_PROVEN
+          # Close the last read->write gap as far as the REST API allows.
+          api GET "pulls/$pr" "$work/now.json"
+          jq -e --slurpfile before "$work/pr.json" '.state=="open" and
+            .head.sha==$before[0].head.sha and .head.ref==$before[0].head.ref and
+            .head.repo.id==$before[0].head.repo.id and
+            .base.ref==$before[0].base.ref and .base.sha==$before[0].base.sha and
+            .base.repo.id==$before[0].base.repo.id' "$work/now.json" >/dev/null || hold PR_CHANGED_BEFORE_POST
+          api GET "issues/comments/$event_id" "$work/now-comment.json"
+          jq -e --slurpfile before "$work/comment.json" '.id==$before[0].id and
+            .user==$before[0].user and .body==$before[0].body and
+            .created_at==.updated_at' "$work/now-comment.json" >/dev/null || hold COMMENT_CHANGED_BEFORE_POST
+          api GET "actions/runs/$original" "$work/now-run.json"
+          jq -e --slurpfile before "$work/target.json" '.id==$before[0].id and
+            .workflow_id==$before[0].workflow_id and .event=="pull_request_target" and
+            .head_sha==$before[0].head_sha and .status=="completed" and
+            .conclusion=="failure" and .run_attempt==$before[0].run_attempt' \
+            "$work/now-run.json" >/dev/null || hold RUN_CHANGED_BEFORE_POST
+          api POST "actions/runs/$original/rerun-failed-jobs" "$work/post.json"
+          # At most 30 observations, once per 30 seconds; never POST again.
+          for observation in {1..30}; do
+            sleep 30
+            api GET "pulls/$pr" "$work/now.json"
+            jq -e --slurpfile before "$work/pr.json" '.state=="open" and
+              .head.sha==$before[0].head.sha and .base.ref=="main" and
+              .base.sha==$before[0].base.sha' "$work/now.json" >/dev/null || hold PR_CHANGED_DURING_RERUN
+            api GET "actions/runs/$original" "$work/observed.json"
+            observed=$(jq -r .run_attempt "$work/observed.json")
+            if [[ "$observed" == "$old_attempt" ]]; then continue; fi
+            new_attempt="$observed"
+            [[ "$observed" == "$((old_attempt+1))" ]] || hold ATTEMPT_INTERFERENCE
+            jq -e --slurpfile before "$work/target.json" '.id==$before[0].id and
+              .workflow_id==$before[0].workflow_id and .event=="pull_request_target" and
+              .head_sha==$before[0].head_sha' "$work/observed.json" >/dev/null || hold OBSERVED_RUN_MISMATCH
+            [[ $(jq -r .status "$work/observed.json") == completed ]] || continue
+            [[ $(jq -r .conclusion "$work/observed.json") == success ]] || hold RERUN_NON_SUCCESS
+            list_object "actions/runs/$original/attempts/$new_attempt/jobs" jobs "$work/final-jobs.json"
+            jq -e 'length==1 and .[0].name=="policy" and .[0].status=="completed" and
+              .[0].conclusion=="success"' "$work/final-jobs.json" >/dev/null || hold POLICY_NOT_PASS
+            state=PASS; reason=ORIGINAL_POLICY_REVALIDATED; exit 0
+          done
+          hold RERUN_OBSERVATION_EXHAUSTED
