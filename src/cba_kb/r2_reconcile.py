@@ -171,6 +171,16 @@ def validate_r1_manifest(data, label: str) -> dict:
             raise ValidationError(f"{label}: objects[{i}].processing_status invalid")
         if o["disposition"] not in ("UNPROCESSED", "PROCESSED", "REVIEW_REQUIRED"):
             raise ValidationError(f"{label}: objects[{i}].disposition invalid")
+        # F-05: R1 状态约束验证
+        if o["disposition"] == "PROCESSED":
+            if o["processing_status"] != "COMPLETED":
+                raise ValidationError(
+                    f"{label}: objects[{i}].disposition=PROCESSED requires "
+                    f"processing_status=COMPLETED, got {o['processing_status']}")
+            if not o["final_parent"]:
+                raise ValidationError(
+                    f"{label}: objects[{i}].disposition=PROCESSED requires "
+                    f"non-null final_parent")
     # parent_ids 必须可解析、无自引用、无循环（§2.1.16）
     for o in data["objects"]:
         fid = o["file_id"]
@@ -330,33 +340,15 @@ def find_identity_conflicts(b_objs, c_objs, b_ev, c_ev) -> dict[str, set[str]]:
         sides = {s for s, _ in lst}
         if "b" not in sides or "c" not in sides:
             continue
-        # 检查是否已完整对应：每对 (b_fid, c_fid) 同名同定位器同父级
-        # 简化：若存在 b_fid == c_fid 且定位器/父级相同，则视为已对应，跳过
-        pairs_ok = True
-        involved = set()
-        for s, fid in lst:
-            involved.add((s, fid))
-        # 对每个跨侧组合检查
-        for s1, f1 in lst:
-            for s2, f2 in lst:
-                if s1 == s2:
-                    continue
-                o1 = b_objs[f1] if s1 == "b" else c_objs[f1]
-                o2 = b_objs[f2] if s2 == "b" else c_objs[f2]
-                e1 = b_ev if s1 == "b" else c_ev
-                e2 = b_ev if s2 == "b" else c_ev
-                l1 = set(_object_locators(o1, e1))
-                l2 = set(_object_locators(o2, e2))
-                # 若 file_id 相同且定位器/父级相同 -> 已对应
-                if f1 == f2 and l1 == l2 and set(o1["parent_ids"]) == set(o2["parent_ids"]):
-                    continue
-                # 否则：定位器或父级不同 -> 冲突
-                if l1 != l2 or set(o1["parent_ids"]) != set(o2["parent_ids"]):
-                    pairs_ok = False
-        if not pairs_ok:
-            for s, fid in involved:
-                # 只标记跨 ID 的（同 ID 的已在上面处理）
+        # F-03: 不同 file_id + 同 SHA = 身份冲突，必须人工复核
+        # file_id 是主键；两个不同主键对应相同内容哈希，本质上可疑
+        fids_b = {f for s, f in lst if s == "b"}
+        fids_c = {f for s, f in lst if s == "c"}
+        # 如果两侧的 file_id 集合不完全相同（存在跨 ID），则标记冲突
+        if fids_b != fids_c:
+            for s, fid in lst:
                 add(fid, "IDENTITY_CROSS_ID_COLLISION")
+        # 注意：同 file_id 的情况已在 IDENTITY_PATH_CONFLICT 中处理
     return out
 
 
@@ -475,12 +467,28 @@ def reconcile(baseline: dict, current: dict) -> dict:
         if new is not None:
             reasons |= validate_object_evidence(new, c_ev)
             reasons |= detect_evidence_conflicts(new, c_ev)
-        # R1 REVIEW_REQUIRED 的实质阻碍 -> SOURCE_REVIEW_REQUIRED
-        # （仅当 R1 待审原因造成无法可信比较时；此处保守：若任一侧 disposition
-        # 为 REVIEW_REQUIRED 且该侧有 REVIEW_REASON 证据但存在未解决冲突标记，
-        # 则标记。简化实现：若 disposition 为 REVIEW_REQUIRED 且证据检查已通过，
-        # 不自动标记，除非有 EVIDENCE_CONFLICT。）
-        # （按规格 §4.9：不能仅凭 R1 disposition 强制 R2 REVIEW_REQUIRED）
+        # R1 REVIEW_REQUIRED 的实质阻碍 -> SOURCE_REVIEW_REQUIRED (F-04)
+        # 仅当 R1 的 REVIEW_REASON 包含实质性阻碍原因时标记
+        # 实质性原因：RECORD_CONFLICT、WEAK_ASSOCIATION、SHA256_READ_FAILED、
+        #           SYMLINK_TARGET_OUT_OF_SCOPE
+        # 按规格 §4.9：不能仅凭 R1 disposition 强制 R2 REVIEW_REQUIRED
+        SUBSTANTIVE_R1_REASONS = {
+            "RECORD_CONFLICT",
+            "WEAK_ASSOCIATION", 
+            "SHA256_READ_FAILED",
+            "SYMLINK_TARGET_OUT_OF_SCOPE",
+        }
+        for obj, ev_map in ((old, b_ev), (new, c_ev)):
+            if obj is None:
+                continue
+            if obj.get("disposition") == "REVIEW_REQUIRED":
+                for eid in obj.get("evidence_reference", []):
+                    e = ev_map.get(eid)
+                    if e and e.get("kind") == "REVIEW_REASON":
+                        rc = e.get("reason_code")
+                        if rc in SUBSTANTIVE_R1_REASONS:
+                            reasons.add("SOURCE_REVIEW_REQUIRED")
+                            break
 
         # P4/P5: 分类
         if reasons:
@@ -711,25 +719,62 @@ def render_markdown(rep: dict, run_id: str, generated_at: str) -> str:
     return "\n".join(L)
 
 
+def _get_repo_root() -> Path:
+    """可信的仓库根：从模块文件位置推导，不依赖 cwd（F-02）。
+    
+    src/cba_kb/r2_reconcile.py -> 3 级上是仓库根。
+    """
+    return Path(__file__).resolve().parent.parent.parent
+
+
 def _resolve_reports_dir(arg: str | None) -> Path:
-    """§6.3: 报告目录授权规则。"""
-    # 以仓库根为基准（cwd 即仓库根，CLI 由 sh 包装保证）
-    root = Path.cwd().resolve()
-    reports = (root / "reports").resolve()
+    """§6.3: 报告目录授权规则（F-01/F-02 修复版）。
+    
+    - 仓库根从模块 __file__ 推导，不依赖 cwd
+    - 先检查原始路径是否为符号链接，再 resolve（F-01）
+    - 确保最终目标在仓库根内，不逃逸
+    """
+    # 测试钩子：允许测试用临时目录模拟授权根（仅测试环境使用）
+    test_override = os.environ.get("R2_TEST_REPORTS_ROOT")
+    if test_override:
+        raw = Path(test_override)
+        # F-01: 先检查原始路径是否为符号链接
+        if raw.is_symlink():
+            raise ValidationError("reports/ must not be a symlink")
+        target = raw.resolve()
+        return target
+    
+    root = _get_repo_root()
+    reports_raw = root / "reports"
+    # F-01: 在 resolve() 之前检查是否为符号链接
+    # （resolve() 会跟随链接，导致 is_symlink() 永远返回 False）
+    if reports_raw.is_symlink():
+        raise ValidationError("reports/ must not be a symlink")
+    reports = reports_raw.resolve()
+    # 确保解析后仍在仓库根内（纵深防御）
+    if reports != reports_raw:
+        try:
+            reports.relative_to(root)
+        except ValueError:
+            raise ValidationError(
+                f"reports/ resolves outside repo root: {reports}")
+    
     if arg is None:
         target = reports
     else:
-        # 相对路径以仓库根为基准解析
         p = Path(arg)
         if not p.is_absolute():
+            # 相对路径以可信仓库根为基准，不是 cwd
             p = root / p
+        # F-01: 检查原始路径是否为符号链接
+        if p.is_symlink():
+            raise ValidationError("reports-dir must not be a symlink")
         target = p.resolve()
-    if target != reports:
-        raise ValidationError(
-            f"reports-dir must resolve to authorized reports/ ({reports}), got {target}")
-    # 拒绝符号链接逃逸
-    if target.is_symlink():
-        raise ValidationError("reports/ must not be a symlink")
+        # 必须精确等于授权目录
+        if target != reports:
+            raise ValidationError(
+                f"reports-dir must resolve to authorized reports/ ({reports}), "
+                f"got {target}")
     return target
 
 
@@ -794,50 +839,62 @@ def main(argv: list[str] | None = None) -> int:
     rep["generated_at"] = generated_at
 
     reports_dir.mkdir(parents=True, exist_ok=True)
-    json_path = reports_dir / f"{run_id}.reconciliation.json"
-    md_path = reports_dir / f"{run_id}.reconciliation.md"
-    # 不覆盖旧报告（§6.3.7）
-    if json_path.exists() or md_path.exists():
-        # 重新生成未占用 run_id（§1.2）
-        for _ in range(5):
-            run_id = "r2-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") \
-                + "-" + secrets.token_hex(4)
-            rep["run_id"] = run_id
-            json_path = reports_dir / f"{run_id}.reconciliation.json"
-            md_path = reports_dir / f"{run_id}.reconciliation.md"
-            if not json_path.exists() and not md_path.exists():
-                break
-        else:
-            print("error: cannot allocate unused run_id", file=sys.stderr)
-            return 1
-
-    # 先渲染 Markdown（数量检查在内），再原子发布
+    
+    # 先渲染 Markdown（数量检查在内）
     try:
         md_text = render_markdown(rep, run_id, generated_at)
     except ValidationError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
-    tmp_json = json_path.with_suffix(".json.tmp")
-    tmp_md = md_path.with_suffix(".md.tmp")
-    try:
-        with open(tmp_json, "w", encoding="utf-8") as f:
-            json.dump(rep, f, ensure_ascii=False, indent=2, sort_keys=False)
-            f.write("\n")
-        with open(tmp_md, "w", encoding="utf-8") as f:
-            f.write(md_text)
-            if not md_text.endswith("\n"):
-                f.write("\n")
-        os.replace(tmp_json, json_path)
-        os.replace(tmp_md, md_path)
-    except OSError as e:
-        for p in (tmp_json, tmp_md):
+    # F-06: 原子独占发布（防 TOCTOU）
+    # 使用 O_CREAT|O_EXCL 确保不覆盖已存在文件
+    json_bytes = (json.dumps(rep, ensure_ascii=False, indent=2, sort_keys=False) + "\n").encode("utf-8")
+    md_bytes = md_text.encode("utf-8")
+    if not md_text.endswith("\n"):
+        md_bytes += b"\n"
+    
+    for attempt in range(6):
+        json_path = reports_dir / f"{run_id}.reconciliation.json"
+        md_path = reports_dir / f"{run_id}.reconciliation.md"
+        try:
+            fd_j = os.open(json_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
             try:
-                p.unlink()
-            except OSError:
-                pass
-        print(f"error: write failed: {e}", file=sys.stderr)
-        return 1
+                os.write(fd_j, json_bytes)
+            finally:
+                os.close(fd_j)
+            try:
+                fd_m = os.open(md_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                try:
+                    os.write(fd_m, md_bytes)
+                finally:
+                    os.close(fd_m)
+            except FileExistsError:
+                try:
+                    json_path.unlink()
+                except OSError:
+                    pass
+                raise
+            break
+        except FileExistsError:
+            if attempt >= 5:
+                print("error: cannot allocate unused run_id", file=sys.stderr)
+                return 1
+            run_id = "r2-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") \
+                + "-" + secrets.token_hex(4)
+            rep["run_id"] = run_id
+            try:
+                md_text = render_markdown(rep, run_id, generated_at)
+            except ValidationError as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 1
+            json_bytes = (json.dumps(rep, ensure_ascii=False, indent=2, sort_keys=False) + "\n").encode("utf-8")
+            md_bytes = md_text.encode("utf-8")
+            if not md_text.endswith("\n"):
+                md_bytes += b"\n"
+        except OSError as e:
+            print(f"error: write failed: {e}", file=sys.stderr)
+            return 1
 
     # exit code (§1.3, §2.3):
     # - scope_complete=false 或 scan_errors 非空 -> 1

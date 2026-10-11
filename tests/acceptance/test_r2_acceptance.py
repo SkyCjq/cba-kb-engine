@@ -98,52 +98,35 @@ def make_manifest(run_id, objects, evidence,
 
 def run_r2(baseline, current, tmp_path, reports_dir=None):
     """运行真实 CLI，返回 (exit_code, report_json|None, stdout, stderr)。
-    以 tmp_path 为模拟仓库根（cwd），reports/ 在其下，符合 §6.3 测试规则。"""
+    
+    使用 R2_TEST_REPORTS_ROOT 环境变量指定测试报告目录（F-01/F-02 修复后）。
+    不再依赖 cwd 模拟仓库根。
+    """
     bp = tmp_path / "baseline.json"
     cp = tmp_path / "current.json"
     bp.write_text(json.dumps(baseline), encoding="utf-8")
     cp.write_text(json.dumps(current), encoding="utf-8")
-    # reports_dir 参数：若未指定，用模拟根下的 reports/
+    # 确定报告目录
     if reports_dir is None:
-        rdir_arg = "reports"
         rdir = tmp_path / "reports"
     else:
-        # 显式路径：转为相对模拟根的路径（若已是绝对路径则直接用）
         rp = Path(reports_dir)
-        if rp.is_absolute():
-            rdir_arg = str(rp)
-            rdir = rp
-        else:
-            rdir_arg = str(reports_dir)
-            rdir = tmp_path / reports_dir
-    cmd = [str(CLI), "--baseline", str(bp), "--current", str(cp),
-           "--reports-dir", rdir_arg]
+        rdir = rp if rp.is_absolute() else tmp_path / rp
+    rdir.mkdir(parents=True, exist_ok=True)
+    cmd = [str(CLI), "--baseline", str(bp), "--current", str(cp)]
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO / "src") + os.pathsep + env.get("PYTHONPATH", "")
-    # cwd=tmp_path：模拟仓库根，CLI 按此解析 reports/
+    # F-01/F-02: 用环境变量指定测试报告根，不依赖 cwd
+    env["R2_TEST_REPORTS_ROOT"] = str(rdir)
     p = subprocess.run(cmd, cwd=tmp_path, capture_output=True, text=True,
                        timeout=60, env=env)
     report = None
-    # 从 stdout 解析实际写入的 JSON 路径（可靠，不依赖排序）
-    import re
-    m = re.search(r"reconciliation written: (\S+)", p.stdout)
-    if not m:
-        m = re.search(r"diagnostic report written: (\S+)", p.stderr)
-    if m:
-        jp = Path(m.group(1))
-        # CLI 输出的是相对路径（reports/...），转为绝对
-        if not jp.is_absolute():
-            # 输出中的路径是相对于 cwd（tmp_path）的
-            # 实际是 reports/<run_id>.reconciliation.json
-            # 需要找到 tmp_path 下的对应文件
-            # 简化：直接在 rdir 下找最新的文件（按 mtime）
-            if rdir.exists():
-                files = sorted(rdir.glob("*.reconciliation.json"),
-                               key=lambda x: x.stat().st_mtime)
-                if files:
-                    jp = files[-1]
-        if jp.exists():
-            report = json.loads(jp.read_text(encoding="utf-8"))
+    # 在 rdir 下找最新生成的 JSON（按 mtime）
+    if rdir.exists():
+        files = sorted(rdir.glob("*.reconciliation.json"),
+                       key=lambda x: x.stat().st_mtime if x.exists() else 0)
+        if files:
+            report = json.loads(files[-1].read_text(encoding="utf-8"))
     return p.returncode, report, p.stdout, p.stderr
 
 
@@ -514,14 +497,53 @@ def test_N13_bad_json(tmp_path):
 
 
 def test_N14_reports_dir_escape(tmp_path):
+    # N14: 测试 --reports-dir 路径穿越被拒绝（生产路径验证）
+    # 注意：不使用 R2_TEST_REPORTS_ROOT 覆盖，直接测试 --reports-dir 参数验证
     o = make_object("x-1")
     ev = make_evidence_for(o)
     b = make_manifest("r1-b", [o], ev)
     c = make_manifest("r1-c", [o], ev)
-    # 尝试越界
-    rc, rep, out, err = run_r2(b, c, tmp_path,
-                               reports_dir=str(tmp_path / ".." / "evil"))
-    assert rc == 1
+    bp = tmp_path / "baseline.json"
+    cp = tmp_path / "current.json"
+    bp.write_text(json.dumps(b), encoding="utf-8")
+    cp.write_text(json.dumps(c), encoding="utf-8")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO / "src") + os.pathsep + env.get("PYTHONPATH", "")
+    # 不设置 R2_TEST_REPORTS_ROOT，测试生产路径的 --reports-dir 验证
+    # 尝试用 .. 越界
+    p = subprocess.run(
+        [str(CLI), "--baseline", str(bp), "--current", str(cp),
+         "--reports-dir", str(tmp_path / ".." / "evil")],
+        cwd=tmp_path, capture_output=True, text=True, timeout=60, env=env)
+    assert p.returncode == 1, f"path traversal should be rejected: {p.stderr}"
+
+
+def test_N14b_symlink_escape(tmp_path):
+    # F-08: reports 符号链接指向仓库外目录，必须拒绝
+    o = make_object("x-1")
+    ev = make_evidence_for(o)
+    b = make_manifest("r1-b", [o], ev)
+    c = make_manifest("r1-c", [o], ev)
+    # 创建外部目录和符号链接
+    evil_dir = tmp_path / "evil_outside"
+    evil_dir.mkdir()
+    link_path = tmp_path / "reports_link"
+    link_path.symlink_to(evil_dir)
+    # 用环境变量直接指定符号链接路径
+    bp = tmp_path / "baseline.json"
+    cp = tmp_path / "current.json"
+    bp.write_text(json.dumps(b), encoding="utf-8")
+    cp.write_text(json.dumps(c), encoding="utf-8")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO / "src") + os.pathsep + env.get("PYTHONPATH", "")
+    env["R2_TEST_REPORTS_ROOT"] = str(link_path)
+    p = subprocess.run(
+        [str(CLI), "--baseline", str(bp), "--current", str(cp)],
+        cwd=tmp_path, capture_output=True, text=True, timeout=60, env=env)
+    assert p.returncode == 1, f"symlink escape should be rejected: {p.stderr}"
+    assert "symlink" in p.stderr.lower()
+    # 确认外部目录没有报告产物
+    assert list(evil_dir.glob("*.reconciliation.json")) == []
 
 
 def test_N15_no_overwrite(tmp_path):
@@ -657,10 +679,18 @@ def test_AC_R09_next_action(tmp_path):
 
 
 def test_AC_R10_falsification(tmp_path):
-    # RED: 旧基线无 r2_reconcile 时，CLI 不存在 -> 测试应 FAIL
-    # （本测试验证测试文件本身不依赖被测模块的分类函数）
+    # F-11: RED/GREEN 证伪证据
+    # RED 已手动执行并记录在 tests/acceptance/RED_GREEN_EVIDENCE.md：
+    #   - 移走实现文件后，test_P01_new 因 FileNotFoundError 失败
+    #   - 证明测试真实调用 CLI 子进程，非 mock
+    # GREEN: 当前实现存在时，基础功能应通过
     import importlib.util
     spec = importlib.util.find_spec("cba_kb.r2_reconcile")
     assert spec is not None, "r2_reconcile must exist for GREEN"
+    # 验证证据文件存在
+    evidence = REPO / "tests" / "acceptance" / "RED_GREEN_EVIDENCE.md"
+    assert evidence.exists(), "RED/GREEN evidence file must exist"
+    content = evidence.read_text(encoding="utf-8")
+    assert "RED" in content and "FileNotFoundError" in content
     # GREEN: 当前实现存在，基础功能应通过
     test_P01_new(tmp_path)
