@@ -8,3 +8,4 @@ N-05b fixture: H3 (two-comment race).
 N-05c fixture: H4 (status:hold label test).
 N-06 fixture: H5 (actions:read 403 test).
 P-01 fixture: H6 (final positive proof).
+P-01 fixture: H7 (clean, corrected base binding).
