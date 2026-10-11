@@ -22,7 +22,6 @@ import json
 import sys
 from pathlib import Path
 
-from jsonschema import Draft202012Validator, FormatChecker
 
 FIELDS = {
     "file_id", "name", "mime_type", "sha256", "parent_ids",
@@ -72,6 +71,7 @@ def main(argv=None):
     oracle = read_json(oracle_path)
     report = Path(report_path).read_text(encoding="utf-8")
 
+    from jsonschema import Draft202012Validator, FormatChecker
     Draft202012Validator.check_schema(schema)
     Draft202012Validator(
         schema, format_checker=FormatChecker()
