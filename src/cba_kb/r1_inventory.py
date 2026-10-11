@@ -55,7 +55,10 @@ DEFAULT_STATUS_MAP = {
 }
 
 # 记录 -> 对象的关联候选键（按优先级）。
-ASSOC_KEYS = ("file_id", "relative_path", "path", "name", "business_key", "artifact_key")
+# 强关联键（路径/ID 类，可验证身份）；弱关联键（名称类，需降级处理）。
+STRONG_ASSOC_KEYS = ("file_id", "relative_path", "path")
+WEAK_ASSOC_KEYS = ("name", "business_key", "artifact_key")
+ASSOC_KEYS = STRONG_ASSOC_KEYS + WEAK_ASSOC_KEYS
 # 记录中表示"最终位置"的候选字段。
 FINAL_LOCATION_KEYS = ("final_parent", "final_location", "location", "archived_path")
 # 记录中表示状态的候选字段。
@@ -122,6 +125,18 @@ def load_bindings(path: Path) -> dict:
         if not root.is_dir():
             raise ScanError(f"{label} 不存在或不可遍历: {root}")
     return bindings
+
+
+def _snapshot_stores(paths: list[Path]) -> dict[str, tuple | None]:
+    """record-store 快照：每个文件 -> (mtime_ns, size)。缺失/不可读记为 None。"""
+    snap: dict[str, tuple | None] = {}
+    for p in paths:
+        try:
+            st = p.stat()
+            snap[str(p)] = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            snap[str(p)] = None
+    return snap
 
 
 def _snapshot_dirs(roots: list[Path]) -> dict[str, list[str]]:
@@ -231,13 +246,19 @@ def _norm(s: str) -> str:
 
 
 def match_records(obj: dict, records: list[dict]) -> list[dict]:
-    """把记录关联到对象。返回命中的记录列表（可能多条 -> 冲突判定）。"""
+    """把记录关联到对象。返回命中的记录列表（可能多条 -> 冲突判定）。
+
+    每个命中记录附加 ``_match_strength``：``"strong"``（file_id/relative_path/path
+    命中）或 ``"weak"``（name/business_key/artifact_key 命中）。弱关联不能单独
+    作为身份依据（规格 §2：不得用文件名推断处理状态）。
+    """
     rel = obj["_rel"]
     name = Path(obj["_abs"]).name
     fid = obj["_file_id"]
     hits: list[dict] = []
     for rec in records:
         r = rec["_record"]
+        strength: str | None = None
         for key in ASSOC_KEYS:
             val = r.get(key)
             if val is None:
@@ -245,20 +266,23 @@ def match_records(obj: dict, records: list[dict]) -> list[dict]:
             v = str(val)
             if key in ("file_id",):
                 if v == fid:
-                    hits.append(rec)
+                    strength = "strong"
                     break
             elif key in ("relative_path", "path"):
                 if _norm(v) == _norm(rel) or _norm(v.rstrip("/")) == _norm(rel):
-                    hits.append(rec)
+                    strength = "strong"
                     break
                 # 绝对路径结尾匹配（相对路径形式）
                 if _norm(obj["_abs"]).endswith(_norm(v)):
-                    hits.append(rec)
+                    strength = "strong"
                     break
             elif key in ("name", "business_key", "artifact_key"):
                 if v == name or v == fid:
-                    hits.append(rec)
+                    strength = "weak"
                     break
+        if strength is not None:
+            rec["_match_strength"] = strength
+            hits.append(rec)
     # 去重（同一记录多个键命中）
     seen: set[int] = set()
     uniq: list[dict] = []
@@ -267,6 +291,20 @@ def match_records(obj: dict, records: list[dict]) -> list[dict]:
             seen.add(id(h))
             uniq.append(h)
     return uniq
+
+
+def _record_assoc_signature(rec: dict, status_map: dict[str, str]) -> tuple:
+    """关联判定用的记录签名：状态 + 单值字段 + 最终位置。
+
+    多条候选记录必须在这些维度上完全一致，否则不得任取其一（规格 §2）。
+    """
+    r = rec["_record"]
+    return (
+        record_status(rec, status_map),
+        str(r.get("source_id") or r.get("source_key") or ""),
+        str(r.get("document_id") or r.get("document_key") or ""),
+        str(record_final_location(rec) or ""),
+    )
 
 
 def record_status(rec: dict, status_map: dict[str, str]) -> str:
@@ -332,16 +370,20 @@ def decide(obj: dict, hits: list[dict], status_map: dict[str, str],
             symlink_oob = True
 
     # --- 关联记录与状态 ---
-    statuses = [record_status(h, status_map) for h in hits]
-    uniq_statuses = sorted(set(statuses))
-    conflict = len(uniq_statuses) > 1
+    # 规格 §2：多条候选必须在状态 + 单值字段 + 最终位置上完全一致，
+    # 否则"不得任取一个"，写 null 并标记 REVIEW_REQUIRED。
+    sigs = {_record_assoc_signature(h, status_map) for h in hits}
+    conflict = len(sigs) > 1
+    # 弱关联（仅 name/business_key 命中）不能单独作为已验证身份。
+    weak_only = bool(hits) and all(
+        h.get("_match_strength") == "weak" for h in hits
+    )
 
     source_id: str | None = None
     document_id: str | None = None
     primary = hits[0] if hits else None
-    if primary is not None and not conflict:
+    if primary is not None and not conflict and not weak_only:
         r = primary["_record"]
-        # 单值字段：存在多个候选且无权威主关联 -> null + REVIEW_REQUIRED（调用方处理）
         source_id = str(r.get("source_id") or r.get("source_key") or "") or None
         document_id = str(r.get("document_id") or r.get("document_key") or "") or None
 
@@ -361,11 +403,15 @@ def decide(obj: dict, hits: list[dict], status_map: dict[str, str],
     elif not hits:
         reason = "NO_RECORD"
         detail_note = "无关联记录；不存在记录不能推出 UNPROCESSED。"
+    elif weak_only:
+        reason = "WEAK_ASSOCIATION"
+        detail_note = ("仅通过名称类弱关联键命中记录，无法唯一验证身份；"
+                       "按规格 §2 不得据此推断处理状态。")
     elif conflict:
         reason = "RECORD_CONFLICT"
-        detail_note = f"多条关联记录状态冲突 {uniq_statuses}，不做裁决。"
+        detail_note = "多条关联记录在状态/单值字段/最终位置上不一致，不做裁决。"
     else:
-        st = uniq_statuses[0]
+        st = record_status(primary, status_map)
         processing_status = st
         if st == "PENDING":
             disposition = "UNPROCESSED"
@@ -374,14 +420,26 @@ def decide(obj: dict, hits: list[dict], status_map: dict[str, str],
             loc = record_final_location(primary)
             actual = str(Path(obj["_abs"]).resolve()) if not is_symlink else None
             if loc and actual:
-                norm_loc = str(Path(loc).resolve()) if os.path.exists(loc) else None
-                if norm_loc and norm_loc == actual:
-                    disposition = "PROCESSED"
-                    final_parent = norm_loc
-                else:
-                    reason = "FINAL_LOCATION_UNVERIFIED"
-                    detail_note = f"完成记录的最终位置不可验证（记录值 {loc!r}）。"
+                # 授权边界：最终位置若在扫描根之外，不得读取/验证，
+                # 直接 REVIEW_REQUIRED（规格 §1.1 未授权路径规则）。
+                loc_is_abs = os.path.isabs(loc)
+                in_scope = (
+                    loc_is_abs
+                    and any(loc == r or loc.startswith(r + os.sep) for r in roots_abs)
+                )
+                if loc_is_abs and not in_scope:
+                    reason = "FINAL_LOCATION_OUT_OF_SCOPE"
+                    detail_note = (f"完成记录的最终位置超出授权扫描根，不读取：{loc!r}。")
                     disposition = "REVIEW_REQUIRED"
+                else:
+                    norm_loc = str(Path(loc).resolve()) if os.path.exists(loc) else None
+                    if norm_loc and norm_loc == actual:
+                        disposition = "PROCESSED"
+                        final_parent = norm_loc
+                    else:
+                        reason = "FINAL_LOCATION_UNVERIFIED"
+                        detail_note = f"完成记录的最终位置不可验证（记录值 {loc!r}）。"
+                        disposition = "REVIEW_REQUIRED"
             else:
                 reason = "FINAL_LOCATION_MISSING"
                 detail_note = "完成记录缺少可验证的最终位置。"
@@ -392,8 +450,8 @@ def decide(obj: dict, hits: list[dict], status_map: dict[str, str],
             detail_note = f"处理状态为 {st}，无充分处置证据。"
             disposition = "REVIEW_REQUIRED"
 
-    if disposition == "REVIEW_REQUIRED" and processing_status == "UNKNOWN" and uniq_statuses:
-        processing_status = uniq_statuses[0]
+    if disposition == "REVIEW_REQUIRED" and processing_status == "UNKNOWN" and hits:
+        processing_status = record_status(primary, status_map)
 
     # --- parent_ids ---
     parent_ids = [] if obj["_parent"] is None else [obj["_parent"]]
@@ -434,6 +492,261 @@ def decide(obj: dict, hits: list[dict], status_map: dict[str, str],
     }
     assert set(record.keys()) == set(FIELDS), "对象记录必须恰好 11 个字段"
     return record, evidence
+
+# --- chunk 2b: 逻辑记录作为独立对象 + 关联闭包 ---
+# 规格 §1.1：Source、Document、历史处置记录每条逻辑记录一个对象；
+# 关联记录的关联记录继续追踪，直到没有新的关联记录；循环引用按唯一 ID 去重。
+
+# 记录主键候选字段（按优先级）。
+RECORD_PK_KEYS = ("id", "key", "pk", "record_id", "source_id", "document_id",
+                  "business_key", "artifact_key")
+# 记录类型候选字段。
+RECORD_TYPE_KEYS = ("record_type", "type", "kind", "category")
+# 可能包含对其他记录引用的字段名模式（小写后缀匹配）。
+REF_KEY_SUFFIXES = ("_id", "_ids", "_ref", "_refs", "_key", "_keys")
+
+
+def record_uid(rec: dict) -> str:
+    """记录的稳定唯一 ID：record/{store_idx}/{type}/{pk}。"""
+    r = rec["_record"]
+    store = rec["_store"]
+    rtype = ""
+    for k in RECORD_TYPE_KEYS:
+        if r.get(k):
+            rtype = str(r[k])
+            break
+    rtype = rtype or "record"
+    pk = ""
+    for k in RECORD_PK_KEYS:
+        if r.get(k):
+            pk = str(r[k])
+            break
+    if not pk:
+        pk = hashlib.sha256(
+            json.dumps(r, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[:16]
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in f"{rtype}-{pk}")
+    return f"record/{store}/{safe}"[:200]
+
+
+def record_display_name(rec: dict) -> str:
+    r = rec["_record"]
+    for k in ("name", "title", "label"):
+        if r.get(k):
+            return str(r[k])
+    for k in RECORD_PK_KEYS:
+        if r.get(k):
+            return str(r[k])
+    return record_uid(rec)
+
+
+def build_record_index(records: list[dict]) -> dict[str, dict]:
+    """按主键值索引记录，用于解析记录间引用。"""
+    index: dict[str, dict] = {}
+    for rec in records:
+        r = rec["_record"]
+        for k in RECORD_PK_KEYS:
+            v = r.get(k)
+            if v:
+                index.setdefault(str(v), rec)
+    return index
+
+
+def find_record_refs(rec: dict, index: dict[str, dict]) -> list[dict]:
+    """找出该记录字段中引用其他记录的条目（启发式：引用型字段名 + 值命中索引）。"""
+    refs: list[dict] = []
+    r = rec["_record"]
+    for k, v in r.items():
+        if not isinstance(v, str) or not v:
+            continue
+        kl = k.lower()
+        looks_like_ref = kl.endswith(REF_KEY_SUFFIXES) or kl in ("id", "key", "ref")
+        if looks_like_ref and v in index and index[v] is not rec:
+            refs.append(index[v])
+    # 去重
+    seen: set[int] = set()
+    uniq: list[dict] = []
+    for x in refs:
+        if id(x) not in seen:
+            seen.add(id(x))
+            uniq.append(x)
+    return uniq
+
+
+def transitive_closure(seed_records: list[dict],
+                       index: dict[str, dict]) -> list[dict]:
+    """从种子记录出发，沿引用双向传递闭包；按 UID 去重，天然防循环。
+
+    双向：既跟随本记录引用的他记录（出边），也纳入引用本记录的他记录（入边），
+    因为"关联记录的关联记录"包含"引用了已关联记录"的记录。
+    """
+    # 预计算每条记录的出边（引用的他记录 UID 集合）。
+    out_edges: dict[str, set[str]] = {}
+    uid_of: dict[int, str] = {}
+    all_recs = list({id(r): r for r in index.values()}.values())
+    for rec in all_recs:
+        uid = record_uid(rec)
+        uid_of[id(rec)] = uid
+        out_edges[uid] = {record_uid(x) for x in find_record_refs(rec, index)}
+    # 反向索引：被谁引用。
+    in_edges: dict[str, set[str]] = {}
+    for uid, targets in out_edges.items():
+        for t in targets:
+            in_edges.setdefault(t, set()).add(uid)
+    uid_to_rec = {record_uid(r): r for r in all_recs}
+
+    seen: set[str] = set()
+    queue = list(seed_records)
+    result: list[dict] = []
+    while queue:
+        rec = queue.pop(0)
+        uid = record_uid(rec)
+        if uid in seen:
+            continue
+        seen.add(uid)
+        result.append(rec)
+        neighbors = out_edges.get(uid, set()) | in_edges.get(uid, set())
+        for nuid in neighbors:
+            if nuid not in seen and nuid in uid_to_rec:
+                queue.append(uid_to_rec[nuid])
+    return result
+
+
+def decide_record(rec: dict, container_id: str, status_map: dict[str, str],
+                  observed_at: str) -> tuple[dict, list[dict]]:
+    """为一条逻辑记录生成 11 字段对象 + 证据（规格 §1.1、§2.1）。
+
+    逻辑记录同样适用处置判定表；没有充分处置证据时统一 REVIEW_REQUIRED，
+    不得继承其他对象状态。
+    """
+    r = rec["_record"]
+    uid = record_uid(rec)
+    name = record_display_name(rec)
+    evidence: list[dict] = []
+
+    def add_ev(k: str, locator: str, detail: str,
+               reason_code: str | None = None) -> str:
+        eid = _evidence_id(uid, k, locator)
+        evidence.append({
+            "evidence_id": eid, "file_id": uid, "kind": k,
+            "locator": locator, "observed_at": observed_at,
+            "reason_code": reason_code, "detail": detail,
+        })
+        return eid
+
+    locator = f"{rec['_path']}#{uid}"
+    add_ev("OBJECT", locator, f"逻辑记录定位证据：{uid}，{locator}")
+
+    st = record_status(rec, status_map)
+    processing_status = st
+    disposition = "REVIEW_REQUIRED"
+    final_parent: str | None = None
+    reason: str | None = None
+    detail_note = ""
+
+    # 记录自身的 source/document 身份：类型明确时自关联。
+    rtype = ""
+    for k in RECORD_TYPE_KEYS:
+        if r.get(k):
+            rtype = str(r[k]).lower()
+            break
+    source_id = None
+    document_id = None
+    pk_val = ""
+    for k in RECORD_PK_KEYS:
+        if r.get(k):
+            pk_val = str(r[k])
+            break
+    if "source" in rtype and pk_val:
+        source_id = pk_val
+        add_ev("SOURCE", locator, "Source 记录自关联证据", None)
+    if "document" in rtype and pk_val:
+        document_id = pk_val
+        add_ev("DOCUMENT", locator, "Document 记录自关联证据", None)
+
+    if st == "PENDING":
+        disposition = "UNPROCESSED"
+        add_ev("PROCESS", rec["_path"], f"处理状态证据：{st}", None)
+    elif st == "COMPLETED":
+        # 逻辑记录的完成需有可验证的最终位置（容器 URI 或授权路径），否则保守处理。
+        loc = record_final_location(rec)
+        if loc:
+            final_parent = loc
+            disposition = "PROCESSED"
+            add_ev("PROCESS", rec["_path"], f"处理状态证据：{st}", None)
+            add_ev("FINAL_LOCATION", loc, "最终位置证据（记录自述）", None)
+        else:
+            reason = "RECORD_FINAL_LOCATION_MISSING"
+            detail_note = "逻辑记录声称完成但缺少最终位置。"
+            add_ev("PROCESS", rec["_path"], f"处理状态证据：{st}", None)
+    else:
+        reason = f"RECORD_STATUS_{st}"
+        detail_note = f"逻辑记录处理状态为 {st}，无充分处置证据。"
+        if st != "UNKNOWN":
+            add_ev("PROCESS", rec["_path"], f"处理状态证据：{st}", None)
+
+    if disposition == "REVIEW_REQUIRED":
+        if reason is None:
+            reason = "RECORD_UNVERIFIED"
+            detail_note = "逻辑记录无充分处置证据。"
+        add_ev("REVIEW_REASON", locator,
+               f"{reason}: {detail_note} 人工核查动作：打开记录定位器核实记录内容与状态。",
+               reason)
+
+    record = {
+        "file_id": uid,
+        "name": name,
+        "mime_type": "application/json",
+        "sha256": None,
+        "parent_ids": [container_id],
+        "source_id": source_id,
+        "document_id": document_id,
+        "processing_status": processing_status,
+        "disposition": disposition,
+        "final_parent": final_parent,
+        "evidence_reference": [e["evidence_id"] for e in evidence],
+    }
+    assert set(record.keys()) == set(FIELDS), "记录对象必须恰好 11 个字段"
+    return record, evidence
+
+
+def emit_store_containers(bindings: dict, observed_at: str) -> tuple[list[dict], list[dict]]:
+    """为每个 record-store 生成容器对象（逻辑记录的父对象，保证引用可解析）。"""
+    records_out: list[dict] = []
+    evidence_out: list[dict] = []
+    for idx, p in enumerate(bindings["record_stores"]):
+        cid = f"record-store/{idx}"
+        locator = str(p)
+        eid = _evidence_id(cid, "OBJECT", locator)
+        evidence_out.append({
+            "evidence_id": eid, "file_id": cid, "kind": "OBJECT",
+            "locator": locator, "observed_at": observed_at,
+            "reason_code": None, "detail": f"记录容器：{locator}",
+        })
+        records_out.append({
+            "file_id": cid,
+            "name": Path(locator).name or cid,
+            "mime_type": "application/json",
+            "sha256": None,
+            "parent_ids": [],
+            "source_id": None,
+            "document_id": None,
+            "processing_status": "UNKNOWN",
+            "disposition": "REVIEW_REQUIRED",
+            "final_parent": None,
+            "evidence_reference": [eid],
+        })
+        # 容器本身 REVIEW_REQUIRED 需要 REVIEW_REASON 证据（规格 §3）。
+        rid = _evidence_id(cid, "REVIEW_REASON", locator)
+        evidence_out.append({
+            "evidence_id": rid, "file_id": cid, "kind": "REVIEW_REASON",
+            "locator": locator, "observed_at": observed_at,
+            "reason_code": "RECORD_CONTAINER",
+            "detail": ("记录容器对象：承载逻辑记录的快照文件。人工核查动作："
+                       "确认快照来源与授权边界。"),
+        })
+        records_out[-1]["evidence_reference"].append(rid)
+    return records_out, evidence_out
 
 # --- chunk 3: manifest, report, CLI ---
 
@@ -597,8 +910,9 @@ def run_scan(bindings_path: Path, reports_dir: Path) -> tuple[int, str]:
     except OSError as exc:
         return 1, f"输出失败: reports/ 不可写: {exc}"
 
-    # 枚举前后稳定性快照（§1.2）。
+    # 枚举前后稳定性快照（§1.2）：目录成员 + record-store 集合。
     before = _snapshot_dirs(roots)
+    before_stores = _snapshot_stores(bindings["record_stores"])
     all_objects: list[dict] = []
     scan_errors: list[dict] = []
     for root_id, root in (("inbox", roots[0]), ("sources", roots[1])):
@@ -619,15 +933,46 @@ def run_scan(bindings_path: Path, reports_dir: Path) -> tuple[int, str]:
         records = load_record_stores(bindings["record_stores"])
     except ScanError as exc:
         return 1, f"配置失败: {exc}"
+    # record-store 在加载前后必须稳定（§1.2 记录集合变化 -> 运行失败）。
+    after_stores = _snapshot_stores(bindings["record_stores"])
+    if before_stores != after_stores:
+        changed_stores = [k for k in before_stores
+                          if before_stores.get(k) != after_stores.get(k)]
+        scan_errors.append({
+            "locator": "; ".join(changed_stores[:10]),
+            "reason_code": "RECORD_STORE_CHANGED_DURING_SCAN",
+            "detail": "record-store 集合在枚举前后发生变化，范围不完整，本次运行失败。",
+        })
 
     observed_at = utcnow()
     out_records: list[dict] = []
     out_evidence: list[dict] = []
+    # 先判定文件系统对象，并收集命中的关联记录作为闭包种子。
+    seed_records: list[dict] = []
     for obj in all_objects:
         hits = match_records(obj, records)
         rec, evs = decide(obj, hits, bindings["status_map"], roots_abs, observed_at)
         out_records.append(rec)
         out_evidence.extend(evs)
+        seed_records.extend(hits)
+    # 规格 §1.1：逻辑记录每条一个对象；关联的关联继续追踪，循环按 UID 去重。
+    # 去重种子（同一记录被多个对象命中）。
+    seen_seed: set[int] = set()
+    uniq_seeds: list[dict] = []
+    for s in seed_records:
+        if id(s) not in seen_seed:
+            seen_seed.add(id(s))
+            uniq_seeds.append(s)
+    rec_index = build_record_index(records)
+    closure = transitive_closure(uniq_seeds, rec_index)
+    container_recs, container_evs = emit_store_containers(bindings, observed_at)
+    out_records.extend(container_recs)
+    out_evidence.extend(container_evs)
+    for rec in closure:
+        rrec, revs = decide_record(rec, f"record-store/{rec['_store']}",
+                                   bindings["status_map"], observed_at)
+        out_records.append(rrec)
+        out_evidence.extend(revs)
 
     finished_at = utcnow()
     # run_id 必须每次新建且不覆盖已有产物。
