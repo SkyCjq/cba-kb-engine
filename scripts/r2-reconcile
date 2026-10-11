@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# R2 read-only reconciliation
+exec python3 -m cba_kb.r2_reconcile "$@"
