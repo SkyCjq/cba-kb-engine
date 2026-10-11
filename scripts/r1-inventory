@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# r1-inventory --scan 的规范调用入口（不改 pyproject，避免构建配置升级 tier）。
+# 实际实现：src/cba_kb/r1_inventory.py
+exec python3 -m cba_kb.r1_inventory "$@"
