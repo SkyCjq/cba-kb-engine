@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+# r2-reconcile -- R2 只读对账 CLI 包装
+# F-02: 确保 cwd 为可信仓库根（从脚本位置推导，不依赖调用者 cwd）
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT" || exit 1
+exec python3 -m cba_kb.r2_reconcile "$@"
