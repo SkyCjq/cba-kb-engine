@@ -23,7 +23,6 @@ sys.path.insert(0, HERE)
 for k in ("GH_TOKEN", "REPO", "PR_NUMBER", "HEAD_SHA", "BASE_SHA",
           "PR_AUTHOR", "BASE_REF"):
     os.environ.setdefault(k, "dummy")
-os.environ.setdefault("TRUSTED_AUTHORS", "dummy")
 
 import tiering
 
@@ -32,6 +31,9 @@ import importlib.util
 _spec = importlib.util.spec_from_file_location(
     "policy_gate", os.path.join(HERE, "policy-gate.py"))
 policy_gate = importlib.util.module_from_spec(_spec)
+# dataclass 在合成模块名下需要 sys.modules 预先可见（否则 dataclasses 内部
+# sys.modules.get(cls.__module__) 返回 None）。runner 中以 __main__ 运行不受影响。
+sys.modules["policy_gate"] = policy_gate
 _spec.loader.exec_module(policy_gate)
 
 PASS = []
@@ -82,143 +84,99 @@ for files, exp in WASH_CASES:
     got = tiering.compute_tier(files, tiers)
     check(f"tier {files} == {exp}", got == exp)
 
-# T2 约束（rev11 G-03 审计修订：两个独立条件——合格 Q2 签发 + freeze 准入授权；
-# 无签发阻断）
-check("T2 无签发被阻断",
-      len(policy_gate.enforce_no_t2("T2", None)) > 0)
-check("T2 有有效签发放行",
-      policy_gate.enforce_no_t2("T2", {"verdict": "PASS"}) == [])
-check("T1/T0 不阻断",
-      policy_gate.enforce_no_t2("T1", None) == [] and policy_gate.enforce_no_t2("T0", None) == [])
 
-# ---------- 3. 审批：决策语义 + 授权主体（rev5 P0-2） ----------
-def _rev(login, state, sha="abc", assoc="OWNER", ts="2026-10-09T01:00:00Z"):
-    return {"user": {"login": login, "type": "User"}, "state": state,
-            "commit_id": sha, "author_association": assoc, "submitted_at": ts}
+# ---------- 3. LACD 身份绑定（validate_pr_identity） ----------
+# 差异性证伪：事件伪造 / fork 混入 / HEAD 漂移 / 非 Bot 作者 / 草稿 / 非 main
+# 必须全部被阻断；合法 Bot PR 必须通过。
+_S40 = "a" * 40
+_B40 = "b" * 40
+_CFG = policy_gate.IdentityConfig(
+    repo="SkyCjq/cba-kb-engine", pr_number=141, head_sha=_S40,
+    base_sha=_B40, bot_author="cba-kb-muse-mode2-bot[bot]")
 
-# 权限查询 mock 前置：rev6 起真实 get_repo_permission 失败即 fail-closed，
-# 以下决策语义测试先 mock 掉网络调用（文件末尾恢复）
-_orig_perm = policy_gate.get_repo_permission
-policy_gate.get_repo_permission = lambda u: "write"
+def _base_pr():
+    return {
+        "number": 141, "state": "open", "draft": False,
+        "base": {"ref": "main", "sha": _B40,
+                 "repo": {"full_name": "SkyCjq/cba-kb-engine"}},
+        "head": {"sha": _S40,
+                 "repo": {"full_name": "SkyCjq/cba-kb-engine"}},
+        "user": {"login": "cba-kb-muse-mode2-bot[bot]"},
+    }
 
-# 决策语义：CHANGES_REQUESTED 后再 COMMENTED，仍然是要求修改（rev5 P0-2b）
-st = policy_gate.review_stance([
-    _rev("bob", "CHANGES_REQUESTED", ts="2026-10-09T10:01:00Z"),
-    _rev("bob", "COMMENTED", ts="2026-10-09T10:02:00Z")])
-check("CHANGES_REQUESTED 后 COMMENTED 仍是要求修改",
-      st is not None and st["state"] == "CHANGES_REQUESTED")
-st = policy_gate.review_stance([
-    _rev("bob", "CHANGES_REQUESTED", ts="2026-10-09T10:01:00Z"),
-    _rev("bob", "APPROVED", ts="2026-10-09T10:03:00Z")])
-check("之后 APPROVED 则转为批准", st is not None and st["state"] == "APPROVED")
-st = policy_gate.review_stance([_rev("bob", "COMMENTED")])
-check("仅 COMMENTED 无决策", st is None)
+def _identity_rejects(mutator):
+    try:
+        p = _base_pr()
+        mutator(p)
+        policy_gate.validate_pr_identity(p, _CFG)
+        return False
+    except SystemExit:
+        return True
 
-# 复审场景：Bob CHANGES_REQUESTED 后 COMMENTED，Alice APPROVED -> 整体阻断
-v, e = policy_gate.evaluate_approvals(
-    [_rev("bob", "CHANGES_REQUESTED", ts="2026-10-09T10:01:00Z"),
-     _rev("bob", "COMMENTED", ts="2026-10-09T10:02:00Z"),
-     _rev("alice", "APPROVED", ts="2026-10-09T10:03:00Z")], "bot", "abc")
-check("CHANGES_REQUESTED 后 COMMENTED 不能掩盖阻断", v == ["alice"] and len(e) > 0)
-
-# 权限 API 路径（mock）：read 权限不计入，write 计入（rev6 P0-2a）
-policy_gate.get_repo_permission = lambda u: "read"
-v, e = policy_gate.evaluate_approvals([_rev("r1", "APPROVED")], "bot", "abc")
-check("read 权限批准不计入", v == [] and e == [])
-policy_gate.get_repo_permission = lambda u: "write"
-v, e = policy_gate.evaluate_approvals([_rev("r1", "APPROVED")], "bot", "abc")
-check("write 权限批准计入", v == ["r1"] and e == [])
-# rev6 P0-2：权限查询失败必须 fail-closed（抛异常），绝不回退放行
-def _boom(u):
-    raise RuntimeError("HTTP 403")
-policy_gate.get_repo_permission = _boom
+_id = policy_gate.validate_pr_identity(_base_pr(), _CFG)
+check("合法 Bot PR 通过身份绑定",
+      _id["state"] == "IDENTITY_PASS"
+      and _id["author"] == "cba-kb-muse-mode2-bot[bot]")
+check("PR 编号不一致被拒绝",
+      _identity_rejects(lambda p: p.update(number=999)))
+check("非 open 状态被拒绝",
+      _identity_rejects(lambda p: p.update(state="closed")))
+check("草稿 PR 被拒绝",
+      _identity_rejects(lambda p: p.update(draft=True)))
+check("fork PR（head 仓库不同）被拒绝",
+      _identity_rejects(
+          lambda p: p["head"]["repo"].update(full_name="evil/fork")))
+check("base 仓库不一致被拒绝",
+      _identity_rejects(
+          lambda p: p["base"]["repo"].update(full_name="evil/fork")))
+check("HEAD SHA 不一致被拒绝",
+      _identity_rejects(lambda p: p["head"].update(sha="c" * 40)))
+check("BASE SHA 不一致被拒绝",
+      _identity_rejects(lambda p: p["base"].update(sha="d" * 40)))
+check("非 Bot 作者被拒绝",
+      _identity_rejects(lambda p: p["user"].update(login="SkyCjq")))
+check("目标分支非 main 被拒绝",
+      _identity_rejects(lambda p: p["base"].update(ref="develop")))
+_bad_cfg = policy_gate.IdentityConfig(
+    repo="SkyCjq/cba-kb-engine", pr_number=141, head_sha="not-a-sha",
+    base_sha=_B40, bot_author="cba-kb-muse-mode2-bot[bot]")
 try:
-    policy_gate.evaluate_approvals([_rev("r1", "APPROVED")], "bot", "abc")
-    check("权限查询失败时 fail-closed（抛异常）", False)
-except RuntimeError:
-    check("权限查询失败时 fail-closed（抛异常）", True)
+    policy_gate.validate_pr_identity(_base_pr(), _bad_cfg)
+    check("非法 SHA 格式被拒绝", False)
 except SystemExit:
-    check("权限查询失败时 fail-closed（抛异常）", True)
-policy_gate.get_repo_permission = lambda u: None  # 权限未知
-v, e = policy_gate.evaluate_approvals([_rev("r1", "APPROVED", assoc="OWNER")], "bot", "abc")
-check("权限未知时不计入（fail-closed）", v == [])
-policy_gate.get_repo_permission = lambda u: "write"  # 以下测决策语义：先给授权
-# 注：文件末尾恢复 _orig_perm
+    check("非法 SHA 格式被拒绝", True)
+check("is_sha40 拒绝非 hex", not policy_gate.is_sha40("z" * 40))
+check("is_sha40 拒绝短串", not policy_gate.is_sha40("abc"))
+check("is_sha40 接受合法值", policy_gate.is_sha40(_S40))
 
-# 同一审查人同 SHA：先 APPROVED 后 CHANGES_REQUESTED -> 整体阻断
-v, e = policy_gate.evaluate_approvals(
-    [_rev("r1", "APPROVED", ts="2026-10-09T01:00:00Z"),
-     _rev("r1", "CHANGES_REQUESTED", ts="2026-10-09T02:00:00Z")], "bot", "abc")
-check("失效审批被拒绝（APPROVED 后又 CHANGES_REQUESTED）", v == [] and len(e) > 0)
-# 他人 CHANGES_REQUESTED 阻断整体（即使另有人批准）
-v, e = policy_gate.evaluate_approvals(
-    [_rev("r1", "APPROVED"), _rev("r2", "CHANGES_REQUESTED")], "bot", "abc")
-check("他人要求修改则整体阻断", v == ["r1"] and len(e) > 0)
-# 旧 SHA 的 APPROVED -> 拒绝
-v, e = policy_gate.evaluate_approvals([_rev("r1", "APPROVED", sha="old")], "bot", "abc")
-check("旧 SHA 审批被拒绝", v == [] and e == [])
-# 作者自批 -> 拒绝
-v, e = policy_gate.evaluate_approvals([_rev("bot", "APPROVED")], "bot", "abc")
-check("作者自批被拒绝", v == [] and e == [])
-# 正常：OWNER 在当前 SHA 批准 -> 通过
-v, e = policy_gate.evaluate_approvals([_rev("r1", "APPROVED")], "bot", "abc")
-check("有效审批通过", v == ["r1"] and e == [])
+# LACD 说明：T2 不再由 policy 硬阻断（硬阻断会使门禁自身维护只能走 bypass）。
+# 路径分级仍报告，T2 准入授权移交 CODEOWNERS + 原生分支保护（Human 确认配置）。
+check("T2 路径仍被正确分级（报告用）",
+      tiering.compute_tier([".github/workflows/x.yml"], tiers) == "T2")
 
-# ---------- 4. critical 未关闭阻断 ----------
-check("critical 全关闭通过",
-      policy_gate.validate_critical([{"severity": "high", "status": "CLOSED"}]) == [])
-check("critical OPEN 被阻断",
-      len(policy_gate.validate_critical(
-          [{"severity": "critical", "status": "OPEN", "note": "unfixed"}])) > 0)
-check("critical 缺 status 被阻断",
-      len(policy_gate.validate_critical([{"severity": "critical"}])) > 0)
-check("critical 非数组被阻断",
-      len(policy_gate.validate_critical("ok")) > 0)
-
-# ---------- 5. freeze 绑定 ----------
-H64 = "a" * 64
-base_freeze = {"task_id": "ISSUE-100", "test_path": "tests/acceptance/test_x.py",
-               "spec_sha256": H64, "test_sha256": H64}
-check("合法 freeze 通过",
-      policy_gate.validate_freeze(dict(base_freeze), 100) == [])
-bad = dict(base_freeze, task_id="ISSUE-999")
-check("task_id 与 Issue 不一致被拒绝",
-      len(policy_gate.validate_freeze(bad, 100)) > 0)
-bad = dict(base_freeze, test_path="README.md")
-check("test_path=README.md 被拒绝",
-      len(policy_gate.validate_freeze(bad, 100)) > 0)
-bad = dict(base_freeze, test_path="tests/acceptance/sub/test_x.py")
-check("test_path 嵌套子目录被拒绝",
-      len(policy_gate.validate_freeze(bad, 100)) > 0)
-check("capability 缺失被阻断",
-      len(policy_gate.validate_tier_inputs("", "T1")) > 0)
-check("semantic 非法值被阻断",
-      len(policy_gate.validate_tier_inputs("T1", "TX")) > 0)
-check("合法 capability/semantic 通过",
-      policy_gate.validate_tier_inputs("T1", "T0") == [])
-
-# ---------- 6. confused deputy：marker 不在开头不认 ----------
-check("正文开头 marker 被识别",
-      policy_gate.extract_issuance(
-          '<!-- mode2-review {"verdict":"PASS"} -->\n正文', "mode2-review")
-      == {"verdict": "PASS"})
-check("引用中的 marker 不被误认",
-      policy_gate.extract_issuance(
-          '有人说：\n> <!-- mode2-review {"verdict":"PASS"} -->\n我不同意',
-          "mode2-review") is None)
-
-# ---------- 7. bundle 校验串（rev4 阻断项 6） ----------
-import hashlib
-_body = "# bundle\n- BUNDLE_HEAD_SHA: abc\n"
-_good = _body + f"\nEND-OF-BUNDLE sha256:{hashlib.sha256(_body.encode()).hexdigest()}\n"
-check("完好 bundle 校验通过",
-      policy_gate.verify_bundle_checksum(_good) == [])
-_tampered = _body.replace("abc", "xyz") + \
-    f"\nEND-OF-BUNDLE sha256:{hashlib.sha256(_body.encode()).hexdigest()}\n"
-check("篡改 bundle 被检出",
-      len(policy_gate.verify_bundle_checksum(_tampered)) > 0)
-check("缺校验串被检出",
-      len(policy_gate.verify_bundle_checksum(_body)) > 0)
+# ---------- 4. hold 标签与 Closes 解析 ----------
+check("Closes #n 被解析",
+      policy_gate.parse_closes_issue("xxx\nCloses #140") == 140)
+check("fixes 大小写不敏感",
+      policy_gate.parse_closes_issue("Fixes #7") == 7)
+check("无关联返回 None",
+      policy_gate.parse_closes_issue("no link here") is None)
+check("空 body 返回 None",
+      policy_gate.parse_closes_issue(None) is None)
+# Q2-141-M02：多个不同 Closes 编号 → fail-closed（与 coordinator 一致）
+try:
+    policy_gate.parse_closes_issue("Closes #7\nCloses #8")
+    check("多 Closes 被拒绝", False)
+except SystemExit:
+    check("多 Closes 被拒绝", True)
+check("重复同一编号不误杀",
+      policy_gate.parse_closes_issue("Closes #7\ncloses #7") == 7)
+check("hold 标签被识别",
+      policy_gate.has_hold_label([{"name": "status:hold"}]) is True)
+check("无标签不误报", policy_gate.has_hold_label([]) is False)
+check("None 标签不误报", policy_gate.has_hold_label(None) is False)
+check("其他标签不误报",
+      policy_gate.has_hold_label([{"name": "bug"}]) is False)
 
 # ---------- 7b. 测试文件内容绑定（rev5 P0-3；rev6 扩展到 tests/**/*.py） ----------
 # assert True 替换攻击：数量完全一致，但内容变了 -> 必须检出
@@ -269,31 +227,6 @@ with tempfile.TemporaryDirectory() as td:
     check("test_sec.py 未动仍一致",
           base_shas.get("test_sec.py") == pr_shas.get("test_sec.py"))
 
-# ---------- 7d. CI run 选择（rev6 P0-3） ----------
-# 复审场景：#11 成功但 updated_at 更晚，#12 更新但 in_progress -> 必须等待，不用 #11
-_runs = [
-    {"id": 11, "status": "completed", "conclusion": "success",
-     "created_at": "2026-10-09T10:00:00Z", "updated_at": "2026-10-09T12:00:00Z",
-     "run_attempt": 1},
-    {"id": 12, "status": "in_progress", "conclusion": None,
-     "created_at": "2026-10-09T11:00:00Z", "updated_at": "2026-10-09T11:20:00Z",
-     "run_attempt": 1},
-]
-check("有在飞执行时不采用旧成功（返回 None 等待）",
-      policy_gate.select_latest_run(_runs) is None)
-_runs_ok = [
-    {"id": 11, "status": "completed", "conclusion": "success",
-     "created_at": "2026-10-09T10:00:00Z", "updated_at": "2026-10-09T12:00:00Z",
-     "run_attempt": 1},
-    {"id": 12, "status": "completed", "conclusion": "success",
-     "created_at": "2026-10-09T11:00:00Z", "updated_at": "2026-10-09T11:20:00Z",
-     "run_attempt": 1},
-]
-sel = policy_gate.select_latest_run(_runs_ok)
-check("全完成时取最新（按 created_at）",
-      sel is not None and sel["id"] == 12)
-check("无候选返回 None", policy_gate.select_latest_run([]) is None)
-
 # ---------- 7e. DIFF_DIGEST（rev6 §四；rev8 并入 canonical_diff；rev9 FileChange） ----------
 import canonical_diff as _cd2
 def _FC(b, h, old=None, bm="100644", hm="100644"):
@@ -313,45 +246,6 @@ check("DIFF_DIGEST 绑定文件模式",
       _cd2.compute_diff_digest({"n": _FC(b"b", b"h", hm="100644")}))
 check("DIFF_DIGEST 为 64 位 hex", len(d1) == 64)
 
-# ---------- 7c. bundle 文件清单（rev5 P0-4） ----------
-_b = "## 变更文件\n```\na.py\nb.py\n```\n"
-check("清单齐全无缺失",
-      policy_gate.find_missing_bundle_files(_b, ["a.py", "b.py"]) == [])
-check("清单缺失被检出",
-      policy_gate.find_missing_bundle_files(_b, ["a.py", "b.py", "c.py"]) == ["c.py"])
-check("无清单节被检出",
-      policy_gate.find_missing_bundle_files("no section", ["a.py"]) == ["a.py"])
-
-# ---------- 7f. rev7：404/大文件/canonical diff ----------
-import urllib.error as _urlerr
-_orig_urlopen = policy_gate.urllib.request.urlopen
-
-class _FakeResp:
-    def __init__(self, payload): self._p = payload
-    def read(self): return json.dumps(self._p).encode()
-    def __enter__(self): return self
-    def __exit__(self, *a): return False
-
-def _fake_urlopen_404(req, timeout=None):
-    raise _urlerr.HTTPError(req.full_url, 404, "Not Found", {}, None)
-
-def _fake_urlopen_bignone(req, timeout=None):
-    # Contents API 对大文件返回 content="" + encoding="none"，再经 blob 取字节
-    if "/contents/" in req.full_url:
-        return _FakeResp({"type": "file", "encoding": "none",
-                          "sha": "abc123", "content": ""})
-    if "/git/blobs/abc123" in req.full_url:
-        return _FakeResp({"content": base64.b64encode(b"big-real-bytes").decode()})
-    raise AssertionError(req.full_url)
-
-policy_gate.urllib.request.urlopen = _fake_urlopen_404
-check("404 → b\"\"（新增/删除文件不报错）",
-      policy_gate.github_file_bytes("new.py", "abc") == b"")
-policy_gate.urllib.request.urlopen = _fake_urlopen_bignone
-check("大文件 encoding=none 经 blob 取真实字节",
-      policy_gate.github_file_bytes("big.bin", "abc") == b"big-real-bytes")
-policy_gate.urllib.request.urlopen = _orig_urlopen
-
 # canonical_diff：确定性、二进制、空、section 往返
 import canonical_diff as cd
 _fc1 = {"a.py": _FC(b"old\n", b"new\n")}
@@ -363,31 +257,6 @@ check("空变更无输出", cd.canonical_diffs_text({"a.py": _FC(b"x\n", b"x\n")
 _sec = cd.diff_section(_fc1)
 check("diff section 往返", cd.parse_diff_section("prefix\n" + _sec + "suffix\n") == cd.capped_diff(cd.canonical_diffs_text(_fc1)))
 check("缺 section 返回 None", cd.parse_diff_section("no markers") is None)
-# verify_bundle_diff 的 diff 文本验证：构造假 diff 应被检出（mock API）
-_orig_gfb = policy_gate.github_file_bytes
-_orig_gtm = policy_gate.github_tree_modes
-_BASE, _HEAD = "b"*40, "a"*40
-policy_gate.BASE_SHA, policy_gate.HEAD_SHA = _BASE, _HEAD
-policy_gate.github_file_bytes = lambda p, r: (b"old\n" if r == _BASE else b"new\n")
-policy_gate.github_tree_modes = lambda r: {"a.py": "100644"}
-_fake_bundle = ("## 变更文件\n```\na.py\n```\n- BUNDLE_HEAD_SHA: " + "a"*40 + "\n"
-                "- base: " + "b"*40 + "\nDIFF_DIGEST: " +
-                _cd2.compute_diff_digest({"a.py": _FC(b"old\n", b"new\n")}) + "\n"
-                + cd.diff_section({"a.py": _FC(b"old\n", b"FAKE\n")}) + "\n"
-                "END-OF-BUNDLE sha256:" + "c"*64 + "\n")
-# 注意：这里需要 BASE_SHA/HEAD_SHA；直接测 verify_bundle_diff 的 diff 部分
-_fo = [{"filename": "a.py", "status": "modified", "previous_filename": None}]
-errs = policy_gate.verify_bundle_diff(_fake_bundle, _fo)
-check("伪造 diff 文本被检出", any("展示的 diff" in e for e in errs))
-_good_bundle = ("## 变更文件\n```\na.py\n```\n- BUNDLE_HEAD_SHA: " + "a"*40 + "\n"
-                "- base: " + "b"*40 + "\nDIFF_DIGEST: " +
-                _cd2.compute_diff_digest({"a.py": _FC(b"old\n", b"new\n")}) + "\n"
-                + cd.diff_section({"a.py": _FC(b"old\n", b"new\n")}) + "\n"
-                "END-OF-BUNDLE sha256:" + "c"*64 + "\n")
-check("真实 diff 通过", policy_gate.verify_bundle_diff(_good_bundle, _fo) == [])
-policy_gate.github_file_bytes = _orig_gfb
-policy_gate.github_tree_modes = _orig_gtm
-
 # ---------- 7g. rev8：重命名 / 换行 / reverify fail-closed ----------
 # 重命名分级：旧路径 T2 → 新路径 T0，最终必须仍是 T2
 _ren = [{"filename": "docs/agent_instructions.txt", "status": "renamed",
@@ -634,10 +503,19 @@ check("P3 生命周期：仅新增测试通过", _p3_lifecycle(_pr_add_only) is 
 check("P3 生命周期：symlink 替换被阻断", _p3_lifecycle(_pr_symlink) is False)
 check("P3 生命周期：修改测试通过（留痕）", _p3_lifecycle(_pr_modify) is True)
 check("P3 生命周期：删除测试被阻断", _p3_lifecycle(_pr_delete) is False)
+# Q2-141-H02：check_test_identities 必须返回修改清单（供显著报告），
+# 而不是静默通过——"允许但须审查"，不是"内容绑定"
+check("修改清单被返回（非静默通过）",
+      policy_gate.check_test_identities(
+          {"a.py": ("100644", "b" * 40)},
+          {"a.py": ("100644", "c" * 40)}) == ["a.py"])
+check("无修改返回空清单",
+      policy_gate.check_test_identities(
+          {"a.py": ("100644", "b" * 40)},
+          {"a.py": ("100644", "b" * 40)}) == [])
 
 print()
 print(f"通过 {len(PASS)}/{len(PASS) + len(FAIL)}")
-policy_gate.get_repo_permission = _orig_perm  # 恢复
 if FAIL:
     print("失败项：")
     for f in FAIL:

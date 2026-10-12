@@ -30,3 +30,8 @@ automation/drive_io.py @SkyCjq
 automation/verify.py @SkyCjq
 scripts/prepare_production.py @SkyCjq
 scripts/check_secrets.py @SkyCjq
+
+# Q2-141-H01（2026-10-12）：兜底规则。tiering.py 将未知路径定为 T2，
+# LACD 下 policy 不再硬阻断 T2，故 CODEOWNERS 必须覆盖所有路径，
+# 否则未知 T2 路径（如根目录新增文件）将无指定 owner。
+* @SkyCjq
