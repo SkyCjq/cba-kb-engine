@@ -1,16 +1,20 @@
-# Mode 2.1 pr-gate 可信控制层（Trusted Control Plane）— rev5
+# LACD v1.0 pr-gate 可信控制层（Trusted Control Plane）
 # workflow 定义来自 base 分支，不执行 PR 代码，只做策略核验。
 # 本 job（pr-gate-trusted / policy）为 main 的 required check：结论即门禁。
-# rev5 变更（回应 rev4 独立安全复审 P0-1）：
+# 2026-10-12 LACD 迁移（PR #140，Human 已批准设计）：
+# - policy-gate.py 重写为 LACD 门禁：只做 PR 身份/来源/HEAD 绑定、Bot 作者绑定、
+#   路径分级报告、status:hold 阻断、测试完整性基线。
+# - 取消：mode2-freeze / mode2-review 评论解析、Human 审批的 Python 重验、
+#   tests/evidence 成功状态的重复核验（原生 Required Checks 独立强制）、
+#   review bundle 校验。T2 准入授权移交 CODEOWNERS + 原生分支保护。
+# 历史（rev5，回应 rev4 独立安全复审 P0-1）：
 # - 移除 pull_request_review 触发器：该事件执行 PR merge commit 中的 workflow
 #   定义（低信任），攻击者可借此产出同名假绿灯冒充 required check。
 #   可信 job 只订阅 pull_request_target（base 定义）。
 # - pull_request_target 增加 edited 类型：PR body/title/base 修改后重核验。
-# - 审批变化不自动重核验是 GitHub 信任模型的固有限制（见 queue-runbook 的
-#   诚实说明与缓解）；绝不用低信任事件冒充可信检查。
+# - 审批变化不自动重核验是 GitHub 信任模型的固有限制；绝不用低信任事件冒充可信检查。
 # rev4：base 前置守卫；Action pin 到 commit SHA；pyyaml==6.0.3。
-# Stage3（2026-10-10）：增 issues: read——policy-gate 需读需求 Issue 评论取 freeze 签发，缺之则 403 崩溃。
-# DRAFT：App 审批机制（纯 T0）待 #10 实测；在通过前所有 tier 均需 Human approval。
+# Stage3（2026-10-10）：issues: read 保留——policy-gate 读关联 Issue 标签查 hold。
 name: pr-gate-trusted
 on:
   pull_request_target:
@@ -38,7 +42,7 @@ jobs:
         run: pip install "pyyaml==6.0.3"
       - name: 门禁自测（base 版负面测试）
         run: python .github/scripts/gate_selftest.py
-      - name: 策略核验（tier/digest/隔离层/审批）
+      - name: LACD 策略核验（身份/来源/分级/完整性）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -47,5 +51,4 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
-          TRUSTED_AUTHORS: "SkyCjq,cba-kb-muse-mode2-bot[bot]"
         run: python .github/scripts/policy-gate.py
