@@ -20,7 +20,7 @@ if proc.returncode != 0:
           file=sys.stderr)
     sys.exit(1)
 files = proc.stdout.split()
-tiers = tiering.load_tiers(".github/risk-tiers.yml")
+tiers = tiering.get_tiers()  # 内联冻结分级表（原 risk-tiers.yml rev3 已退役）
 tier = tiering.compute_tier(files, tiers)
 open("tier.txt", "w", encoding="utf-8").write(tier)
 print("display tier:", tier)

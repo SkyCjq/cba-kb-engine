@@ -1,5 +1,5 @@
 # Mode 2.1 CODEOWNERS — 以下路径必须 Human review
-# 与 risk-tiers.yml 的 T2 路径镜像；T2 变更走 13 阶段前也须 owner 先看
+# 与 tiering.py 内联 T2 分级表镜像；T2 变更走 13 阶段前也须 owner 先看
 # @SkyCjq 已确认为 owner 本人 GitHub 账号（2026-10-09）
 
 .github/ @SkyCjq
