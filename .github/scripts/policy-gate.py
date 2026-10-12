@@ -145,9 +145,16 @@ def validate_pr_identity(pr: dict, cfg: IdentityConfig) -> dict:
 
 
 def parse_closes_issue(body: str):
-    """从 PR body 解析 Closes #n（有则返回编号，无则返回 None；不强制要求）。"""
-    m = re.search(r"(?:closes|fixes|resolves)\s+#(\d+)", body or "", re.I)
-    return int(m.group(1)) if m else None
+    """从 PR body 解析 Closes #n（有则返回编号，无则返回 None；不强制要求）。
+
+    Q2-141-M02 修复：多个不同编号 → fail-closed（与 coordinator 的
+    TASK_BINDING_AMBIGUOUS 一致；避免遗漏其他关联 Issue 的 hold 标签）。
+    """
+    nums = sorted({int(n) for n in re.findall(
+        r"(?:closes|fixes|resolves)\s+#(\d+)", body or "", re.I)})
+    if len(nums) > 1:
+        fail(f"关联 Issue 不唯一：{nums}（须恰好一个 Closes #n）")
+    return nums[0] if nums else None
 
 
 def has_hold_label(labels) -> bool:
@@ -312,9 +319,13 @@ def git_blob_identity(repo: str, rel: str, ref: str = "HEAD"):
 def check_test_identities(base_ids, pr_ids):
     """纯函数：比对 {rel: (mode, blob_sha)}；删除/类型改变时 fail()。
 
-    rev11（G-04，保留）：普通测试文件的内容修改不再硬阻断（diff 对 Human 可见）；
-    删除仍阻断（证据销毁不可逆）；类型改变仍阻断（symlink 替换攻击，A1 P3）。
+    rev11（G-04，保留）＋Q2-141-H02：普通测试文件的内容修改不硬阻断，
+    但必须返回修改清单，由调用方以显著方式报告（"允许但须 Human 审查"，
+    不是"内容绑定"）；删除仍阻断（证据销毁不可逆）；
+    类型改变仍阻断（symlink 替换攻击，A1 P3）。
+    返回：内容被修改的文件清单（相对路径列表）。
     """
+    modified = []
     for rel in sorted(base_ids):
         b_mode, b_blob = base_ids[rel]
         p_mode, p_blob = pr_ids.get(rel, (None, None))
@@ -324,7 +335,8 @@ def check_test_identities(base_ids, pr_ids):
             fail(f"测试文件类型被改变：tests/{rel}"
                  f"（{b_mode}→{p_mode}，转人工审查）")
         if p_blob != b_blob:
-            ok(f"测试文件内容被修改：tests/{rel}（rev11 起允许，diff 对 Human 可见）")
+            modified.append(rel)
+    return modified
 
 
 def check_integrity_baseline():
@@ -368,8 +380,19 @@ def check_integrity_baseline():
         subprocess.run(["git", "worktree", "remove", "--force", wt],
                        capture_output=True, check=False)
     ok(f"PR head 实测：{pr_m['test_funcs']} funcs")
-    check_test_identities(base_ids, pr_ids)
-    ok(f"测试文件内容绑定通过：{len(base_shas)} 个 base 测试文件 git 对象一致")
+    modified = check_test_identities(base_ids, pr_ids)
+    # Q2-141-H02/LOW01：诚实表述——本检查只保证"未删除、未改类型"，
+    # 不保证"内容一致"。内容修改允许，但必须显著报告供 Human 审查。
+    ok(f"测试文件删除/类型检查通过：{len(base_shas)} 个 base 测试文件"
+       f"存在且类型一致")
+    if modified:
+        print("TEST_MODIFICATIONS_REQUIRE_HUMAN_REVIEW：以下测试文件内容被修改"
+              "（rev11 起允许，但须 Human 在 diff 中逐项审查，确认非测试弱化）：",
+              flush=True)
+        for rel in modified:
+            print(f"  - tests/{rel}", flush=True)
+    else:
+        ok("测试文件内容无修改")
     errs = compare_integrity_metrics(pr_m, base_m)
     if errs:
         fail("；".join(errs))
