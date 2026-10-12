@@ -7,7 +7,7 @@ LACD 范围（2026-10-12 迁移，Human 已批准设计；迁移 PR #140）：
 - 做：PR 身份/来源/HEAD 绑定（防事件伪造、fork 混入、HEAD 漂移）、
   Bot 作者绑定（fail-closed，LACD_BOT_AUTHOR 可覆盖）、路径分级报告
   （含重命名双路径）、status:hold 标签阻断、测试完整性基线
-  （防测试弱化/删除/symlink 替换）。
+  （防测试文件删除/类型改变/symlink 替换）。
 - 不做：mode2-freeze / mode2-review 评论解析（已退役）、
   Human 审批的 Python 重验（由 GitHub 原生分支保护强制；rev11 G-02 已移除）、
   tests/evidence 成功状态的重复核验（由 GitHub 原生 Required Checks 独立强制，
@@ -284,7 +284,7 @@ def test_file_shas(root: str):
     """{相对路径: sha256}，覆盖 root 下全部 **/*.py（rev6 P0-1 扩展）。
 
     不只 test_*.py：tests/helper.py 这类被测试 import 的辅助模块、
-    conftest.py 等同样影响测试行为，必须纳入内容绑定。
+    conftest.py 等同样影响测试行为，必须纳入完整性基线。
     """
     from pathlib import Path
     out = {}
@@ -319,8 +319,8 @@ def check_test_identities(base_ids, pr_ids):
     """纯函数：比对 {rel: (mode, blob_sha)}；删除/类型改变时 fail()。
 
     rev11（G-04，保留）＋Q2-141-H02：普通测试文件的内容修改不硬阻断，
-    但必须返回修改清单，由调用方以显著方式报告（"允许但须 Human 审查"，
-    不是"内容绑定"）；删除仍阻断（证据销毁不可逆）；
+    但必须返回修改清单，由调用方以显著方式报告（"允许但须 Human 审查"）；
+    删除仍阻断（证据销毁不可逆）；
     类型改变仍阻断（symlink 替换攻击，A1 P3）。
     返回：内容被修改的文件清单（相对路径列表）。
     """
@@ -339,7 +339,7 @@ def check_test_identities(base_ids, pr_ids):
 
 
 def check_integrity_baseline():
-    """rev5 P0-3（保留）：测试文件内容级绑定 + 双边可信重算。
+    """rev5 P0-3（保留）：测试文件完整性基线 + 双边可信重算。
 
     - base 侧：base checkout 本地（base 版扫描器 + 文件哈希，可信）；
     - PR 侧：git fetch PR head → 校验 FETCH_HEAD == HEAD_SHA（防核验中被更新）
