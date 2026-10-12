@@ -1,5 +1,22 @@
 # Mode 2.1 A1 阶段安全契约（冻结版）
 
+> **LACD v1.0 修订附录（2026-10-12，Human 已批准设计，迁移 PR #140）：**
+> 本文件正文为 Mode 2.1 历史冻结版本，原文保留、不改写。LACD 迁移对其的变更如下——
+> - §1 P2（T2 永不进入轻量流/硬阻断）：退役。T2 准入授权移交 GitHub 原生机制
+>   （`.github/CODEOWNERS` 要求 @SkyCjq review ＋分支保护审批要求）；policy 仅报告
+>   FINAL_TIER，不再以"缺 review JSON"硬阻断（硬阻断会使门禁自身维护只能走 bypass）。
+> - §4.2 Freeze、§4.3 Review：退役。`mode2-freeze` / `mode2-review` 评论解析已从
+>   policy-gate.py 删除；Q2 独立审查与证据保留改为流程要求（开发者组证据包＋
+>   独立 Web AI 审查最终 HEAD），不再是机器门禁的解析对象。
+> - §4.4 CI：policy 不再重复核验 tests/evidence 的 run 成功状态（避免
+>   policy→evidence 轮询等待与循环依赖）；由 GitHub 原生 Required Checks 独立强制。
+> - 保留且未弱化：P1（HEAD 绑定）、P3（测试内容绑定，含 P3/P4 修复）、P4（max 分级）、
+>   P6（门禁来自 base）、P7（未知路径 fail-closed）、`status:hold` 阻断、
+>   fork PR 拒绝（新增）、Bot 作者绑定（新增，fail-closed）。
+> - 分支保护实际配置（Required Checks 列表、code owner 强制、审批要求）须由 Human
+>   在管理员界面确认；本迁移不改变 Rulesets/Secrets。
+> 以下为历史原文（冻结，2026-10-09）——
+
 - 版本：A1-contract v1.1（已冻结，2026-10-09）
 - 状态：**已冻结**。为 A1 阶段的唯一验收依据；修改需 Human 批准并走修订流程
 - 依据：Mode 2.1 v2.1 §3（控制器分阶段）、§18（门槛驱动）、独立流程复审（2026-10-09）
