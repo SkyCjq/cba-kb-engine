@@ -433,6 +433,29 @@ def test_N06b_same_locator_diff_id(tmp_path):
     assert "IDENTITY_CROSS_ID_COLLISION" in r["sources/b"]["reason_codes"]
 
 
+def test_N06c_set_equal_cross_id(tmp_path):
+    # R4-N-03: baseline {A,B} vs current {A,B}，同 SHA
+    # 严格成对检查下，(b,A) vs (c,B) 和 (b,B) vs (c,A) 都是跨侧不同 ID
+    # 必须标记 IDENTITY_CROSS_ID_COLLISION
+    bo_a = make_object("A", sha="f" * 64)
+    bo_b = make_object("B", sha="f" * 64)
+    co_a = make_object("A", sha="f" * 64)
+    co_b = make_object("B", sha="f" * 64)
+    evs_b, evs_c = [], []
+    for o in (bo_a, bo_b):
+        evs_b += make_evidence_for(o, locator="loc://x")
+    for o in (co_a, co_b):
+        evs_c += make_evidence_for(o, locator="loc://x")
+    b = make_manifest("r1-b", [bo_a, bo_b], evs_b)
+    c = make_manifest("r1-c", [co_a, co_b], evs_c)
+    rc, rep, out, err = run_r2(b, c, tmp_path)
+    assert rc == 0, err
+    r = by_id(rep)
+    for fid in ("A", "B"):
+        assert r[fid]["status"] == "REVIEW_REQUIRED", f"{fid} should be REVIEW_REQUIRED"
+        assert "IDENTITY_CROSS_ID_COLLISION" in r[fid]["reason_codes"], f"{fid} missing collision code"
+
+
 def test_N07_missing_object_evidence(tmp_path):
     o = make_object("m-1")
     # 只有 SOURCE 证据，无 OBJECT

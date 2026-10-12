@@ -481,6 +481,12 @@ def reconcile(baseline: dict, current: dict) -> dict:
         # 实质性原因：RECORD_CONFLICT、WEAK_ASSOCIATION、SHA256_READ_FAILED、
         #           SYMLINK_TARGET_OUT_OF_SCOPE
         # 按规格 §4.9：不能仅凭 R1 disposition 强制 R2 REVIEW_REQUIRED
+        #
+        # 已知局限 (2026-10-12 Human 风险决策接受)：
+        # - 仅 4 个实质原因码纳入；FINAL_LOCATION_* 等未纳入
+        # - 理由：R2 比较对象本身差异，位置验证不阻碍差异比较；
+        #   F-05 已验证 PROCESSED 状态约束
+        # - 后续优化项：如需更严格，可扩展原因码映射
         SUBSTANTIVE_R1_REASONS = {
             "RECORD_CONFLICT",
             "WEAK_ASSOCIATION", 
@@ -747,6 +753,11 @@ def _resolve_reports_dir(arg: str | None) -> Path:
     # N-01: 测试钩子仅在 pytest 环境下生效
     # PYTEST_CURRENT_TEST 由 pytest 自动设置，生产环境不存在
     # 防止生产调用者通过设置 R2_TEST_REPORTS_ROOT 绕过授权目录限制
+    #
+    # 已知局限 (2026-10-12 Human 风险决策接受 F-08 PARTIAL)：
+    # - N14b 通过环境变量测试符号链接拒绝，未直接调用生产 reports/ 路径
+    # - 生产代码的 is_symlink() 检查顺序正确（先检查后 resolve，见下方）
+    # - 后续优化项：可用 monkeypatch 替换 _get_repo_root() 直接测试生产路径
     test_override = None
     if "PYTEST_CURRENT_TEST" in os.environ:
         test_override = os.environ.get("R2_TEST_REPORTS_ROOT")
@@ -852,7 +863,12 @@ def main(argv: list[str] | None = None) -> int:
     rep["run_id"] = run_id
     rep["generated_at"] = generated_at
 
-    reports_dir.mkdir(parents=True, exist_ok=True)
+    # R4-N-01: mkdir 纳入受控错误处理
+    try:
+        reports_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        print(f"error: cannot create reports dir: {e}", file=sys.stderr)
+        return 1
     
     # 先渲染 Markdown（数量检查在内）
     try:
@@ -926,12 +942,14 @@ def main(argv: list[str] | None = None) -> int:
                 md_bytes += b"\n"
         except OSError as e:
             # R3-N-01/R3-N-02: 写入失败时清理所有已创建的文件
+            # R4-N-02: 清理失败时报告路径，不静默吞掉
             for p, created in ((json_path, json_created), (md_path, md_created)):
                 if created:
                     try:
                         p.unlink()
-                    except OSError:
-                        pass
+                    except OSError as ce:
+                        print(f"warning: cleanup failed for {p}: {ce}",
+                              file=sys.stderr)
             print(f"error: write failed: {e}", file=sys.stderr)
             return 1
 
