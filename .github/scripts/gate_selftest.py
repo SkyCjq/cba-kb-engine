@@ -4,7 +4,7 @@
 对应独立安全复审 rev2/rev3/rev4 报告的 P0 漏洞，每个都是"旧行为必须失败"式的
 差异性证伪：用复审报告中的攻击输入跑真实代码，断言被阻断。
 rev5 新增：决策语义（CHANGES_REQUESTED 后 COMMENTED）、权限 API（mock）、
-测试文件内容绑定、bundle 文件清单。
+测试文件完整性基线、bundle 文件清单。
 
 运行：python3 .github/scripts/gate_selftest.py
 （可信层用 base 版运行；隔离层也运行一份做快速反馈。）
@@ -181,7 +181,7 @@ check("None 标签不误报", policy_gate.has_hold_label(None) is False)
 check("其他标签不误报",
       policy_gate.has_hold_label([{"name": "bug"}]) is False)
 
-# ---------- 7b. 测试文件内容绑定（rev5 P0-3；rev6 扩展到 tests/**/*.py） ----------
+# ---------- 7b. 测试文件完整性基线（rev5 P0-3；rev6 扩展到 tests/**/*.py） ----------
 # assert True 替换攻击：数量完全一致，但内容变了 -> 必须检出
 with tempfile.TemporaryDirectory() as td:
     base_d = os.path.join(td, "base", "tests")
@@ -193,7 +193,7 @@ with tempfile.TemporaryDirectory() as td:
         f.write("def test_security():\n    assert True\n")
     base_shas = policy_gate.test_file_shas(base_d)
     pr_shas = policy_gate.test_file_shas(pr_d)
-    check("assert True 替换被内容绑定检出",
+    check("assert True 替换被完整性基线检出",
           base_shas.get("test_sec.py") != pr_shas.get("test_sec.py"))
     # 计数对比对此无能为力（复审已证明）
     import ast as _ast
@@ -208,7 +208,7 @@ with tempfile.TemporaryDirectory() as td:
     check("未改动文件哈希一致",
           policy_gate.test_file_shas(pr_d) == base_shas)
 
-# rev6 P0-1：tests/helper.py（非 test_*.py）也被内容绑定覆盖
+# rev6 P0-1：tests/helper.py（非 test_*.py）也被完整性基线覆盖
 with tempfile.TemporaryDirectory() as td:
     base_d = os.path.join(td, "base", "tests")
     pr_d = os.path.join(td, "pr", "tests")
@@ -223,7 +223,7 @@ with tempfile.TemporaryDirectory() as td:
         f.write("from helper import secure\ndef test_security():\n    assert secure()\n")
     base_shas = policy_gate.test_file_shas(base_d)
     pr_shas = policy_gate.test_file_shas(pr_d)
-    check("helper.py 纳入内容绑定",
+    check("helper.py 纳入完整性基线",
           "helper.py" in base_shas and "helper.py" in pr_shas)
     check("helper.py 被替换能检出",
           base_shas.get("helper.py") != pr_shas.get("helper.py"))
@@ -341,7 +341,7 @@ _chm = cd.canonical_file_diff("job.sh", _FC(b"#!/bin/sh\n", b"#!/bin/sh\n",
                                            bm="100644", hm="100755"))
 check("chmod 变化被标注", "文件模式：100644 → 100755" in _chm)
 
-# ---------- 8. 完整性计数比对（二级信号；主防线是上面的内容绑定） ----------
+# ---------- 8. 完整性计数比对（二级信号；主防线是上面的完整性基线） ----------
 
 _base = {"test_files": 10, "test_funcs": 27, "skips": 0, "xfails": 0, "asserts": 40}
 check("指标持平通过",
@@ -507,7 +507,7 @@ check("P3 生命周期：symlink 替换被阻断", _p3_lifecycle(_pr_symlink) is
 check("P3 生命周期：修改测试通过（留痕）", _p3_lifecycle(_pr_modify) is True)
 check("P3 生命周期：删除测试被阻断", _p3_lifecycle(_pr_delete) is False)
 # Q2-141-H02：check_test_identities 必须返回修改清单（供显著报告），
-# 而不是静默通过——"允许但须审查"，不是"内容绑定"
+# 而不是静默通过——"允许但须审查"
 check("修改清单被返回（非静默通过）",
       policy_gate.check_test_identities(
           {"a.py": ("100644", "b" * 40)},
