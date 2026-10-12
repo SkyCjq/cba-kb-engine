@@ -67,7 +67,10 @@ for path, pat, exp in GLOB_CASES:
     check(f"glob {pat!r} vs {path!r} == {exp}", got == exp)
 
 # ---------- 2. Vuln 1：混合 PR 降级 ----------
-tiers = tiering.load_tiers(os.path.join(HERE, "..", "risk-tiers.yml"))
+# 退役断言（证伪）：risk-tiers.yml 必须已从仓库删除；在旧树上本断言 FAIL。
+check("risk-tiers.yml 已退役（仓库中不存在）",
+      not os.path.exists(os.path.join(HERE, "..", "risk-tiers.yml")))
+tiers = tiering.get_tiers()  # 内联冻结分级表，不读文件
 WASH_CASES = [
     (["Dockerfile", "README.md"], "T2"),
     (["config/new.yml", "Dockerfile"], "T2"),
@@ -265,7 +268,7 @@ _tps = policy_gate.tier_paths(_ren)
 check("重命名双路径参与分级",
       "AGENTS.md" in _tps and "docs/agent_instructions.txt" in _tps)
 import tiering as _tiering
-_tiers = _tiering.load_tiers(".github/risk-tiers.yml")
+_tiers = _tiering.get_tiers()  # 内联冻结分级表（原 risk-tiers.yml rev3 已退役）
 check("重命名 T2→T0 仍判 T2",
       _tiering.compute_tier(_tps, _tiers) == "T2")
 # 非重命名不受影响

@@ -148,7 +148,7 @@ A1 只保证"合并前的静态检查正确"；"合并那一刻的状态是否�
 
 | 代码 | 处置 |
 |---|---|
-| `tiering.py`、`risk-tiers.yml` | 保留（A1 核心） |
+| `tiering.py`（内联冻结分级表，原 risk-tiers.yml rev3） | 保留（A1 核心） |
 | `policy-gate.py` 核心检查（tier/freeze/review/CI/SHA） | 保留，移除 authz 发布 |
 | `canonical_diff.py`、`build-review-bundle.py` | 保留（证据链） |
 | 双层 workflows（简化版） | 保留，移除 reverify 相关 |

@@ -41,7 +41,6 @@ HEAD_SHA = os.environ.get("HEAD_SHA", "")
 BASE_SHA = os.environ.get("BASE_SHA", "")
 PR_AUTHOR = os.environ.get("PR_AUTHOR", "")
 BASE_REF = os.environ.get("BASE_REF", "")
-TIER_PATH = os.environ.get("TIER_PATH", ".github/risk-tiers.yml")
 # LACD 下所有 PR 经 GitHub App Broker 创建，作者恒为 Bot；fail-closed 默认，
 # 如未来允许 Human 直建 PR，由 Human 专项决策后覆盖本变量（不改代码）。
 BOT_AUTHOR = os.environ.get("LACD_BOT_AUTHOR", "cba-kb-muse-mode2-bot[bot]")
@@ -407,7 +406,7 @@ def main():
        f"作者={identity['author']}")
 
     file_objs = fetch_pr_files(pr)
-    tiers = tiering.load_tiers(TIER_PATH)
+    tiers = tiering.get_tiers()  # 内联冻结分级表（原 risk-tiers.yml rev3 已退役）
     path_tier = tiering.compute_tier(tier_paths(file_objs), tiers)
     print(f"PATH_TIER={path_tier}（{len(file_objs)} 个文件逐一定级取最大，"
           f"重命名双路径）", flush=True)

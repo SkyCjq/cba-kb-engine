@@ -27,5 +27,5 @@
 ## 红线
 
 - 任何真实球员姓名、手机号、身份证号**永不**进入本目录（`check_secrets.py` + CI 扫描）。
-- 新增/修改 fixture 触发 T2（`tests/fixtures/**` 在 risk-tiers.yml 中为 T2），
+- 新增/修改 fixture 触发 T2（`tests/fixtures/**` 在 tiering.py 内联冻结分级表中为 T2），
   须 Human 审查。
