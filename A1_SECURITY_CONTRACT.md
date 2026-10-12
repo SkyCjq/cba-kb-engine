@@ -10,9 +10,17 @@
 >   独立 Web AI 审查最终 HEAD），不再是机器门禁的解析对象。
 > - §4.4 CI：policy 不再重复核验 tests/evidence 的 run 成功状态（避免
 >   policy→evidence 轮询等待与循环依赖）；由 GitHub 原生 Required Checks 独立强制。
-> - 保留且未弱化：P1（HEAD 绑定）、P3（测试内容绑定，含 P3/P4 修复）、P4（max 分级）、
->   P6（门禁来自 base）、P7（未知路径 fail-closed）、`status:hold` 阻断、
->   fork PR 拒绝（新增）、Bot 作者绑定（新增，fail-closed）。
+> - 保留：P1（HEAD 绑定）、P4（max 分级）、P6（门禁来自 base）、
+>   P7（未知路径 fail-closed）、`status:hold` 阻断、fork PR 拒绝（新增）、
+>   Bot 作者绑定（新增，fail-closed）。
+> - P3（测试完整性）精确表述（Q2-141-H02 修订，2026-10-12）：沿用 rev11 G-04 语义——
+>   测试文件**删除**阻断、**类型改变**（如普通文件→symlink）阻断；
+>   普通**内容修改允许，但必须以显著方式报告**（`TEST_MODIFICATIONS_REQUIRE_HUMAN_REVIEW`
+>   块逐项列出），由 Human 在 diff 中审查确认非测试弱化；数量/断言/skips 指标变化
+>   仅记日志。**本门禁不拦截测试内容弱化**，"内容绑定"一词不再使用，避免误导。
+> - T2 覆盖（Q2-141-H01 修订）：CODEOWNERS 新增 `* @SkyCjq` 兜底规则，保证未知路径
+>   （tiering 判 T2）也有指定 owner；T2 准入仍依赖分支保护的 code owner 强制，
+>   配置须 Human 确认（Q2-141-H03 未关闭）。
 > - 分支保护实际配置（Required Checks 列表、code owner 强制、审批要求）须由 Human
 >   在管理员界面确认；本迁移不改变 Rulesets/Secrets。
 > 以下为历史原文（冻结，2026-10-09）——
