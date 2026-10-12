@@ -163,6 +163,14 @@ check("无关联返回 None",
       policy_gate.parse_closes_issue("no link here") is None)
 check("空 body 返回 None",
       policy_gate.parse_closes_issue(None) is None)
+# Q2-141-M02：多个不同 Closes 编号 → fail-closed（与 coordinator 一致）
+try:
+    policy_gate.parse_closes_issue("Closes #7\nCloses #8")
+    check("多 Closes 被拒绝", False)
+except SystemExit:
+    check("多 Closes 被拒绝", True)
+check("重复同一编号不误杀",
+      policy_gate.parse_closes_issue("Closes #7\ncloses #7") == 7)
 check("hold 标签被识别",
       policy_gate.has_hold_label([{"name": "status:hold"}]) is True)
 check("无标签不误报", policy_gate.has_hold_label([]) is False)
@@ -495,6 +503,16 @@ check("P3 生命周期：仅新增测试通过", _p3_lifecycle(_pr_add_only) is 
 check("P3 生命周期：symlink 替换被阻断", _p3_lifecycle(_pr_symlink) is False)
 check("P3 生命周期：修改测试通过（留痕）", _p3_lifecycle(_pr_modify) is True)
 check("P3 生命周期：删除测试被阻断", _p3_lifecycle(_pr_delete) is False)
+# Q2-141-H02：check_test_identities 必须返回修改清单（供显著报告），
+# 而不是静默通过——"允许但须审查"，不是"内容绑定"
+check("修改清单被返回（非静默通过）",
+      policy_gate.check_test_identities(
+          {"a.py": ("100644", "b" * 40)},
+          {"a.py": ("100644", "c" * 40)}) == ["a.py"])
+check("无修改返回空清单",
+      policy_gate.check_test_identities(
+          {"a.py": ("100644", "b" * 40)},
+          {"a.py": ("100644", "b" * 40)}) == [])
 
 print()
 print(f"通过 {len(PASS)}/{len(PASS) + len(FAIL)}")
