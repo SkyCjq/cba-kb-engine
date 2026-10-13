@@ -5,12 +5,17 @@
 {request_id, attempt_id, issue, branch, sha, operation}（AC04 六元组，
 Human 2026-10-09 批准由三元组扩展）。
 全部校验通过才允许 Broker 以 GitHub App 身份创建 PR；任一失败即拒绝。
+T2/UNKNOWN 路径命中时不再创建前拒绝（2026-10-13 bootstrap 修订，Human 批准）：
+校验输出 held=true，workflow 建 PR 后自动挂 status:hold 标签，
+policy 门禁对 hold 标签一律 fail → 合并准入保持阻断，直至人工裁定。
+即：允许创建 ≠ 允许合并（Q1 纠正）。
 
 环境变量：
   PAYLOAD       github.event.client_payload 的 JSON（业务输入，仅允许六元组
                 request_id/attempt_id/issue/branch/sha/operation）
-  SENDER_LOGIN  github.event.sender.login（可信 GitHub 身份；Q1 裁定：允许集 {SkyCjq}）
-  REPO          github.repository（必须锁定为 SkyCjq/cba-kb-engine）
+  SENDER_LOGIN  github.event.sender.login（可信 GitHub 身份；
+                2026-10-13 起允许集 {SkyOneBranch}，旧 SkyCjq 已停用/API 404）
+  REPO          github.repository（必须锁定为 SkyOneBranch/cba-kb-engine）
   GH_TOKEN      只读 GitHub API 调用凭证（供 `gh api` 使用）
   GITHUB_OUTPUT (可选) 写入步骤输出（decision/branch/issue/sha/base_sha/pr_number）
   BRANCH/SHA    幂等/重验/创建后核验模式的输入（已校验值，由 workflow 传递）
@@ -35,8 +40,8 @@ import sys
 from urllib.parse import urlencode
 
 # ---------------------------------------------------------------- 冻结常量
-OWNER_REPO = "SkyCjq/cba-kb-engine"
-ALLOWED_SENDERS = {"SkyCjq"}          # Q1 裁定
+OWNER_REPO = "SkyOneBranch/cba-kb-engine"  # 2026-10-13 bootstrap：旧 SkyCjq 已停用（API 404），现行 SkyOneBranch（API 实测）
+ALLOWED_SENDERS = {"SkyOneBranch"}          # 2026-10-13 bootstrap：与仓库属主同步更新
 BASE_REF = "main"
 BRANCH_RE = re.compile(r"^muse/issue-(\d+)$")   # AC06：严格命名，大小写敏感
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -55,12 +60,15 @@ def derive_request_id(issue, sha):
     """A+ 协议：稳定 request_id 派生规则（调用方与 Broker 共用）。
 
     D1（R4 定向修复）：request_id = "bot-pr-{issue}-{sha}"，sha 为完整 40 位
-    hex。仓库锁定为 SkyCjq/cba-kb-engine、operation 固定为 create_pr，二者不
-    进入 ID。同一逻辑请求重试时 request_id 不变，attempt_id 递增。
+    hex。仓库锁定为 SkyOneBranch/cba-kb-engine（2026-10-13 bootstrap 更新）、
+    operation 固定为 create_pr，二者不进入 ID。同一逻辑请求重试时 request_id
+    不变，attempt_id 递增。
     调用方（impl/caller/broker_request.py）复用本函数，避免两处实现漂移。"""
     return "bot-pr-%d-%s" % (issue, sha)
 
-# 冻结 T2 保护名单（risk-tiers.yml rev3；命中即拒绝，AC11）
+# 冻结 T2 保护名单（risk-tiers.yml rev3；命中即标记 held（AC11）：
+# 允许创建 PR，但须挂 status:hold 阻断合并，直至人工裁定；
+# 2026-10-13 bootstrap 修订，Human 批准）
 T2_PATTERNS = [
     ".github/**",
     "**/AGENTS.md",
@@ -217,9 +225,17 @@ def deny(ac, reason):
     sys.exit(1)
 
 
-def approve(branch, issue, sha, base_sha, idempotent=False, pr_number=None):
+def approve(branch, issue, sha, base_sha, held=False, held_tiers=(),
+            held_paths=(), idempotent=False, pr_number=None):
     decision = {"decision": "approve_idempotent" if idempotent else "approve"}
     decision["base_sha"] = base_sha  # FND-04：记录 diff 基准，供重验与审计
+    # 2026-10-13 bootstrap：held 标记随决策输出，供 workflow 挂 status:hold。
+    # held=true 仅表示"创建后必须 hold"，绝不表示"可合并"——合并准入由
+    # policy 门禁的 hold 标签检查独立阻断。
+    decision["held"] = bool(held)
+    if held:
+        decision["held_tiers"] = list(held_tiers)
+        decision["held_paths"] = list(held_paths)
     if idempotent:
         decision["pr_number"] = pr_number
     print(json.dumps(decision))
@@ -231,6 +247,8 @@ def approve(branch, issue, sha, base_sha, idempotent=False, pr_number=None):
             fh.write("issue=%d\n" % issue)
             fh.write("sha=%s\n" % sha)
             fh.write("base_sha=%s\n" % base_sha)
+            fh.write("held=%s\n" % ("true" if held else "false"))
+            fh.write("held_tiers=%s\n" % ",".join(held_tiers))
             if idempotent:
                 fh.write("pr_number=%s\n" % pr_number)
     sys.exit(0)
@@ -361,7 +379,21 @@ def check_head(issue, branch, sha):
 
 def check_paths(sha):
     """AC11/AC12/AC13：compare 取完整文件清单并逐文件分级。
-    返回 merge_base_commit.sha（FND-04：记录 diff 基准）。"""
+
+    AC13（完整性，fail-closed）：空 diff / 文件清单疑似截断（>=300）/
+    结构异常 / rename 缺 previous_filename → 一律拒绝创建。
+
+    AC11（T2 路径）/ AC12（未覆盖路径）——2026-10-13 bootstrap 修订
+    （Human 批准；Q1 要求解除"创建前拒绝"的自指死结）：
+      不再在创建前拒绝。命中 T2 或 UNKNOWN 的 diff 标记为 held：
+      Broker 仍可创建 PR，但 workflow 建 PR 后必须自动挂 status:hold
+      标签；policy 门禁（main 版可信代码）对带 hold 标签的 PR 一律
+      fail → 合并准入保持阻断，直至 Human 人工裁定并摘除标签。
+      即：允许创建 ≠ 允许合并。纯 T1/T0 diff → 不 hold。
+
+    返回 (base_sha, held, held_tiers, held_paths)；held 为 bool，
+    held_tiers 为命中的需 hold 分级（"T2"/"UNKNOWN" 的子集），
+    held_paths 为触发 hold 的路径清单（审计用，进决策 JSON 与步骤日志）。"""
     try:
         cmp_ = gh_api("repos/%s/compare/%s...%s" % (OWNER_REPO, BASE_REF, sha))
     except ApiError as exc:
@@ -382,30 +414,42 @@ def check_paths(sha):
     # 300 上限：无法证明完整性则拒绝（AC13）
     if len(files) >= COMPARE_FILE_LIMIT:
         deny("AC13", "compare file list may be truncated (>=300 files)")
+    held_tiers = set()
+    held_paths = []
     for f in files:
         if not isinstance(f, dict):
-            deny("AC11", "compare returned malformed file entry")
+            deny("AC13", "compare returned malformed file entry")
         filename = f.get("filename")
         if not isinstance(filename, str) or not filename:
-            deny("AC11", "compare returned malformed filename")
+            deny("AC13", "compare returned malformed filename")
         paths = [filename]
-        # 重命名同时检查原路径与目标路径（AC11）；缺原路径 → 无法判定 → 拒绝（FND-07）
+        # 重命名同时检查原路径与目标路径；缺原路径 → 无法判定 → 拒绝
+        # （FND-07；完整性问题归 AC13）
         if f.get("status") == "renamed":
             prev = f.get("previous_filename")
             if not isinstance(prev, str) or not prev:
                 deny(
-                    "AC11",
+                    "AC13",
                     "renamed without previous_filename: cannot verify original path",
                 )
             paths.append(prev)
         for p in paths:
             tier = classify(p)
             if tier == "T2":
-                deny("AC11", "protected path in diff: %s" % p)
+                # AC11：T2 不再创建前拒绝 → 标记 hold，合并准入由
+                # status:hold 标签阻断，直至人工裁定
+                held_tiers.add("T2")
+                held_paths.append(p)
+            elif tier == "UNKNOWN":
+                # AC12：未覆盖路径同样 hold，直至定级或人工裁定
+                held_tiers.add("UNKNOWN")
+                held_paths.append(p)
             elif tier not in ("T1", "T0"):
-                deny("AC12", "path not covered by allow policy: %s" % p)
-            # T1/T0 → 允许（Q3 裁定）
-    return base_sha
+                # classify 按契约只返回 T2/T1/T0/UNKNOWN；防御性分支，
+                # 未知分级一律 fail-closed（AC13）
+                deny("AC13", "unexpected tier %r for path: %s" % (tier, p))
+            # T1/T0 → 通过（Q3 裁定），不 hold
+    return base_sha, bool(held_tiers), sorted(held_tiers), held_paths
 
 
 def _check_pr_attribution(pr, branch, sha):
@@ -460,7 +504,7 @@ def find_idempotent_pr(branch, sha):
     在同分支 open PR 中寻找通过完整归属核验的 PR。
     返回 PR 编号；无匹配返回 None；任一冲突/结构异常 → raise Deny。
     核验项：state==open、user.login==BOT_LOGIN、
-    head.repo/base.repo 均为 SkyCjq/cba-kb-engine、
+    head.repo/base.repo 均为 SkyOneBranch/cba-kb-engine、
     head.ref==branch、head.sha==sha、base.ref==main。
 
     R5 说明（V:466-469 单页问题 → 经证明不是缺口，故不改分页）：
@@ -474,7 +518,7 @@ def find_idempotent_pr(branch, sha):
     try:
         prs = gh_api(
             "repos/%s/pulls" % OWNER_REPO,
-            {"head": "SkyCjq:%s" % branch, "state": "open", "per_page": "100"},
+            {"head": "SkyOneBranch:%s" % branch, "state": "open", "per_page": "100"},
         )
     except ApiError as exc:
         raise Deny("AC16", "existing-PR lookup failed: %s" % exc)
@@ -682,11 +726,14 @@ def main():
     check_repo()  # AC09
     check_issue(issue)  # AC08
     check_head(issue, branch, sha)  # AC07
-    base_sha = check_paths(sha)  # AC11/AC12/AC13；返回 diff 基准（FND-04）
+    base_sha, held, held_tiers, held_paths = check_paths(sha)  # AC11/AC12/AC13
     pr_number = check_idempotent(branch, sha)  # AC16/AC17/Q5
     if pr_number is not None:
-        approve(branch, issue, sha, base_sha, idempotent=True, pr_number=pr_number)
-    approve(branch, issue, sha, base_sha)
+        approve(
+            branch, issue, sha, base_sha, held, held_tiers, held_paths,
+            idempotent=True, pr_number=pr_number,
+        )
+    approve(branch, issue, sha, base_sha, held, held_tiers, held_paths)
 
 
 if __name__ == "__main__":
