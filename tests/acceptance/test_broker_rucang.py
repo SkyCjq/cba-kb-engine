@@ -15,11 +15,11 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 # R8 PASS_WITH_NOTES 审核版的完整 SHA256（64 位）
 EXPECTED_SHA256 = {
     ".github/workflows/bot-pr-broker.yml":
-        "f5b9d9bcab659decaebf367fd214fbdbb3d678dd4b5e1bbd362076ba89d9566c",
+        "ef81fc518eb3838ba5f25243cd3e4cb8d7f13213c750fe41362ec0d711997a2b",
     ".github/scripts/bot-broker-validate.py":
-        "5788d9589c6eb69134e4aac4023c44c3a635bbc70ce33f4c8d3be9a85a63863a",
+        "e227cc6ac735d95dcbc087910c0b789476cc9e3ac70ab819330a9bfbf3483e33",
     ".github/scripts/bot-broker-receipt.py":
-        "21c3a7ea3113dc79b6c97933487d71d334e0e886fe97a235a9dd8e530b8cd219",
+        "74352cc427a746eb93924b89a142957ebb90e2f867db7ff4198698902ce834e7",
 }
 
 
