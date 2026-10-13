@@ -97,16 +97,16 @@ for files, exp in WASH_CASES:
 _S40 = "a" * 40
 _B40 = "b" * 40
 _CFG = policy_gate.IdentityConfig(
-    repo="SkyCjq/cba-kb-engine", pr_number=141, head_sha=_S40,
+    repo="SkyOneBranch/cba-kb-engine", pr_number=141, head_sha=_S40,
     base_sha=_B40, bot_author="cba-kb-muse-mode2-bot[bot]")
 
 def _base_pr():
     return {
         "number": 141, "state": "open", "draft": False,
         "base": {"ref": "main", "sha": _B40,
-                 "repo": {"full_name": "SkyCjq/cba-kb-engine"}},
+                 "repo": {"full_name": "SkyOneBranch/cba-kb-engine"}},
         "head": {"sha": _S40,
-                 "repo": {"full_name": "SkyCjq/cba-kb-engine"}},
+                 "repo": {"full_name": "SkyOneBranch/cba-kb-engine"}},
         "user": {"login": "cba-kb-muse-mode2-bot[bot]"},
     }
 
@@ -144,7 +144,7 @@ check("非 Bot 作者被拒绝",
 check("目标分支非 main 被拒绝",
       _identity_rejects(lambda p: p["base"].update(ref="develop")))
 _bad_cfg = policy_gate.IdentityConfig(
-    repo="SkyCjq/cba-kb-engine", pr_number=141, head_sha="not-a-sha",
+    repo="SkyOneBranch/cba-kb-engine", pr_number=141, head_sha="not-a-sha",
     base_sha=_B40, bot_author="cba-kb-muse-mode2-bot[bot]")
 try:
     policy_gate.validate_pr_identity(_base_pr(), _bad_cfg)

@@ -31,16 +31,16 @@ B40 = "b" * 40
 
 
 def _cfg():
-    return pg.IdentityConfig(repo="SkyCjq/cba-kb-engine", pr_number=140,
+    return pg.IdentityConfig(repo="SkyOneBranch/cba-kb-engine", pr_number=140,
                              head_sha=S40, base_sha=B40, bot_author=BOT)
 
 
 def _pr(**kw):
     d = {"number": 140, "state": "open", "draft": False,
          "base": {"ref": "main", "sha": B40,
-                  "repo": {"full_name": "SkyCjq/cba-kb-engine"}},
+                  "repo": {"full_name": "SkyOneBranch/cba-kb-engine"}},
          "head": {"sha": S40,
-                  "repo": {"full_name": "SkyCjq/cba-kb-engine"}},
+                  "repo": {"full_name": "SkyOneBranch/cba-kb-engine"}},
          "user": {"login": BOT}}
     d.update(kw)
     return d

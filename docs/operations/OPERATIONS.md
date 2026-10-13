@@ -12,7 +12,7 @@ Public engine users do not need access to private Google Drive storage or privat
 
 ### 1.1 Environment Setup
 ```bash
-git clone https://github.com/SkyCjq/cba-kb-engine.git
+git clone https://github.com/SkyOneBranch/cba-kb-engine.git
 cd cba-kb-engine
 
 python3.11 -m venv .venv

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "visibility": "public_safe_default",
-  "github_repository": "SkyCjq/cba-kb-engine",
+  "github_repository": "SkyOneBranch/cba-kb-engine",
   "instance_root_env": "CBA_KB_INSTANCE_ROOT",
   "private_config_required": true,
   "production_enabled": false,
