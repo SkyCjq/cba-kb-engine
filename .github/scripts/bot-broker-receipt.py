@@ -37,7 +37,7 @@ reason 永不含 secret/token（校验器的 deny reason 本就不含）。
 
 环境变量：
   GH_TOKEN      GITHUB_TOKEN（只写回执评论，不做其他写操作）
-  REPO          SkyCjq/cba-kb-engine（锁定）
+  REPO          SkyOneBranch/cba-kb-engine（锁定；2026-10-13 bootstrap 更新）
   SENDER_LOGIN  github.event.sender.login（防御性复验用）
   PAYLOAD       github.event.client_payload 的 JSON（含六元组）
   RUN_ID        github.run_id
@@ -65,7 +65,7 @@ import sys
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
-OWNER_REPO = "SkyCjq/cba-kb-engine"
+OWNER_REPO = "SkyOneBranch/cba-kb-engine"  # 2026-10-13 bootstrap：旧 SkyCjq 已停用（API 404），现行 SkyOneBranch（API 实测）
 RECEIPT_AUTHOR = "github-actions[bot]"
 VALID_STATUSES = {"PENDING", "RUNNING", "CREATED", "REJECTED", "FAILED"}
 # R5 FND-17：终态集合 —— 一旦写入，任何不同状态的覆盖尝试都必须被拒绝。
@@ -400,7 +400,7 @@ def _find_matching_pr(req):
     try:
         prs = _get_all_pages(
             "repos/%s/pulls" % OWNER_REPO,
-            {"head": "SkyCjq:%s" % req["branch"], "state": "all"})
+            {"head": "SkyOneBranch:%s" % req["branch"], "state": "all"})
     except ApiError as exc:
         fail("cannot reconcile PRs in finalize: %s" % exc)
     for pr in prs:
@@ -412,6 +412,25 @@ def _find_matching_pr(req):
         except _VALIDATOR.Deny:
             continue
     return None
+
+
+def _held_extra():
+    """2026-10-13 bootstrap：held PR 的终态回执附加审计字段。
+
+    从 workflow 传入的 HELD / HELD_TIERS / HOLD_APPLIED 环境变量读取；
+    仅当 HELD == "true" 时返回非空。hold_applied 仅在本次 run 执行过
+    apply-hold 步骤时存在（true=标签已确认在位；false=挂标失败，
+    PR 已被关闭，fail-closed）。"""
+    extra = {}
+    if os.environ.get("HELD", "").strip() == "true":
+        extra["held"] = True
+        tiers = os.environ.get("HELD_TIERS", "").strip()
+        if tiers:
+            extra["held_tiers"] = tiers
+        applied = os.environ.get("HOLD_APPLIED", "").strip()
+        if applied:
+            extra["hold_applied"] = (applied == "true")
+    return extra
 
 
 def cmd_finalize():
@@ -429,7 +448,7 @@ def cmd_finalize():
     val_outcome = os.environ.get("VALIDATE_OUTCOME", "").strip()
     val_pr = os.environ.get("VALIDATE_PR_NUMBER", "").strip()
 
-    extra = {}
+    extra = _held_extra()  # 2026-10-13 bootstrap：held 审计字段（非 held 请求为空）
     status = None
     if create_pr:
         status = "CREATED"
@@ -477,8 +496,10 @@ def cmd_rejected_if_derivable():
        AC05（身份层）→ **不写**（非法请求不得污染合法派生 marker；调用方将
        走向 UNKNOWN/HOLD，fail-closed）。无 deny 证据（ac is None）→ 也不写
        （只有可信的 deny 证据才构成 REJECTED，见 FND-20）。
-    4. 只有 AC06+（分支绑定/Issue 状态/T2 路径/幂等冲突等"格式合法但政策拒绝"）
+    4. 只有 AC06+（分支绑定/Issue 状态/幂等冲突等"格式合法但政策拒绝"）
        才写 REJECTED（marker 用派生 ID）。
+       注：2026-10-13 bootstrap 起，T2/UNKNOWN 路径不再触发拒绝（改为 held），
+       故不再属于此处的拒绝示例。
 
     deny 证据缺失/不可派生 → 静默退出 0（调用方按"无终态回执"走对账/超时）。"""
     repo = os.environ.get("REPO", "")
