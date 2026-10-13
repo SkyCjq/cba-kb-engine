@@ -1,0 +1,25 @@
+# LACD configuration (schema_version "1").
+# Created by `lacd init`. See docs/specification/PROTOCOL.md.
+# Required keys must not be removed.
+schema_version: '1'
+lacd:
+  enabled: true
+  mode: lacd
+  policy_version: '1'
+  upstream_repo: SkyOneBranch/LACD
+governance:
+  pull_request_required: true
+  human_merge_required: true
+  risk_tiers:
+  - T0
+  - T1
+  - T2
+verification:
+  bind_to_commit_sha: true
+  fail_closed: true
+  github_enforcement_required: true
+agents:
+  protocol: lacd
+  auto_detect: true
+project:
+  extensions: .lacd/project-rules.yaml
