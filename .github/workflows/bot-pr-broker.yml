@@ -6,6 +6,11 @@
 # - 与无私钥的 pr-gate 双工作流完全隔离；私钥只以 Secret 名引用，永不落盘/日志（AC03）。
 # - Muse 不持有私钥；Broker 仅建 PR，不审批、不合并、不改保护规则（AC20）。
 # - 全程 fail-closed：任何校验/API 失败 → 拒绝建 PR，无降级通道（AC21）。
+# - T2/UNKNOWN 不再创建前拒绝（2026-10-13 bootstrap 修订，Human 批准）：
+#   Broker 可建 PR，但 held=true 的 PR 建后自动挂 status:hold 标签；
+#   policy 门禁（main 版可信代码）对 hold 标签一律 fail → 合并准入保持阻断，
+#   直至 Human 人工裁定并摘除标签。允许创建 ≠ 允许合并。
+#   挂标失败 → 关闭 PR 并失败 job，绝不留下无 hold 的 T2/UNKNOWN PR。
 # - 幂等入口一律复用校验器的完整归属核验（FND-02）：state/author/head.repo/base.repo/
 #   ref/sha，任一不符 → 拒绝并报告冲突，绝不"找到编号就成功"。
 name: bot-pr-broker
@@ -55,10 +60,11 @@ jobs:
 
       # R4 D3-① / FND-17：sender 白名单先行。失败 → 直接失败，
       # 不写任何回执（回执 marker 本身可被滥用来污染/审计污染）。
+      # 2026-10-13 bootstrap：旧 SkyCjq 已停用（API 404），现行 SkyOneBranch。
       - name: 断言 sender 白名单（失败不写回执）
         run: |
           set -euo pipefail
-          if [ "${{ github.event.sender.login }}" != "SkyCjq" ]; then
+          if [ "${{ github.event.sender.login }}" != "SkyOneBranch" ]; then
             echo "FATAL: sender '${{ github.event.sender.login }}' is not in the allowed set; refusing without receipt" >&2
             exit 1
           fi
@@ -166,6 +172,23 @@ jobs:
           permission-pull-requests: write
           permission-contents: read
 
+      - name: 预检 status:hold 标签存在（held 请求，fail fast）
+        # 2026-10-13 bootstrap：held PR 的合并阻断完全依赖该标签；
+        # 标签缺失时在建 PR 之前即失败，不创建无保护的 PR（fail-closed，无降级）。
+        # Human 请在仓库 Settings → Labels 确认 status:hold 存在（一次性手工动作）。
+        if: steps.validate.outcome == 'success' && steps.validate.outputs.decision == 'approve' && steps.validate.outputs.held == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! gh api "repos/${REPO}/labels/status:hold" >/dev/null 2>&1; then
+            echo "FATAL: label 'status:hold' 不存在于 ${REPO}；held PR 将无法获得合并阻断保护，拒绝建 PR" >&2
+            echo "请 Human 在仓库 Settings → Labels 新建 status:hold 后重派。" >&2
+            exit 1
+          fi
+          echo "hold 标签预检通过"
+
       - name: 建 PR 前重验 HEAD 与 diff 基准（AC10/FND-04）
         if: steps.validate.outcome == 'success' && steps.validate.outputs.decision == 'approve'
         env:
@@ -205,6 +228,8 @@ jobs:
           BRANCH: ${{ steps.validate.outputs.branch }}
           ISSUE: ${{ steps.validate.outputs.issue }}
           SHA: ${{ steps.validate.outputs.sha }}
+          HELD: ${{ steps.validate.outputs.held }}
+          HELD_TIERS: ${{ steps.validate.outputs.held_tiers }}
         run: |
           set -euo pipefail
           # FND-02：防御性二次幂等检查复用校验器的完整归属核验
@@ -226,6 +251,12 @@ jobs:
           # 标题/正文仅为元数据：只含已校验的 issue/branch，不含任何敏感信息（AC18）。
           TITLE="Bot PR for issue #${ISSUE} (${BRANCH})"
           BODY="由 bot-pr-broker 以 GitHub App 身份创建。关联 Issue #${ISSUE}，候选分支 ${BRANCH}。请求已通过 Broker 校验。\n\nCloses #${ISSUE}"
+          if [ "${HELD}" = "true" ]; then
+            # 2026-10-13 bootstrap：held PR 正文注明 hold 原因，与 status:hold
+            # 标签互为印证；合并需 Human 人工裁定后摘除标签。注意 BODY= 首行保持
+            # 单行（test_broker_body_recognized_by_policy 依赖该格式）。
+            BODY="${BODY}\n\n> ⏸ **Broker 自动保持（hold）**：该 PR 触及需 hold 路径（${HELD_TIERS}），已自动挂 status:hold 标签；合并前需人工裁定，Human 摘除标签后方可合并。"
+          fi
           if CREATE_OUT="$(gh pr create --repo "${REPO}" --head "${BRANCH}" --base main \
               --title "${TITLE}" --body "${BODY}")"; then
             echo "PR created; verifying created PR attribution..."
@@ -263,6 +294,43 @@ jobs:
             exit 1
           fi
 
+      - name: 应用 hold 标签（held PR 合并阻断，fail-closed）
+        id: apply-hold
+        # 2026-10-13 bootstrap：held=true 的 PR 必须出生即带 status:hold，
+        # 否则 policy 门禁无法阻断其合并。挂标失败 → 关闭 PR + job 失败，
+        # 绝不留下无 hold 的 T2/UNKNOWN PR（fail-closed）。
+        # 注意：只处理本次校验通过且拿到编号的 PR（decision == approve）；
+        # 幂等命中的既有 PR 不碰标签（摘标 = Human 裁定，Broker 不与之对抗）。
+        if: steps.validate.outcome == 'success' && steps.validate.outputs.decision == 'approve' && steps.validate.outputs.held == 'true' && steps.create.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ steps.create.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          HOLD_OK=false
+          if gh pr edit "${PR_NUM}" --repo "${REPO}" --add-label "status:hold"; then
+            # 回读确认标签确实在位（防 API 静默失败）
+            if gh pr view "${PR_NUM}" --repo "${REPO}" --json labels \
+                --jq '.labels[].name' | grep -qx "status:hold"; then
+              echo "status:hold 已应用并确认在位 (PR #${PR_NUM})"
+              HOLD_OK=true
+            else
+              echo "FATAL: add-label 返回成功但回读未见 status:hold" >&2
+            fi
+          else
+            echo "FATAL: gh pr edit --add-label status:hold 失败" >&2
+          fi
+          echo "hold_applied=${HOLD_OK}" >> "$GITHUB_OUTPUT"
+          if [ "${HOLD_OK}" != "true" ]; then
+            # fail-closed：关闭该 PR，不留无保护的 T2/UNKNOWN PR；
+            # Human 可重开 + 手工挂标后继续裁定（审计见 run 日志与回执）。
+            echo "正在关闭 PR #${PR_NUM}（hold 保护不可用，fail-closed）..." >&2
+            gh pr close "${PR_NUM}" --repo "${REPO}" \
+              || echo "WARN: 关闭 PR 亦失败，请 Human 人工处置 PR #${PR_NUM}" >&2
+            exit 1
+          fi
+
       - name: 写回执终态（CREATED / REJECTED）
         # R4 D3/D4：校验失败时由专用的 REJECTED 步骤处理；此处只处理校验通过路径。
         # always() 保证创建步骤失败时仍尝试写终态；run 被取消时本步骤可能不执行 →
@@ -285,6 +353,10 @@ jobs:
           VALIDATE_PR_NUMBER: ${{ steps.validate.outputs.pr_number }}
           CREATE_PR_NUMBER: ${{ steps.create.outputs.pr_number }}
           DENY_FILE: ${{ runner.temp }}/broker-deny.json
+          # 2026-10-13 bootstrap：held 审计字段进终态回执。
+          HELD: ${{ steps.validate.outputs.held }}
+          HELD_TIERS: ${{ steps.validate.outputs.held_tiers }}
+          HOLD_APPLIED: ${{ steps.apply-hold.outputs.hold_applied }}
         run: |
           set -euo pipefail
           python3 .github/scripts/bot-broker-receipt.py --finalize
