@@ -81,6 +81,9 @@ WASH_CASES = [
     (["automation/verify.py"], "T2"),
     (["tests/fixtures/contract/x.csv"], "T2"),
     (["docs/a/AGENTS.md"], "T2"),
+    (["lacd.yaml"], "T2"),
+    ([".lacd/lock.json"], "T2"),
+    ([".lacd/project-rules.yaml"], "T2"),
     ([], "T2"),
 ]
 for files, exp in WASH_CASES:

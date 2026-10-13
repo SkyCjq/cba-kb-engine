@@ -58,6 +58,8 @@ T2_PATTERNS = [
     "tests/conftest.py",          # 测试架构（可颠覆全部测试）
     "tests/fixtures/**",          # fixture 数据（可能混入真实数据；变更走人工）
     "docs/mode2/**",              # AI 指令文件
+    "lacd.yaml",                  # LACD 治理配置（REQ-019；2.0.3-4 P1 接入上调 T2）
+    ".lacd/**",                   # LACD 内部（lock.json/project-rules.yaml；受管文件）
 ]
 T1_PATTERNS = [
     "src/**",
