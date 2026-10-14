@@ -122,7 +122,8 @@ cba-kb --instance-root /tmp/cbakb-demo inbox-poll --interval-seconds 30
 cba-kb --instance-root /tmp/cbakb-demo archive-status --all
 cba-kb --instance-root /tmp/cbakb-demo archive-query --keyword "Harbor Falcons"
 cba-kb --instance-root /tmp/cbakb-demo archive-query --title "Synthetic CBA Bulletin"
-cba-kb --instance-root /tmp/cbakb-demo archive-query --visibility public --keyword "Harbor"
+# 注意：--visibility public 已延期到后续 PR（SCOPED PR1）。
+# 本版本所有文档均为 local-only。
 ```
 
 安全约束（默认 fail-closed）：
@@ -134,14 +135,11 @@ cba-kb --instance-root /tmp/cbakb-demo archive-query --visibility public --keywo
   在重扫后依然保留：重复摄入相同输入（以内容哈希验证，而非 mtime/size）
   不会清除复核决定。仅触碰 mtime 而不改字节，或改 sidecar 字节后恢复
   mtime/size，都不能绕过复核。
-- `local` 可见性（默认）面向该外置实例的操作者；`public` 可见性只返回
-  有真实权利证据的合成样例。多个来源共享的文档，仅在所有关联来源都
-  无未解决复核时才可公开搜索；任一关联来源进入复核，该文档即被隔离出
-  公开搜索（仍可通过干净来源在本地查到）。若关联来源记录缺失，查询将
-  fail-closed（`INDEX_FAILED`），而非将缺失视为干净。这是一个搜索过滤器，
-  不是发布审批：PR-1 没有任何发布路径，任何公开暴露仍应视为需要人工复核
-  的残余风险（每次元数据变更都会重估权利，查询时也会重验，但自动化检查
-  不能替代人工权利审查）。
+- **SCOPED PR1（2026-10-14）**：自动公开授权已**延期**到后续独立 PR。
+  所有文档均为 local-only；`--visibility public` 会被拒绝。权利元数据仍会
+  解析存储，但永不触发自动公开。公开声明一律进入 `REVIEW_REQUIRED` 等待
+  人工复核。若关联来源记录缺失，查询将 fail-closed（`INDEX_FAILED`），
+  而非将缺失视为干净。PR-1 没有任何发布路径。
 - Inbox 原件永不重命名、移动或删除（`archive_status` 保持
   `NOT_REQUESTED`）。
 - 所有状态保存在 `<instance>/data/` 下；引擎源码目录永不被写入。

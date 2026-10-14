@@ -124,7 +124,8 @@ cba-kb --instance-root /tmp/cbakb-demo inbox-poll --interval-seconds 30
 cba-kb --instance-root /tmp/cbakb-demo archive-status --all
 cba-kb --instance-root /tmp/cbakb-demo archive-query --keyword "Harbor Falcons"
 cba-kb --instance-root /tmp/cbakb-demo archive-query --title "Synthetic CBA Bulletin"
-cba-kb --instance-root /tmp/cbakb-demo archive-query --visibility public --keyword "Harbor"
+# Note: --visibility public is deferred to a future PR (SCOPED PR1).
+# All documents are local-only in this release.
 ```
 
 Security constraints (fail-closed by default):
@@ -138,18 +139,14 @@ Security constraints (fail-closed by default):
   inputs (verified by content hash, not mtime/size) does not clear it.
   Touching mtime without changing bytes, or changing sidecar bytes while
   restoring mtime/size, does not bypass the review.
-- `local` visibility (default) is for the operator of that external
-  instance; `public` visibility only returns attested synthetic fixtures
-  with real rights evidence. A document shared by multiple sources is
-  publicly searchable only while every linked source is review-clean; if any
-  linked source enters review, the document is quarantined from public
-  search (still visible locally via clean sources). If a linked source
-  record is missing, the query fails closed (`INDEX_FAILED`) rather than
-  treating the missing source as clean. This is a search filter,
-  not a publication approval: there is no publish path in PR-1, and operators
-  should still treat any public exposure as a residual risk to be reviewed
-  (rights are re-evaluated on every metadata change and re-verified at query
-  time, but no automated check replaces human rights clearance).
+- **SCOPED PR1 (2026-10-14)**: Automatic public authorization is
+  DEFERRED to a future independent PR. All documents are local-only;
+  `--visibility public` is rejected. The rights metadata is still parsed
+  and stored, but never triggers automatic public visibility. A public
+  classification claim routes the file to `REVIEW_REQUIRED` for human
+  review. If a linked source record is missing, the query fails closed
+  (`INDEX_FAILED`) rather than treating the missing source as clean.
+  There is no publish path in PR-1.
 - Inbox originals are never renamed, moved, or deleted
   (`archive_status` stays `NOT_REQUESTED`).
 - All state lives under `<instance>/data/`; the engine source tree is

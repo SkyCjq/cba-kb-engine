@@ -103,7 +103,11 @@ def _normalize_query_text(value: str) -> str:
 
 
 def load_sidecar(path: Path):
-    """Return (metadata, error_code). error_code is None when valid.
+    """Return (metadata, error_code, raw_bytes).
+
+    error_code is None when valid; raw_bytes is the exact byte snapshot
+    that was parsed (R7-B1: parse and hash use the same snapshot, so the
+    stored metadata_sha256 always describes the parsed rights).
 
     C1: any structural anomaly (wrong types, unparsable URL, unreadable
     file) is a metadata rejection, never an exception escaping to the
@@ -112,7 +116,7 @@ def load_sidecar(path: Path):
     try:
         return _load_sidecar_inner(path)
     except Exception:
-        return None, "METADATA_INVALID"
+        return None, "METADATA_INVALID", None
 
 
 def _load_sidecar_inner(path: Path):
@@ -120,50 +124,50 @@ def _load_sidecar_inner(path: Path):
         # O_NOFOLLOW: never follow a symlinked sidecar (A2).
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except OSError:
-        return None, "METADATA_UNREADABLE"
+        return None, "METADATA_UNREADABLE", None
     try:
         with os.fdopen(fd, "rb") as handle:
             raw = handle.read()
     except OSError:
-        return None, "METADATA_UNREADABLE"
+        return None, "METADATA_UNREADABLE", None
     try:
         data = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError, UnicodeDecodeError):
-        return None, "METADATA_UNREADABLE"
+        return None, "METADATA_UNREADABLE", None
     if not isinstance(data, dict):
-        return None, "METADATA_OBJECT_REQUIRED"
+        return None, "METADATA_OBJECT_REQUIRED", None
     if data.get("schema_version") != 1:
-        return None, "METADATA_SCHEMA_VERSION_INVALID"
+        return None, "METADATA_SCHEMA_VERSION_INVALID", None
     title = data.get("title")
     if not isinstance(title, str) or not title.strip():
-        return None, "METADATA_TITLE_REQUIRED"
+        return None, "METADATA_TITLE_REQUIRED", None
     origin = data.get("origin")
     if not isinstance(origin, str) or origin not in ORIGINS:
-        return None, "METADATA_ORIGIN_INVALID"
+        return None, "METADATA_ORIGIN_INVALID", None
     source_url = data.get("source_url")
     if source_url is not None:
         if not isinstance(source_url, str) or not source_url.strip():
-            return None, "METADATA_SOURCE_URL_INVALID"
+            return None, "METADATA_SOURCE_URL_INVALID", None
         try:
             parts = urlsplit(source_url.strip())
         except ValueError:
-            return None, "METADATA_SOURCE_URL_INVALID"
+            return None, "METADATA_SOURCE_URL_INVALID", None
         if parts.scheme not in ("http", "https") or not parts.hostname:
-            return None, "METADATA_SOURCE_URL_INVALID"
+            return None, "METADATA_SOURCE_URL_INVALID", None
     rights = data.get("rights")
     if not isinstance(rights, dict):
-        return None, "METADATA_RIGHTS_REQUIRED"
+        return None, "METADATA_RIGHTS_REQUIRED", None
     classification = rights.get("classification")
     if not isinstance(classification, str) \
             or classification not in RIGHTS_CLASSIFICATIONS:
-        return None, "METADATA_RIGHTS_CLASSIFICATION_INVALID"
+        return None, "METADATA_RIGHTS_CLASSIFICATION_INVALID", None
     if not isinstance(rights.get("public_export_allowed"), bool):
-        return None, "METADATA_RIGHTS_EXPORT_FLAG_INVALID"
+        return None, "METADATA_RIGHTS_EXPORT_FLAG_INVALID", None
     evidence = rights.get("evidence")
     if not isinstance(evidence, list):
-        return None, "METADATA_RIGHTS_EVIDENCE_INVALID"
+        return None, "METADATA_RIGHTS_EVIDENCE_INVALID", None
     if any(not isinstance(item, dict) for item in evidence):
-        return None, "METADATA_RIGHTS_EVIDENCE_STRUCTURE_INVALID"
+        return None, "METADATA_RIGHTS_EVIDENCE_STRUCTURE_INVALID", None
     return {
         "schema_version": 1,
         "title": title.strip(),
@@ -174,24 +178,29 @@ def _load_sidecar_inner(path: Path):
             "public_export_allowed": rights["public_export_allowed"],
             "evidence": rights["evidence"],
         },
-    }, None
+    }, None, raw
 
 
 def decide_visibility(meta):
-    """Return (visibility, reason); visibility in {public, local, review}."""
+    """Return (visibility, reason); visibility in {local, review}.
+
+    SCOPED PR1 (2026-10-14 Human decision): automatic public authorization
+    is DEFERRED to a future independent PR. All newly ingested documents
+    are local-only by default. The rights metadata is still parsed and
+    stored, but never triggers automatic public visibility.
+    Review logic is preserved: invalid/missing metadata and unverified
+    public claims still go to human review.
+    """
     if meta is None:
         return "review", "METADATA_MISSING"
     rights = meta["rights"]
     classification = rights["classification"]
     if classification == "public":
-        # Public auto-eligibility is restricted to attested synthetic
-        # fixtures. A third-party or self-declared public claim without
-        # verifiable authorization evidence never auto-opens.
-        if (meta["origin"] == "synthetic_fixture"
-                and rights["public_export_allowed"] is True
-                and len(rights["evidence"]) > 0):
-            return "public", "SYNTHETIC_PUBLIC_ATTESTED"
-        return "review", "PUBLIC_CLAIM_UNVERIFIED"
+        # SCOPED: public auto-authorization deferred. A public claim
+        # (even synthetic+evidence) goes to review instead of auto-public.
+        # (Original: public iff synthetic_fixture + public_export_allowed
+        #  + evidence; deferred to future PR.)
+        return "review", "PUBLIC_DEFERRED_TO_REVIEW"
     if classification == "private":
         return "local", "PRIVATE_LOCAL_ONLY"
     return "review", "RIGHTS_UNDETERMINED"
@@ -486,34 +495,13 @@ class InboxLifecycle:
             self._write_index(kept)
 
     def _doc_visibility(self, doc_id, linked_records):
-        """Recompute a document's visibility from archive rights + origins.
+        """Recompute a document's visibility.
 
-        Invariant 4: Unified public_ok predicate.
-        B1/B3: every linked source's CURRENT rights must allow public,
-        not just the archive's rights. This is the same predicate used
-        by _verify_candidate at query time.
+        SCOPED PR1 (2026-10-14 Human decision): automatic public
+        authorization is DEFERRED. Always returns "local".
+        The rights metadata is preserved for future use.
         """
-        archive_record = self._archive_record(doc_id)
-        rights = (archive_record.get("rights")
-                  if archive_record else {}) or {}
-        # Check each source's current rights (B3 fix).
-        all_source_rights_public = all(
-            (rec.get("rights") or {}).get("classification") == "public"
-            and (rec.get("rights") or {}).get("public_export_allowed") is True
-            and bool((rec.get("rights") or {}).get("evidence"))
-            for rec in linked_records
-        )
-        public_ok = (
-            rights.get("classification") == "public"
-            and rights.get("public_export_allowed") is True
-            and bool(rights.get("evidence"))
-            and all((rec.get("provenance") or {}).get("origin")
-                    == "synthetic_fixture" for rec in linked_records)
-            and all(rec.get("review_status") == "NONE"
-                    for rec in linked_records)
-            and all_source_rights_public
-        )
-        return "public" if public_ok else "local"
+        return "local"
 
     def _rebuild_index(self):
         """Rebuild the materialized index from the source records.
@@ -810,12 +798,30 @@ class InboxLifecycle:
         rel_posix = name
         source_id = source_id_for(rel_posix)
         file_id = file_id_for(rel_posix)
-        stat = os.stat(self.inbox_root / name)
-        size, mtime_ns = stat.st_size, stat.st_mtime_ns
-        sidecar_exists, sidecar_size, sidecar_mtime_ns = \
-            self._sidecar_stat(rel_posix)
-
+        # R7-C1: resolve the source identity BEFORE recoverable scan
+        # operations, so a pre-verification failure can quarantine the
+        # previously trusted state instead of leaving it intact.
         record = self._load_source(source_id)
+        try:
+            stat = os.stat(self.inbox_root / name)
+            size, mtime_ns = stat.st_size, stat.st_mtime_ns
+            sidecar_exists, sidecar_size, sidecar_mtime_ns = \
+                self._sidecar_stat(rel_posix)
+        except OSError as exc:
+            # The current input cannot be inspected. Do not trust the old
+            # completed state: quarantine it (fail-closed). A later scan
+            # will retry once the input is inspectable again.
+            if (record is not None
+                    and record.get("processing_status")
+                    == "PROCESSING_COMPLETE"):
+                self._mark_failed(record, "INPUT_INSPECT_FAILED", summary)
+            else:
+                summary["errors"].append(
+                    {"file": name,
+                     "reason": "INPUT_INSPECT_FAILED:"
+                               + type(exc).__name__})
+            return
+
         if record is None:
             summary["discoveries"] += 1
             record = self._new_source_record(source_id, file_id, rel_posix)
@@ -888,15 +894,17 @@ class InboxLifecycle:
             "last_scan_at": now,
         }
         if observations < 2 or (now - first_observed) < window:
-            if record.get("processing_status") != "PROCESSING_COMPLETE":
-                record["processing_status"] = "PENDING_STABILITY"
-                record["observed_size"] = size
-                record["observed_mtime_ns"] = mtime_ns
-                record["sidecar_exists"] = sidecar_exists
-                record["sidecar_size"] = sidecar_size
-                record["sidecar_mtime_ns"] = sidecar_mtime_ns
-                record["last_seen_at"] = _utc_now()
-                self._save_source(record)
+            # R7-A1: a changed input must immediately invalidate the old
+            # completed state, even if it was PROCESSING_COMPLETE. The old
+            # trust does not survive while the new input awaits stability.
+            record["processing_status"] = "PENDING_STABILITY"
+            record["observed_size"] = size
+            record["observed_mtime_ns"] = mtime_ns
+            record["sidecar_exists"] = sidecar_exists
+            record["sidecar_size"] = sidecar_size
+            record["sidecar_mtime_ns"] = sidecar_mtime_ns
+            record["last_seen_at"] = _utc_now()
+            self._save_source(record)
             return
 
         # Stable: re-read and re-stat before processing.
@@ -1193,17 +1201,14 @@ class InboxLifecycle:
             self._mark_review(record, "METADATA_SYMLINK_REJECTED", raw,
                               raw_sha256, summary, sidecar=sidecar)
             return
-        meta, meta_error = (load_sidecar(sidecar_path)
-                            if sidecar_path.is_file()
-                            else (None, "METADATA_MISSING"))
-        if meta is not None:
-            try:
-                metadata_sha256 = _sha256_hex(
-                    sidecar_path.read_bytes())
-            except OSError:
-                metadata_sha256 = None
-        else:
-            metadata_sha256 = None
+        meta, meta_error, meta_raw = (load_sidecar(sidecar_path)
+                                      if sidecar_path.is_file()
+                                      else (None, "METADATA_MISSING", None))
+        # R7-B1: hash the SAME byte snapshot that was parsed; never
+        # re-read the file (a second read could observe different bytes).
+        metadata_sha256 = (_sha256_hex(meta_raw)
+                           if meta is not None and meta_raw is not None
+                           else None)
         record["metadata_sha256"] = metadata_sha256
 
         visibility, visibility_reason = decide_visibility(meta)
@@ -1412,8 +1417,16 @@ class InboxLifecycle:
     def _archive_record(self, doc_id):
         if not doc_id:
             return None
-        path = (Path(self.instance.data_root).resolve() / "document_lane"
-                / "archive" / doc_id / "record.json")
+        # R7-A2 (lifecycle-side defense): do not trust reads through a
+        # symlinked per-document archive directory. Lane-side writes are
+        # outside this module's control (document_lane.py is out of scope
+        # for this PR); this check ensures we never READ through such a
+        # link and treat the result as our own state.
+        doc_dir = (Path(self.instance.data_root).resolve() / "document_lane"
+                   / "archive" / doc_id)
+        if os.path.islink(doc_dir):
+            return None
+        path = doc_dir / "record.json"
         if not path.is_file():
             return None
         try:
@@ -1518,14 +1531,21 @@ class InboxLifecycle:
 
     def query(self, *, id=None, title=None, keyword=None,
               visibility="local"):
-        """Rights-aware search over the materialized index."""
+        """Rights-aware search over the materialized index.
+
+        SCOPED PR1: only local visibility is supported. Public is deferred.
+        """
         modes = [name for name, value in
                  (("id", id), ("title", title), ("keyword", keyword))
                  if value is not None]
         if len(modes) != 1:
             raise InboxLifecycleError(
                 "ARCHIVE_QUERY_EXACTLY_ONE_MODE_REQUIRED")
-        if visibility not in ("local", "public"):
+        # SCOPED: public deferred.
+        if visibility == "public":
+            raise InboxLifecycleError(
+                "ARCHIVE_QUERY_PUBLIC_DEFERRED")
+        if visibility not in ("local",):
             raise InboxLifecycleError("ARCHIVE_QUERY_VISIBILITY_INVALID")
         self._acquire_lock()
         try:
@@ -1604,14 +1624,12 @@ class InboxLifecycle:
                 "INDEX_FAILED: archive text unreadable:" + doc_id) from exc
 
     def _verify_candidate(self, item, link):
-        """Re-check rights, origin and integrity; hit or None to skip.
+        """Re-check integrity; hit or None to skip.
 
-        The public-visibility predicate is implemented independently here.
-        B1: a document shared by multiple sources is publicly searchable
-        only if EVERY linked source is clean (not in review) and qualifies.
-        If any linked source has an unresolved review, the document is
-        quarantined from public search (still visible locally via the
-        clean sources). A stale link (source moved on) is healed away.
+        SCOPED PR1 (2026-10-14): public authorization is deferred. All
+        documents are local-only. This method verifies the source is
+        review-clean and the archive is intact; it never returns public.
+        A stale link (source moved on) is healed away.
         """
         doc_id = item["doc_id"]
         source = self._load_source(link.get("source_id"))
@@ -1628,58 +1646,15 @@ class InboxLifecycle:
         if archive_record is None:
             raise InboxLifecycleError(
                 "INDEX_FAILED: archive record missing:" + doc_id)
-        rights = archive_record.get("rights") or {}
-        # B1 quarantine: every linked source that still belongs to this
-        # document must be review-clean and origin-qualified for the
-        # shared document to be public. A stale link (source moved to a
-        # different document) is ignored here; the matched-link path
-        # heals it away.
-        # B2: a missing source record is fail-closed, not skipped. If we
-        # cannot verify a linked source, we cannot prove the document is
-        # safe for public search.
-        all_clean = True
-        all_synthetic = True
-        all_rights_public = True
-        all_complete = True
+        # B2: a missing linked source record is fail-closed, not skipped.
         for other in item.get("links", []):
             other_rec = self._load_source(other.get("source_id"))
             if other_rec is None:
-                # B2: missing record -> cannot verify -> fail closed.
-                # Raise INDEX_FAILED rather than silently treating as clean.
                 raise InboxLifecycleError(
                     "INDEX_FAILED: linked source record missing: " +
                     str(other.get("source_id")))
-            if other_rec.get("doc_id") != doc_id:
-                continue
-            if other_rec.get("review_status") != "NONE":
-                all_clean = False
-            # R6-A1: every linked source must be PROCESSING_COMPLETE.
-            # A FAILED source (even with old public rights) blocks public.
-            # Historical public permissions do not survive failures.
-            if other_rec.get("processing_status") != "PROCESSING_COMPLETE":
-                all_complete = False
-            if ((other_rec.get("provenance") or {}).get("origin")
-                    != "synthetic_fixture"):
-                all_synthetic = False
-            # B1: every linked source's CURRENT rights must allow public.
-            # A source that tightened to private must block public search,
-            # even if the archive still has old public rights.
-            src_rights = other_rec.get("rights") or {}
-            if not (src_rights.get("classification") == "public"
-                    and src_rights.get("public_export_allowed") is True
-                    and bool(src_rights.get("evidence"))):
-                all_rights_public = False
-        provenance = source.get("provenance") or {}
-        public_ok = (
-            rights.get("classification") == "public"
-            and rights.get("public_export_allowed") is True
-            and bool(rights.get("evidence"))
-            and provenance.get("origin") == "synthetic_fixture"
-            and all_clean
-            and all_synthetic
-            and all_rights_public
-            and all_complete)
-        visibility = "public" if public_ok else "local"
+        # SCOPED: always local; public is deferred to a future PR.
+        visibility = "local"
         text = self._indexed_text(doc_id)
         if doc_content_hash(text) != item.get("content_hash"):
             raise InboxLifecycleError(

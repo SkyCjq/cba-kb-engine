@@ -60,6 +60,8 @@ def main():
     q=sub.add_parser('archive-query')
     g=q.add_mutually_exclusive_group(required=True)
     g.add_argument('--id'); g.add_argument('--title'); g.add_argument('--keyword')
+    # SCOPED PR1: --visibility public is deferred. Kept for CLI compat but
+    # rejected with a clear message.
     q.add_argument('--visibility',choices=('local','public'),default='local')
     q=sub.add_parser('document-ingest')
     q.add_argument('--capture-channel',choices=(
@@ -397,6 +399,12 @@ def main():
             for flag in (a.id,a.title,a.keyword):
                 if flag is not None and not flag.strip():
                     raise ValueError('ARCHIVE_QUERY_TEXT_REQUIRED')
+            # SCOPED PR1: public visibility is deferred.
+            if a.visibility == 'public':
+                raise ValueError(
+                    'ARCHIVE_QUERY_PUBLIC_DEFERRED: automatic public '
+                    'authorization is deferred to a future PR; '
+                    'use --visibility local')
             result=InboxLifecycle(root,private_instance()).query(
                 id=a.id,title=a.title,keyword=a.keyword,
                 visibility=a.visibility)
