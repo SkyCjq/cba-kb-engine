@@ -135,13 +135,17 @@ Security constraints (fail-closed by default):
   public claim without verifiable evidence routes the file to
   `REVIEW_REQUIRED` — never silently ingested, never publicly searchable.
   An unresolved human review persists across rescans: re-ingesting identical
-  inputs does not clear it.
+  inputs (verified by content hash, not mtime/size) does not clear it.
+  Touching mtime without changing bytes, or changing sidecar bytes while
+  restoring mtime/size, does not bypass the review.
 - `local` visibility (default) is for the operator of that external
   instance; `public` visibility only returns attested synthetic fixtures
   with real rights evidence. A document shared by multiple sources is
   publicly searchable only while every linked source is review-clean; if any
   linked source enters review, the document is quarantined from public
-  search (still visible locally via clean sources). This is a search filter,
+  search (still visible locally via clean sources). If a linked source
+  record is missing, the query fails closed (`INDEX_FAILED`) rather than
+  treating the missing source as clean. This is a search filter,
   not a publication approval: there is no publish path in PR-1, and operators
   should still treat any public exposure as a residual risk to be reviewed
   (rights are re-evaluated on every metadata change and re-verified at query
@@ -149,9 +153,17 @@ Security constraints (fail-closed by default):
 - Inbox originals are never renamed, moved, or deleted
   (`archive_status` stays `NOT_REQUESTED`).
 - All state lives under `<instance>/data/`; the engine source tree is
-  never written to. If `<instance>/data` (or the inbox) resolves outside the
-  instance or inside the engine tree — e.g. via a symlink — the lifecycle
-  refuses to start with `INBOX_LIFECYCLE_PATH_ESCAPE` before any write.
+  never written to. If `<instance>/data` (or the inbox, or any state
+  subdirectory like `data/inbox_lifecycle`, or the DocumentLane write
+  targets) resolves outside the instance or inside the engine tree — e.g.
+  via a symlink — the lifecycle refuses to start with
+  `INBOX_LIFECYCLE_PATH_ESCAPE` before any write. The final resolved paths
+  are validated, not just their parents.
+- The bytes archived are the bytes verified: after the stability gate, the
+  lifecycle verifies that the DocumentLane ingested the exact bytes it
+  verified (content hash match). If the lane saw different bytes (e.g. a
+  file swapped between verification and ingest), the ingest fails closed
+  with `LANE_CONTENT_MISMATCH` instead of archiving unverified content.
 
 Not in PR-1 (remains v2.0.4 follow-up work): Drive-backed discovery and
 adapters, guarded archive move/retain, full cross-backend recovery,

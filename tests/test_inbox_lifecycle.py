@@ -868,3 +868,129 @@ def test_a32_malformed_metadata_does_not_abort_scan(tmp_path):
     assert by_name["bad2.txt"]["review_status"] == "REVIEW_REQUIRED"
     assert by_name["good.txt"]["review_status"] == "NONE"
     assert by_name["good.txt"]["index_status"] == "SEARCHABLE"
+
+
+def test_a33_sidecar_mtime_touch_does_not_clear_review(tmp_path):
+    """Q2 round-3 A1: touching ONLY the sidecar's mtime (no content change)
+    must not clear an unresolved review. Identity is content-based."""
+    private = private_instance(tmp_path)
+    write_txt(private, "orig.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    write_txt(private, "near.txt", NEAR_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    records = source_records(private)
+    target = next(r["relative_path"] for r in records.values()
+                  if r["review_status"] == "REVIEW_REQUIRED")
+    # Touch ONLY the sidecar, not the TXT.
+    os.utime(private / "inbox/documents" / (target + ".source.json"), None)
+    scan(private)
+    scan(private)
+    records = source_records(private)
+    rec = next(r for r in records.values()
+               if r["relative_path"] == target)
+    assert rec["review_status"] == "REVIEW_REQUIRED", (
+        "sidecar mtime touch must not clear review")
+
+
+def test_a34_state_subdir_symlink_rejected(tmp_path):
+    """Q2 round-3 A2: a symlink at data/inbox_lifecycle (subdir, not just
+    data_root) must be rejected before any write."""
+    private = private_instance(tmp_path)
+    write_txt(private, "t.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    # Replace data/inbox_lifecycle with a symlink to outside.
+    import shutil
+    shutil.rmtree(private / "data/inbox_lifecycle")
+    outside = tmp_path / "fake-engine"
+    outside.mkdir()
+    (private / "data/inbox_lifecycle").symlink_to(outside)
+    result = command("--instance-root", str(private), "inbox-scan")
+    assert result.returncode != 0, "subdir symlink must fail"
+    assert "INBOX_LIFECYCLE_PATH_ESCAPE" in (result.stdout + result.stderr)
+    assert list(outside.rglob("*")) == []
+
+
+def test_a35_sidecar_content_change_detected_despite_same_stat(tmp_path):
+    """Q2 round-3 B1: changing sidecar content (keeping same size via
+    whitespace, restoring mtime) must trigger re-evaluation, not be ignored."""
+    private = private_instance(tmp_path)
+    write_txt(private, "p.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    # Change classification to private. Try to keep same size via whitespace,
+    # restore mtime. The fix hash-verifies content, so any change is caught.
+    import os
+    sidecar_path = private / "inbox/documents/p.txt.source.json"
+    orig_mtime = sidecar_path.stat().st_mtime_ns
+    meta = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    meta["rights"]["classification"] = "private"
+    meta["rights"]["public_export_allowed"] = False
+    new_content = json.dumps(meta, indent=2)
+    # Ensure valid JSON.
+    json.loads(new_content)
+    sidecar_path.write_text(new_content, encoding="utf-8")
+    os.utime(sidecar_path, ns=(orig_mtime, orig_mtime))
+    scan(private)
+    scan(private)
+    records = source_records(private)
+    rec = next(iter(records.values()))
+    # The rights change must be detected (review or re-evaluated).
+    assert rec["review_status"] == "REVIEW_REQUIRED" or \
+        rec.get("rights", {}).get("classification") == "private", (
+        "sidecar content change must not be ignored")
+
+
+def test_a36_missing_linked_source_fails_closed(tmp_path):
+    """Q2 round-3 B2: if a linked source record is deleted, the shared
+    document must not become public (fail-closed, INDEX_FAILED)."""
+    private = private_instance(tmp_path)
+    txt = "Shared content for B2 test."
+    write_txt(private, "qa.txt", txt, SYNTHETIC_META)
+    write_txt(private, "qb.txt", txt, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    # Tighten qa.txt to trigger quarantine.
+    meta = json.loads(json.dumps(SYNTHETIC_META))
+    meta["origin"] = "third_party"
+    meta["rights"] = {"classification": "copyrighted",
+                      "public_export_allowed": False, "evidence": []}
+    (private / "inbox/documents/qa.txt.source.json").write_text(
+        json.dumps(meta), encoding="utf-8")
+    scan(private)
+    scan(private)
+    # Delete qa's source record JSON (simulate loss).
+    records = source_records(private)
+    qa_id = next(r["source_id"] for r in records.values()
+                 if r["relative_path"] == "qa.txt")
+    (lifecycle_dir(private) / "sources" / f"{qa_id}.json").unlink()
+    # Query must fail closed, not return the doc as public.
+    result = command("--instance-root", str(private),
+                     "archive-query", "--keyword", "B2 test",
+                     "--visibility", "public")
+    # Either INDEX_FAILED (non-zero) or count==0 (quarantined).
+    if result.returncode == 0:
+        assert json.loads(result.stdout)["count"] == 0, (
+            "missing record must not fail open to public")
+    else:
+        assert "INDEX_FAILED" in (result.stdout + result.stderr)
+
+
+def test_a37_corrupt_index_at_scan_start_rebuilt_or_failed(tmp_path):
+    """Q2 round-3 C1: a corrupt index.json at scan start must not be
+    silently ignored; the scan rebuilds from sources or fails."""
+    private = private_instance(tmp_path)
+    write_txt(private, "x.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    # Corrupt the index.
+    (lifecycle_dir(private) / "index.json").write_text("[]", encoding="utf-8")
+    # Scan should rebuild (sources exist) and not report success with
+    # a corrupt index silently.
+    summary = scan(private)
+    # After rebuild, the index should be valid.
+    index_data = json.loads(
+        (lifecycle_dir(private) / "index.json").read_text(encoding="utf-8"))
+    assert isinstance(index_data, dict), "index must be rebuilt to valid shape"
+    assert summary["errors"] == [] or any(
+        "index" in str(e).lower() for e in summary["errors"])

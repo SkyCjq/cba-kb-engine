@@ -204,14 +204,27 @@ class InboxLifecycle:
         self.engine_root = Path(engine_root).resolve()
         self.instance = instance
         instance_root = Path(instance.root).resolve()
+        # A2: resolve the FINAL paths, not just data_root. A symlink at
+        # data/inbox_lifecycle (or any subdirectory) must not redirect
+        # writes outside the instance. We resolve state_root fully and
+        # validate it, not just its parent.
+        data_root = Path(instance.data_root).resolve()
         self.inbox_root = Path(instance.document_input_root).resolve()
-        self.state_root = (Path(instance.data_root).resolve()
-                           / "inbox_lifecycle")
-        # A6: the resolved state and inbox paths must stay inside the
-        # instance and outside the engine tree. A symlinked data/ or
-        # inbox/ directory must not redirect writes elsewhere.
-        for label, path in (("state", self.state_root),
-                            ("inbox", self.inbox_root)):
+        # Resolve the full state path, following any symlinks in the chain.
+        # If data/inbox_lifecycle is a symlink, this reveals its target.
+        self.state_root = (data_root / "inbox_lifecycle").resolve()
+        # A2: also validate the DocumentLane write targets.
+        lane_roots = [
+            (data_root / "document_lane" / "archive").resolve(),
+            (data_root / "document_lane" / "review").resolve(),
+            (data_root / "document_lane" / "reports").resolve(),
+        ]
+        # A6/A2: the resolved state, inbox, and lane paths must stay inside
+        # the instance and outside the engine tree.
+        for label, path in ([("state", self.state_root),
+                             ("inbox", self.inbox_root)] +
+                            [(f"lane_{i}", p)
+                             for i, p in enumerate(lane_roots)]):
             try:
                 path.relative_to(instance_root)
             except ValueError:
@@ -531,6 +544,17 @@ class InboxLifecycle:
         # never silent) instead of continuing with a partial view.
         if not self.index_path.is_file() and self._all_sources():
             self._rebuild_index()
+        # C1: validate the existing index at scan start. A corrupt index
+        # must not be silently ignored while the scan reports success.
+        if self.index_path.is_file():
+            try:
+                self._load_index_documents(strict=True)
+            except InboxLifecycleError as exc:
+                if self._all_sources():
+                    self._rebuild_index()
+                else:
+                    raise InboxLifecycleError(
+                        f"SCAN_FAILED: {exc}") from exc
         summary = {
             "schema_version": SCHEMA_VERSION,
             "started_at": started,
@@ -611,6 +635,41 @@ class InboxLifecycle:
             return False
         return _sha256_hex(raw) == expected
 
+    def _sidecar_content_hash(self, rel_posix):
+        """Return the sidecar's content hash, or None if absent/unreadable.
+
+        A1/B1: sidecar identity must be content-based, not stat-based.
+        A symlinked sidecar returns None (rejected elsewhere).
+        """
+        path = self.inbox_root / (rel_posix + SIDECAR_SUFFIX)
+        if os.path.islink(path):
+            return None
+        try:
+            # O_NOFOLLOW for defense in depth (A2).
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError:
+            return None
+        try:
+            with os.fdopen(fd, "rb") as handle:
+                return _sha256_hex(handle.read())
+        except OSError:
+            return None
+
+    def _fast_path_sidecar_ok(self, rel_posix, record):
+        """Verify sidecar content hash for the fast path (B1).
+
+        If the record has a stored metadata_sha256, the current sidecar
+        content must hash to the same value. If the sidecar is absent
+        (or was absent), stat comparison suffices.
+        """
+        expected = record.get("metadata_sha256")
+        if not expected:
+            # No stored hash (e.g. sidecar was missing); stat check suffices.
+            return True
+        actual = self._sidecar_content_hash(rel_posix)
+        # If the sidecar is now unreadable but was present, that's a change.
+        return actual == expected
+
     def _sidecar_stat(self, rel_posix):
         """Return (exists, size, mtime_ns) for the sidecar, without reading.
 
@@ -646,16 +705,17 @@ class InboxLifecycle:
         # and the source was fully processed. Sidecar state is part of the
         # identity: a metadata-only change must re-trigger rights
         # re-evaluation, never ride the fast path.
-        # A4: stat alone is spoofable (same size + restored mtime), so for
-        # TXT files we also verify the content hash. Reading + hashing is
-        # cheaper than reprocessing and closes the silent-staleness gap.
+        # A4/B1: stat alone is spoofable (same size + restored mtime), so
+        # for TXT and sidecar we verify content hashes. Reading + hashing
+        # is cheaper than reprocessing and closes the silent-staleness gap.
         if (record.get("processing_status") == "PROCESSING_COMPLETE"
                 and record.get("observed_size") == size
                 and record.get("observed_mtime_ns") == mtime_ns
                 and record.get("sidecar_exists") == sidecar_exists
                 and record.get("sidecar_size") == sidecar_size
                 and record.get("sidecar_mtime_ns") == sidecar_mtime_ns
-                and self._fast_path_hash_ok(name, size, record)):
+                and self._fast_path_hash_ok(name, size, record)
+                and self._fast_path_sidecar_ok(rel_posix, record)):
             record["last_seen_at"] = _utc_now()
             self._save_source(record)
             return
@@ -805,14 +865,33 @@ class InboxLifecycle:
         source has an unresolved review. Removing the link would hide the
         dispute; keeping it makes the quarantine visible. Oversized inputs
         are never copied into the review area.
+
+        A4: rejected revisions are appended to revision_history. The history
+        records the content hash, reason, and status, so a content change
+        that leads to rejection is not silently lost.
         """
         exists, size, mtime_ns = sidecar
+        # A4: append rejected revision to history before updating.
+        if raw_sha256:
+            history = record.setdefault("revision_history", [])
+            # Only append if this is a new raw hash (avoid duplicates from
+            # re-scans of the same rejected content).
+            if not history or history[-1].get("raw_sha256") != raw_sha256:
+                history.append({
+                    "observed_at": _utc_now(),
+                    "raw_sha256": raw_sha256,
+                    "content_hash": None,  # rejected before lane ingest
+                    "doc_id": record.get("doc_id"),
+                    "disposition": "review_required",
+                    "review_reason": reason,
+                })
         record.update(
             processing_status="PROCESSING_COMPLETE",
             disposition="review_required",
             review_status="REVIEW_REQUIRED",
             index_status="NOT_INDEXED",
             review_reason=reason,
+            raw_sha256=raw_sha256,  # A4: update hash even when rejected
             sidecar_exists=exists,
             sidecar_size=size,
             sidecar_mtime_ns=mtime_ns,
@@ -870,24 +949,30 @@ class InboxLifecycle:
         raw_sha256 = _sha256_hex(raw)
         previous_raw_sha256 = record.get("raw_sha256")
         prev_review = record.get("review_status")
-        prev_sidecar = (record.get("sidecar_exists"),
-                        record.get("sidecar_size"),
-                        record.get("sidecar_mtime_ns"))
         # A1: an unresolved human review persists. Re-ingesting identical
-        # inputs (same bytes, same sidecar) is not an approval and must not
-        # clear the review decision. Only a real input change re-opens it.
-        if (prev_review == "REVIEW_REQUIRED"
-                and previous_raw_sha256 == raw_sha256
-                and prev_sidecar == tuple(sidecar)):
-            record["last_seen_at"] = _utc_now()
-            self._save_source(record)
-            summary["review_required"] += 1
-            self._ledger_event("source_review_persisted", {
-                "source_id": record["source_id"],
-                "relative_path": rel_posix,
-                "review_reason": record.get("review_reason"),
-            })
-            return
+        # inputs (same bytes, same sidecar CONTENT) is not an approval and
+        # must not clear the review decision. Only a real input change
+        # re-opens it. Identity is content-based, not stat-based: touching
+        # mtime without changing bytes does not clear the review.
+        if prev_review == "REVIEW_REQUIRED":
+            prev_meta_hash = record.get("metadata_sha256")
+            curr_meta_hash = self._sidecar_content_hash(rel_posix)
+            # If the sidecar was absent before and is absent now, that's
+            # identical. If it was present, hashes must match.
+            sidecar_identical = (
+                (prev_meta_hash is None and curr_meta_hash is None) or
+                (prev_meta_hash is not None and
+                 prev_meta_hash == curr_meta_hash))
+            if (previous_raw_sha256 == raw_sha256 and sidecar_identical):
+                record["last_seen_at"] = _utc_now()
+                self._save_source(record)
+                summary["review_required"] += 1
+                self._ledger_event("source_review_persisted", {
+                    "source_id": record["source_id"],
+                    "relative_path": rel_posix,
+                    "review_reason": record.get("review_reason"),
+                })
+                return
         record.update(
             raw_sha256=raw_sha256,
             observed_size=len(raw),
@@ -996,6 +1081,23 @@ class InboxLifecycle:
         doc_id = lane_result.get("doc_id")
         content_hash = lane_result.get("content_hash")
         lane_disposition = lane_result.get("disposition")
+        # A3: verify the lane consumed our verified bytes, not different
+        # bytes read from disk after our verification. If the lane re-read
+        # a swapped file, its content_hash won't match our expected hash.
+        try:
+            expected_text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            self._mark_review(record, "TXT_ENCODING_UNSUPPORTED", raw,
+                              raw_sha256, summary, sidecar=sidecar)
+            return
+        from cba_kb.document_lane import normalize_text, content_hash as lane_content_hash
+        expected_content_hash = lane_content_hash(normalize_text(expected_text))
+        if content_hash != expected_content_hash:
+            self._mark_failed(
+                record,
+                "LANE_CONTENT_MISMATCH: lane saw different bytes than verified",
+                summary, sidecar=sidecar)
+            return
         if lane_result.get("status") == "REVIEW_REQUIRED":
             disposition = "review_required"
             review_status = "REVIEW_REQUIRED"
@@ -1040,7 +1142,10 @@ class InboxLifecycle:
             source_url=meta["source_url"],
             content_hash=content_hash,
             doc_id=doc_id,
-            rights=archive_rights,
+            # The source record stores its OWN rights from its sidecar.
+            # The archive_rights (document-level) is used for visibility
+            # decisions, but the source's rights must reflect its sidecar.
+            rights=lane_rights,
             provenance=provenance,
             processing_status="PROCESSING_COMPLETE",
             disposition=disposition,
@@ -1303,12 +1408,19 @@ class InboxLifecycle:
         # shared document to be public. A stale link (source moved to a
         # different document) is ignored here; the matched-link path
         # heals it away.
+        # B2: a missing source record is fail-closed, not skipped. If we
+        # cannot verify a linked source, we cannot prove the document is
+        # safe for public search.
         all_clean = True
         all_synthetic = True
         for other in item.get("links", []):
             other_rec = self._load_source(other.get("source_id"))
             if other_rec is None:
-                continue
+                # B2: missing record -> cannot verify -> fail closed.
+                # Raise INDEX_FAILED rather than silently treating as clean.
+                raise InboxLifecycleError(
+                    "INDEX_FAILED: linked source record missing: " +
+                    str(other.get("source_id")))
             if other_rec.get("doc_id") != doc_id:
                 continue
             if other_rec.get("review_status") != "NONE":
