@@ -133,7 +133,8 @@ Security constraints (fail-closed by default):
   title, origin, and rights. Missing/invalid/unreadable metadata (including
   structurally malformed values), non-UTF-8 bytes, a symlinked sidecar, or a
   public claim without verifiable evidence routes the file to
-  `REVIEW_REQUIRED` — never silently ingested, never publicly searchable.
+  `REVIEW_REQUIRED` — never silently ingested. (SCOPED: there is no
+  public search in this release, so "publicly searchable" does not apply.)
   An unresolved human review persists across rescans: re-ingesting identical
   inputs (verified by content hash, not mtime/size) does not clear it.
   Touching mtime without changing bytes, or changing sidecar bytes while

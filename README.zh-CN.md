@@ -128,7 +128,7 @@ cba-kb --instance-root /tmp/cbakb-demo archive-query --title "Synthetic CBA Bull
 - 每个 `.txt` 都需要同名 `.txt.source.json` sidecar，声明标题、来源
   与权利。缺失/非法/不可读的元数据（含结构畸形值）、非 UTF-8 字节、
   符号链接的 sidecar、无可验证证据的公开声明，一律进入
-  `REVIEW_REQUIRED`——绝不静默入库，绝不进入公开搜索。未解决的人工复核
+  `REVIEW_REQUIRED`——绝不静默入库。（SCOPED：本版本无公开搜索。）未解决的人工复核
   在重扫后依然保留：重复摄入相同输入（以内容哈希验证，而非 mtime/size）
   不会清除复核决定。仅触碰 mtime 而不改字节，或改 sidecar 字节后恢复
   mtime/size，都不能绕过复核。
