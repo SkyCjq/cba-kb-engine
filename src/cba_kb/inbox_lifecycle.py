@@ -98,6 +98,33 @@ def _read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+# Maximum size for trusted small JSON files (record.json, etc.).
+_JSON_MAX_BYTES = 1 << 20  # 1 MiB
+
+
+def _read_json_nofollow(path: Path):
+    """Read JSON with O_NOFOLLOW and a size bound.
+
+    R10 F4: refuses symlinks at the final component and rejects
+    unbounded reads. Used for archive record.json.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise exc
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError("not a regular file")
+        with os.fdopen(fd, "rb") as handle:
+            raw = handle.read(_JSON_MAX_BYTES + 1)
+    except OSError:
+        raise
+    if len(raw) > _JSON_MAX_BYTES:
+        raise OSError("JSON too large")
+    return json.loads(raw.decode("utf-8"))
+
+
 def _normalize_query_text(value: str) -> str:
     return unicodedata.normalize("NFKC", value).casefold()
 
@@ -313,13 +340,23 @@ class InboxLifecycle:
             raise InboxLifecycleError(
                 "INBOX_LIFECYCLE_LOCK_OPEN_FAILED: " + str(exc)) from exc
         # Verify it's a regular file (not a FIFO, socket, etc.).
+        # Also reject hardlinks (st_nlink > 1): ftruncate on a hardlinked
+        # .lock would truncate an external file (R10 F2). The lock file
+        # must be owned solely by this instance.
         try:
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode):
                 os.close(fd)
                 raise InboxLifecycleError(
                     "INBOX_LIFECYCLE_PATH_ESCAPE: .lock is not a regular file")
-        except OSError:
+            if st.st_nlink > 1:
+                os.close(fd)
+                raise InboxLifecycleError(
+                    "INBOX_LIFECYCLE_PATH_ESCAPE: .lock has hardlinks "
+                    "(refusing to truncate)")
+        except OSError as exc:
+            if isinstance(exc, InboxLifecycleError):
+                raise
             pass
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -736,9 +773,18 @@ class InboxLifecycle:
         expected = record.get("raw_sha256")
         if not expected or size == 0 or size > MAX_AUTO_TXT_BYTES:
             return True
+        # R10 F4: bounded no-follow read (not unbounded read_bytes).
         try:
-            raw = (self.inbox_root / name).read_bytes()
+            fd = os.open(self.inbox_root / name,
+                         os.O_RDONLY | os.O_NOFOLLOW)
         except OSError:
+            return False
+        try:
+            with os.fdopen(fd, "rb") as handle:
+                raw = handle.read(MAX_AUTO_TXT_BYTES + 1)
+        except OSError:
+            return False
+        if len(raw) > MAX_AUTO_TXT_BYTES:
             return False
         return _sha256_hex(raw) == expected
 
@@ -1427,8 +1473,29 @@ class InboxLifecycle:
         })
         _ = envelope  # envelope validated the intake contract; archive holds text
 
+    def _archive_root_ok(self):
+        """Check the archive root for detectable relocation.
+
+        DELTA §6.4: reject pre-existing illegal relocations detectable
+        at query time. The init-time resolved-path check is point-in-time;
+        this catches a swapped archive/ directory (symlink) before use.
+        Concurrent substitution races remain out-of-model (DELTA §5).
+        """
+        archive_root = (Path(self.instance.data_root).resolve()
+                        / "document_lane" / "archive")
+        if os.path.islink(archive_root):
+            return False
+        try:
+            resolved = archive_root.resolve()
+            resolved.relative_to(Path(self.instance.root).resolve())
+        except (OSError, ValueError):
+            return False
+        return True
+
     def _archive_record(self, doc_id):
         if not doc_id:
+            return None
+        if not self._archive_root_ok():
             return None
         # R7-A2 (lifecycle-side defense): do not trust reads through a
         # symlinked per-document archive directory. Lane-side writes are
@@ -1443,7 +1510,7 @@ class InboxLifecycle:
         if not path.is_file():
             return None
         try:
-            return _read_json(path)
+            return _read_json_nofollow(path)
         except (OSError, ValueError):
             return None
 
@@ -1664,6 +1731,9 @@ class InboxLifecycle:
         # is insufficient: a symlink at text.txt itself (inside a normal
         # directory) would bypass it. O_NOFOLLOW refuses symlinks at the
         # final component too.
+        if not self._archive_root_ok():
+            raise InboxLifecycleError(
+                "INDEX_FAILED: archive root relocated:" + doc_id)
         doc_dir = (Path(self.instance.data_root).resolve() / "document_lane"
                    / "archive" / doc_id)
         if os.path.islink(doc_dir):

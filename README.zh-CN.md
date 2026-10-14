@@ -143,9 +143,15 @@ cba-kb --instance-root /tmp/cbakb-demo archive-query --title "Synthetic CBA Bull
   `data/inbox_lifecycle` 本身不得为符号链接（在解析前检查）；若其或任一
   状态子目录（`sources/`、`ledger/`、`review/`、各 `review/<id>/`）为符号
   链接，生命周期以 `INBOX_LIFECYCLE_PATH_ESCAPE` 拒绝启动。`.lock` 文件以
-  `O_NOFOLLOW` 打开并验证为普通文件。
+  `O_NOFOLLOW` 打开，验证为普通文件，且拒绝硬链接（`st_nlink > 1`）以防
+  截断外部文件。
   残余风险：检查与使用之间的符号链接竞态通过 mkdir 后复查缓解，但未使用
   目录文件描述符彻底消除。
+- **文件系统信任模型（DELTA 2026-10-14）**：仅 Unix（`fcntl`）。
+  `<instance>/data` 须由运行用户独占，无组/其他写权限。同一 UID 恶意进程、
+  启动后并发目录替换、root/bind-mount 明确不在范围内（需 OS 级隔离）。
+  Archive `record.json` 与 `text.txt` 以 `O_NOFOLLOW` 打开；关键词搜索先验
+  证来源合格再读归档文本。
 - 归档的字节即验证的字节（不变量1）：生命周期以 `O_NOFOLLOW` 打开文件，
   经 `fstat` 验证后做有界读取（最多 1 MiB + 1 字节），读后复核文件描述符
   身份，再将字节快照直接传给 `DocumentLane._ingest_parsed`。文件绝不从

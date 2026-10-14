@@ -154,10 +154,18 @@ Security constraints (fail-closed by default):
   (checked before resolving); if it or any state subdirectory
   (`sources/`, `ledger/`, `review/`, per-source `review/<id>/`) is a symlink,
   the lifecycle refuses with `INBOX_LIFECYCLE_PATH_ESCAPE`. The `.lock` file
-  is opened with `O_NOFOLLOW` and verified as a regular file.
+  is opened with `O_NOFOLLOW`, verified as a regular file, and rejected if
+  it has hardlinks (`st_nlink > 1`) to prevent truncating external files.
   Residual risk: symlink attacks between the check and use (TOCTOU) are
   mitigated by re-checking after mkdir, but not eliminated by directory
   file descriptors.
+- **Filesystem trust model (DELTA 2026-10-14)**: Unix-only (`fcntl`).
+  `<instance>/data` must be owned by the runtime user with no group/other
+  write permission. A same-UID malicious process, concurrent directory
+  substitution after startup, and root/bind-mount attacks are explicitly
+  out of scope (require OS-level isolation). Archive `record.json` and
+  `text.txt` are opened with `O_NOFOLLOW`; keyword search verifies source
+  eligibility before reading archive text.
 - The bytes archived are the bytes verified (Invariant 1): the lifecycle
   opens the file with `O_NOFOLLOW`, verifies via `fstat`, does a bounded
   read (max 1 MiB + 1 byte), re-verifies the file descriptor identity, and

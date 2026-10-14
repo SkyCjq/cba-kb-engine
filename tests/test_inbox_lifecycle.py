@@ -1175,45 +1175,67 @@ def test_c03_normalized_equiv_txt_does_not_clear_review(tmp_path):
         "normalized-equivalent TXT change must not clear near-duplicate review")
 
 
-def test_d01_failed_source_blocks_public(tmp_path, monkeypatch):
-    """R6-A1 P0: public->private with lane failure must not stay public.
-    A FAILED source blocks public search even with old public rights."""
-    private = private_instance(tmp_path)
-    write_txt(private, "p.txt", SYNTHETIC_TXT, SYNTHETIC_META)
-    scan(private)
-    scan(private)
-    # Verify public initially.
-    result = command("--instance-root", str(private),
-                     "archive-query", "--keyword", "Harbor Falcons",
-                     "--visibility", "local")
-    assert result.returncode == 0
-    assert json.loads(result.stdout)["count"] >= 1
-    # Tighten to private AND make lane fail.
-    sp = private / "inbox/documents/p.txt.source.json"
-    meta = json.loads(sp.read_text(encoding="utf-8"))
-    meta["rights"]["classification"] = "private"
-    meta["rights"]["public_export_allowed"] = False
-    sp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    # Force lane to fail via monkeypatch.
-    import cba_kb.inbox_lifecycle as lifecycle_mod
-    orig_init = lifecycle_mod.DocumentLane.__init__
-    def boom_init(self, *a, **k):
-        orig_init(self, *a, **k)
-        orig_parsed = self._ingest_parsed
-        def boom_parsed(*a2, **k2):
-            raise RuntimeError("simulated lane failure")
-        self._ingest_parsed = boom_parsed
-    monkeypatch.setattr(lifecycle_mod.DocumentLane, "__init__", boom_init)
-    scan(private)
-    scan(private)
-    # SCOPED: monkeypatch does not propagate to subprocess (R7-D1 known
-    # limitation). The lane does not actually fail, so the document is
-    # processed normally and appears in local. A proper in-process failure
-    # injection test is deferred.
-    result = command("--instance-root", str(private),
-                     "archive-query", "--keyword", "Harbor Falcons",
-                     "--visibility", "local")
-    assert result.returncode == 0
+def test_d01_failed_source_blocks_local(tmp_path, monkeypatch):
+    """DELTA §6.5: in-process lane failure must produce PROCESSING_FAILED,
+    preserve the source link, and exclude the document from local query.
+    Uses in-process lifecycle (not subprocess) so the monkeypatch takes
+    effect (R7-D1 fix)."""
+    sys.path.insert(0, str(ROOT / "src"))
+    try:
+        import cba_kb.inbox_lifecycle as lifecycle_mod
+        from cba_kb.instance import load_instance
+
+        private = private_instance(tmp_path)
+        write_txt(private, "p.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+        instance = load_instance(str(ROOT), str(private))
+
+        # Phase 1: successful ingestion with real lane
+        lifecycle = lifecycle_mod.InboxLifecycle(str(ROOT), instance)
+        lifecycle.scan_once()
+        time.sleep(STABILITY_WAIT)
+        lifecycle.scan_once()
+        rec = next(iter(source_records(private).values()))
+        assert rec["processing_status"] == "PROCESSING_COMPLETE"
+        assert rec["doc_id"] is not None
+        result = lifecycle.query(keyword="Harbor", visibility="local")
+        assert result["count"] >= 1
+
+        # Phase 2: failing lane + content change forces re-processing
+        class BoomLane:
+            def __init__(self, engine_root, instance):
+                pass
+
+            def _ingest_parsed(self, *args, **kwargs):
+                raise RuntimeError("simulated lane failure")
+
+        monkeypatch.setattr(lifecycle_mod, "DocumentLane", BoomLane)
+        pf = private / "inbox/documents/p.txt"
+        pf.write_text(SYNTHETIC_TXT + "\nMore content.\n")
+        lifecycle2 = lifecycle_mod.InboxLifecycle(str(ROOT), instance)
+        lifecycle2.scan_once()
+        time.sleep(STABILITY_WAIT)
+        lifecycle2.scan_once()
+
+        rec2 = next(iter(source_records(private).values()))
+        assert rec2["processing_status"] == "PROCESSING_FAILED", (
+            f"expected PROCESSING_FAILED, got {rec2['processing_status']}")
+        assert rec2["review_status"] == "NONE"
+        assert rec2["attempt_count"] >= 1
+
+        result = lifecycle2.query(keyword="Harbor", visibility="local")
+        assert result["count"] == 0, (
+            "FAILED source must not appear in local query")
+
+        idx = private / "data" / "inbox_lifecycle" / "index.json"
+        if idx.exists():
+            idx.unlink()
+        lifecycle3 = lifecycle_mod.InboxLifecycle(str(ROOT), instance)
+        lifecycle3.scan_once()
+        result3 = lifecycle3.query(keyword="Harbor", visibility="local")
+        assert result3["count"] == 0, (
+            "rebuild must not restore FAILED source to query")
+    finally:
+        sys.path.remove(str(ROOT / "src"))
 
 
 def test_d02_data_symlink_rejected(tmp_path):
