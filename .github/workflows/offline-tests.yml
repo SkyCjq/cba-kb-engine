@@ -72,3 +72,71 @@ jobs:
         run: |
           python -m pytest -q -rs \
             --deselect tests/test_prepare_v1_5_2.py::test_v1_5_2_registry_proposal_is_complete
+
+      # ---- P3 迁移（2.0.3-5 R5）：以下步骤自 pr-gate-untrusted.yml 的 evidence job 迁移 ----
+      # 等效性：每个步骤失败仍使 job 失败（阻断语义与原 evidence job 一致）；
+      # 顺序与原 evidence job 一致；仅在 pull_request 事件运行（push 到 main 无 PR 上下文）。
+      - name: Full pytest suite (evidence parity)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -o pipefail
+          PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH pytest tests/ -q 2>&1 | tee pytest.log
+      - name: 门禁自测（PR 版，阻断）
+        if: github.event_name == 'pull_request'
+        run: python .github/scripts/gate_selftest.py
+      - name: 测试完整性指标采集（阻断）
+        if: github.event_name == 'pull_request'
+        run: python .github/scripts/integrity-scan.py --out integrity.json
+      - name: 计算展示用 tier（阻断；执行失败仍使 job 失败）
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python .github/scripts/display-tier.py
+      - name: 生成审查材料包（阻断）
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python .github/scripts/build-review-bundle.py --pytest-log pytest.log --tier "$(cat tier.txt)" --out review-bundle.md
+      - name: 风险展示校验（阻断；缺失/过期/错绑即失败）
+        if: github.event_name == 'pull_request'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python - <<'EOF'
+          import json, os, re, sys
+          head = os.environ["HEAD_SHA"]
+          def fail(m):
+              print("RISK-DISPLAY FAIL:", m, file=sys.stderr); sys.exit(1)
+          try:
+              integ = json.load(open("integrity.json", encoding="utf-8"))
+          except Exception as e:
+              fail(f"integrity.json 缺失或非法: {e}")
+          for k in ("test_files", "test_funcs", "asserts"):
+              if k not in integ: fail(f"integrity.json 缺少键 {k}")
+          try:
+              tier = open("tier.txt", encoding="utf-8").read().strip()
+          except Exception as e:
+              fail(f"tier.txt 缺失: {e}")
+          if tier not in ("T0", "T1", "T2"): fail(f"tier.txt 非法值: {tier!r}")
+          try:
+              bundle = open("review-bundle.md", encoding="utf-8").read()
+          except Exception as e:
+              fail(f"review-bundle.md 缺失: {e}")
+          m = re.search(r"BUNDLE_HEAD_SHA: ([0-9a-f]{40})", bundle)
+          if not m: fail("bundle 缺少 BUNDLE_HEAD_SHA 绑定")
+          if m.group(1) != head: fail(f"bundle HEAD 错绑: {m.group(1)} != {head}")
+          if not os.path.exists("pytest.log"): fail("pytest.log 缺失")
+          print(f"risk-display OK: tier={tier} head={head[:8]} integrity_keys_ok")
+          EOF
+      - name: 上传材料包与证据
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: review-bundle-${{ github.event.pull_request.head.sha }}
+          path: |
+            review-bundle.md
+            integrity.json
+            tier.txt
+            pytest.log
