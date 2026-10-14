@@ -10,8 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def command(*args, env=None):
-    merged = {**os.environ, "PYTHONPATH": str(ROOT / "src"),
-              "PYTHONDONTWRITEBYTECODE": "1", **(env or {})}
+    # NOTE: PYTHONPATH is forced after the env override so a pre-existing
+    # CI PYTHONPATH (e.g. $GITHUB_WORKSPACE) can never shadow ROOT/src.
+    merged = {**os.environ, **(env or {}),
+              "PYTHONPATH": str(ROOT / "src"),
+              "PYTHONDONTWRITEBYTECODE": "1"}
     merged.setdefault("CBA_KB_INBOX_STABILITY_SECONDS", "0")
     return subprocess.run(
         [sys.executable, "-m", "cba_kb.cli", "--root", str(ROOT), *args],
