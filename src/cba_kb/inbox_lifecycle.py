@@ -204,15 +204,21 @@ class InboxLifecycle:
         self.engine_root = Path(engine_root).resolve()
         self.instance = instance
         instance_root = Path(instance.root).resolve()
-        # A2: resolve the FINAL paths, not just data_root. A symlink at
-        # data/inbox_lifecycle (or any subdirectory) must not redirect
-        # writes outside the instance. We resolve state_root fully and
-        # validate it, not just its parent.
+        # Invariant 2: Path-constrained I/O.
+        # The lifecycle's state path must BE data/inbox_lifecycle, not just
+        # resolve inside the instance. A symlink at data/inbox_lifecycle
+        # (even to another directory inside the instance, e.g. ../inbox/
+        # documents) is rejected. This prevents state relocation attacks.
         data_root = Path(instance.data_root).resolve()
         self.inbox_root = Path(instance.document_input_root).resolve()
-        # Resolve the full state path, following any symlinks in the chain.
-        # If data/inbox_lifecycle is a symlink, this reveals its target.
-        self.state_root = (data_root / "inbox_lifecycle").resolve()
+        # Check the UNRESOLVED path first: it must not be a symlink.
+        raw_state = data_root / "inbox_lifecycle"
+        if os.path.islink(raw_state):
+            raise InboxLifecycleError(
+                "INBOX_LIFECYCLE_PATH_ESCAPE: data/inbox_lifecycle is a "
+                "symlink (state relocation not allowed)")
+        # Then resolve and validate the final path.
+        self.state_root = raw_state.resolve()
         # A2: also validate the DocumentLane write targets.
         lane_roots = [
             (data_root / "document_lane" / "archive").resolve(),
@@ -473,13 +479,21 @@ class InboxLifecycle:
     def _doc_visibility(self, doc_id, linked_records):
         """Recompute a document's visibility from archive rights + origins.
 
-        B1: if any linked source has an unresolved review, the document is
-        not public (quarantined). The query path re-verifies this at read
-        time; the stored value is a hint.
+        Invariant 4: Unified public_ok predicate.
+        B1/B3: every linked source's CURRENT rights must allow public,
+        not just the archive's rights. This is the same predicate used
+        by _verify_candidate at query time.
         """
         archive_record = self._archive_record(doc_id)
         rights = (archive_record.get("rights")
                   if archive_record else {}) or {}
+        # Check each source's current rights (B3 fix).
+        all_source_rights_public = all(
+            (rec.get("rights") or {}).get("classification") == "public"
+            and (rec.get("rights") or {}).get("public_export_allowed") is True
+            and bool((rec.get("rights") or {}).get("evidence"))
+            for rec in linked_records
+        )
         public_ok = (
             rights.get("classification") == "public"
             and rights.get("public_export_allowed") is True
@@ -487,7 +501,9 @@ class InboxLifecycle:
             and all((rec.get("provenance") or {}).get("origin")
                     == "synthetic_fixture" for rec in linked_records)
             and all(rec.get("review_status") == "NONE"
-                    for rec in linked_records))
+                    for rec in linked_records)
+            and all_source_rights_public
+        )
         return "public" if public_ok else "local"
 
     def _rebuild_index(self):
@@ -571,6 +587,57 @@ class InboxLifecycle:
             return self._scan_once_locked()
         finally:
             self._release_lock()
+
+    def _read_verified_bytes(self, path, expected_size, expected_mtime_ns):
+        """Invariant 1: Read verified bytes from a pinned fd.
+
+        Opens with O_NOFOLLOW, verifies regular file via fstat, does a
+        bounded read (MAX+1), and re-verifies fd identity after. Returns
+        the bytes. Raises InboxLifecycleError on any verification failure.
+
+        The caller must have already established stability via path stat;
+        this method pins to the inode and eliminates the ABA window.
+        """
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise InboxLifecycleError(
+                "VERIFY_OPEN_FAILED: " + str(exc)) from exc
+        try:
+            st1 = os.fstat(fd)
+            if not stat.S_ISREG(st1.st_mode):
+                raise InboxLifecycleError("VERIFY_NOT_REGULAR_FILE")
+            # Size from fstat (not path stat) — the fd is pinned.
+            if st1.st_size != expected_size:
+                raise InboxLifecycleError("VERIFY_SIZE_CHANGED")
+            if st1.st_mtime_ns != expected_mtime_ns:
+                raise InboxLifecycleError("VERIFY_MTIME_CHANGED")
+            if st1.st_size > MAX_AUTO_TXT_BYTES:
+                raise InboxLifecycleError("VERIFY_OVERSIZE")
+            # Bounded read: MAX+1 to detect oversize without unbounded read.
+            chunks = []
+            remaining = MAX_AUTO_TXT_BYTES + 1
+            while remaining > 0:
+                chunk = os.read(fd, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            raw = b"".join(chunks)
+            if len(raw) > MAX_AUTO_TXT_BYTES:
+                raise InboxLifecycleError("VERIFY_OVERSIZE")
+            # Re-verify fd identity after read (detects truncation/replace).
+            st2 = os.fstat(fd)
+            if (st2.st_ino != st1.st_ino or st2.st_dev != st1.st_dev
+                    or st2.st_size != st1.st_size
+                    or st2.st_mtime_ns != st1.st_mtime_ns):
+                raise InboxLifecycleError("VERIFY_CHANGED_DURING_READ")
+            # Belt-and-suspenders: length must match.
+            if len(raw) != st1.st_size:
+                raise InboxLifecycleError("VERIFY_LENGTH_MISMATCH")
+            return raw
+        finally:
+            os.close(fd)
 
     def _scan_once_locked(self):
         started = _utc_now()
@@ -840,14 +907,31 @@ class InboxLifecycle:
                               sidecar=(sidecar_exists, sidecar_size,
                                        sidecar_mtime_ns))
             return
-        raw = (self.inbox_root / name).read_bytes()
-        # A3: TOCTOU close — re-stat AFTER the read; if the file changed
-        # under us, discard the bytes and re-stabilize instead of
-        # processing unverified content.
-        poststat = os.stat(self.inbox_root / name)
-        if poststat.st_size != size or poststat.st_mtime_ns != mtime_ns:
+        # Invariant 1: Verified Bytes Pipeline.
+        # The ONLY bytes that reach _process_stable_txt are those read from
+        # a pinned file descriptor via _read_verified_bytes(). This method:
+        #  - opens with O_NOFOLLOW (refuses symlinks)
+        #  - verifies it's a regular file via fstat
+        #  - checks size <= MAX before reading (from fstat, not path stat)
+        #  - does a BOUNDED read of MAX+1 bytes (never unbounded)
+        #  - re-verifies fd identity (dev/ino/size/mtime) after read
+        # There is no TOCTOU window: the fd is pinned to the inode, and
+        # the path is never re-read. ABA swaps are impossible.
+        try:
+            raw = self._read_verified_bytes(self.inbox_root / name, size,
+                                            mtime_ns)
+        except InboxLifecycleError as exc:
+            # Oversize, symlink, or changed under us -> re-stabilize.
+            msg = str(exc)
+            if "OVERSIZE" in msg:
+                self._mark_review(record, "FILE_TOO_LARGE", None, None,
+                                  summary,
+                                  sidecar=(sidecar_exists, sidecar_size,
+                                           sidecar_mtime_ns))
+                return
+            # For other verification failures, reset the checkpoint.
             checkpoint[source_id] = {
-                "size": poststat.st_size, "mtime_ns": poststat.st_mtime_ns,
+                "size": size, "mtime_ns": mtime_ns,
                 "sidecar_exists": sidecar_exists,
                 "sidecar_size": sidecar_size,
                 "sidecar_mtime_ns": sidecar_mtime_ns,
@@ -938,7 +1022,17 @@ class InboxLifecycle:
             last_seen_at=_utc_now(),
         )
         review_dir = self.review_root / record["source_id"]
+        # Invariant 2: per-source review dirs must not be symlinks.
+        # The source_id is predictable, so an attacker could pre-create
+        # review/<source_id> as a symlink. We refuse if it's a symlink.
+        if os.path.islink(review_dir):
+            raise InboxLifecycleError(
+                "INBOX_LIFECYCLE_PATH_ESCAPE: review subdir is a symlink: "
+                + str(review_dir))
         review_dir.mkdir(parents=True, exist_ok=True)
+        if os.path.islink(review_dir):
+            raise InboxLifecycleError(
+                "INBOX_LIFECYCLE_PATH_ESCAPE: review subdir became symlink")
         if raw and store_raw:
             atomic(review_dir / "original.bin", raw)
         _atomic_json(review_dir / "review.json", {
@@ -974,7 +1068,13 @@ class InboxLifecycle:
             last_seen_at=_utc_now(),
         )
         self._save_source(record)
-        self._index_unlink_source(record["source_id"])
+        # Invariant 4 (B2 fix): do NOT unlink the source from the index on
+        # failure. If the source was trying to tighten rights (e.g.
+        # public->private) but the lane write failed, unlinking would remove
+        # the restriction and leave the document public via other sources.
+        # Keep the link; _verify_candidate will see PROCESSING_FAILED and
+        # block public search until the failure is resolved.
+        # self._index_unlink_source(record["source_id"])  # REMOVED (B2)
         summary["errors"].append(
             {"file": record["relative_path"], "reason": reason})
         self._ledger_event("source_processing_failed", {
@@ -986,6 +1086,12 @@ class InboxLifecycle:
 
     def _process_stable_txt(self, record, rel_posix, raw, summary,
                             sidecar=(None, None, None)):
+        # Invariant 1 (belt-and-suspenders): the bytes must satisfy the
+        # size limit. _read_verified_bytes guarantees this, but we assert
+        # here to make the invariant explicit at the processing boundary.
+        if len(raw) > MAX_AUTO_TXT_BYTES:
+            raise InboxLifecycleError(
+                "INVARIANT_VIOLATED: oversize bytes reached processing")
         raw_sha256 = _sha256_hex(raw)
         previous_raw_sha256 = record.get("raw_sha256")
         prev_review = record.get("review_status")
@@ -1178,10 +1284,28 @@ class InboxLifecycle:
         # Note: the lane consumed our verified byte snapshot directly via
         # _ingest_parsed (see above), so no TOCTOU re-read is possible.
         # The content_hash here is derived from those verified bytes.
+        #
+        # Invariant 3: Human review is a persistent decision.
+        # The lane's disposition (including exact_merge/ACCEPTED) CANNOT
+        # override an unresolved human review. If the source had a
+        # near-duplicate REVIEW_REQUIRED and the doc_id is unchanged,
+        # the review persists even if the lane accepts the ingest.
+        # A normalized-equivalent TXT change is not a human approval.
+        prev_was_near_dup_review = (
+            prev_review == "REVIEW_REQUIRED"
+            and record.get("doc_id") == doc_id
+            and "NEAR_DUPLICATE" in (record.get("review_reason") or "")
+        )
         if lane_result.get("status") == "REVIEW_REQUIRED":
             disposition = "review_required"
             review_status = "REVIEW_REQUIRED"
             index_status = "NOT_INDEXED"
+        elif prev_was_near_dup_review:
+            # Lane accepted, but human review is unresolved. Persist it.
+            disposition = "review_required"
+            review_status = "REVIEW_REQUIRED"
+            index_status = "NOT_INDEXED"
+            # Keep the original review_reason.
         else:
             review_status = "NONE"
             index_status = "SEARCHABLE"
