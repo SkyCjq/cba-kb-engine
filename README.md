@@ -40,6 +40,7 @@ The public repository contains the reusable open-source **Engine**: schemas, ada
 - **v1.9.0**: Source Intake Contract v1, Statement model, Claim MVP, Verification Queue, and Research View synthesis.
 - **v2.0.x**: Placement enforcement guard, fail-closed consumer profiles, and hardened release orchestration.
 - **v2.0.2**: Public Engine open-source readiness, Apache-2.0 licensing, CC BY 4.0 docs, and sanitized history.
+- **v2.0.4 (development, PR-1)**: Local-first TXT inbox lifecycle — polling auto-discovery, persistent Source/Document registry, rights-aware query, CLI status/report. Development capability, **not** a production release.
 
 ## 5. Roadmap
 
@@ -74,6 +75,74 @@ public workflow with CC0 synthetic data and no private configuration, follow the
 ```bash
 cba-kb --help
 ```
+
+### Local-First Inbox Lifecycle (v2.0.4 development, PR-1)
+
+Current production release stays **v2.0.2 — COMPLETE**. The commands below
+exercise the in-development PR-1 capability: automatic discovery of local
+`.txt` files, Source/Document registration with deduplication, rights-aware
+query, and lifecycle status. No Google credentials are needed; everything
+runs against an external instance directory you choose.
+
+```bash
+# 1. Create an external instance (outside the engine tree)
+mkdir -p /tmp/cbakb-demo/{config,inbox/documents}
+
+# 2. Drop a synthetic TXT plus its rights sidecar
+cat > /tmp/cbakb-demo/inbox/documents/synthetic-news.txt <<'EOF'
+Synthetic CBA Bulletin
+The Harbor Falcons won a fictional preseason game.
+The team scored 88 points in this synthetic report.
+EOF
+cat > /tmp/cbakb-demo/inbox/documents/synthetic-news.txt.source.json <<'EOF'
+{
+  "schema_version": 1,
+  "title": "Synthetic CBA Bulletin",
+  "origin": "synthetic_fixture",
+  "source_url": null,
+  "rights": {
+    "classification": "public",
+    "public_export_allowed": true,
+    "evidence": [
+      {"type": "author_attestation", "license": "CC0-1.0",
+       "description": "Original synthetic test content"}
+    ]
+  }
+}
+EOF
+
+# 3. Scan twice: a file is processed only after it looks identical
+#    in two consecutive scans (stability gate)
+cba-kb --instance-root /tmp/cbakb-demo inbox-scan
+cba-kb --instance-root /tmp/cbakb-demo inbox-scan
+
+# 4. Or poll continuously instead of manual scans (Ctrl-C to stop)
+cba-kb --instance-root /tmp/cbakb-demo inbox-poll --interval-seconds 30
+
+# 5. Lifecycle status and rights-aware query
+cba-kb --instance-root /tmp/cbakb-demo archive-status --all
+cba-kb --instance-root /tmp/cbakb-demo archive-query --keyword "Harbor Falcons"
+cba-kb --instance-root /tmp/cbakb-demo archive-query --title "Synthetic CBA Bulletin"
+cba-kb --instance-root /tmp/cbakb-demo archive-query --visibility public --keyword "Harbor"
+```
+
+Security constraints (fail-closed by default):
+
+- Every `.txt` needs a same-named `.txt.source.json` sidecar declaring
+  title, origin, and rights. Missing/invalid metadata, non-UTF-8 bytes, or a
+  public claim without verifiable evidence routes the file to
+  `REVIEW_REQUIRED` — never silently ingested, never publicly searchable.
+- `local` visibility (default) is for the operator of that external
+  instance; `public` visibility only returns attested synthetic fixtures
+  with real rights evidence.
+- Inbox originals are never renamed, moved, or deleted
+  (`archive_status` stays `NOT_REQUESTED`).
+- All state lives under `<instance>/data/`; the engine source tree is
+  never written to.
+
+Not in PR-1 (remains v2.0.4 follow-up work): Drive-backed discovery and
+adapters, guarded archive move/retain, full cross-backend recovery,
+Production release.
 
 ## 7. Semantic Principles
 

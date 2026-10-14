@@ -40,6 +40,7 @@ CBA-KB 为中国篮球研究提供高可复现性的数据与分析管线。它�
 - **v1.9.0**：语料摄入契约 v1、陈述模型、主张提取 MVP、核验队列与只读研究视图。
 - **v2.0.x**：Drive 放置安全守卫、Fail-closed 消费端画像与发布编排加固。
 - **v2.0.2**：开源就绪、Apache-2.0 协议落地、CC BY 4.0 文档体系与历史记录脱敏。
+- **v2.0.4（开发中，PR-1）**：本地优先 TXT Inbox 生命周期——轮询自动发现、持久 Source/Document 注册、权利感知查询、CLI 状态/报告。属开发期能力，**不是**生产发布。
 
 ## 5. 路线图
 
@@ -74,6 +75,68 @@ make test
 ```bash
 cba-kb --help
 ```
+
+### 本地优先 Inbox 生命周期（v2.0.4 开发中，PR-1）
+
+当前生产发布版本保持 **v2.0.2 — COMPLETE**。以下命令演练开发中的 PR-1
+能力：本地 `.txt` 文件自动发现、Source/Document 注册与去重、权利感知
+查询、生命周期状态。不需要 Google 凭证；一切运行在你自己指定的外置
+实例目录中。
+
+```bash
+# 1. 创建外置实例（位于引擎目录之外）
+mkdir -p /tmp/cbakb-demo/{config,inbox/documents}
+
+# 2. 放入合成 TXT 及其权利声明 sidecar
+cat > /tmp/cbakb-demo/inbox/documents/synthetic-news.txt <<'EOF'
+Synthetic CBA Bulletin
+The Harbor Falcons won a fictional preseason game.
+The team scored 88 points in this synthetic report.
+EOF
+cat > /tmp/cbakb-demo/inbox/documents/synthetic-news.txt.source.json <<'EOF'
+{
+  "schema_version": 1,
+  "title": "Synthetic CBA Bulletin",
+  "origin": "synthetic_fixture",
+  "source_url": null,
+  "rights": {
+    "classification": "public",
+    "public_export_allowed": true,
+    "evidence": [
+      {"type": "author_attestation", "license": "CC0-1.0",
+       "description": "Original synthetic test content"}
+    ]
+  }
+}
+EOF
+
+# 3. 扫描两次：文件须在连续两次扫描中完全一致才会处理（稳定性门）
+cba-kb --instance-root /tmp/cbakb-demo inbox-scan
+cba-kb --instance-root /tmp/cbakb-demo inbox-scan
+
+# 4. 或用持续轮询代替手工扫描（Ctrl-C 停止）
+cba-kb --instance-root /tmp/cbakb-demo inbox-poll --interval-seconds 30
+
+# 5. 生命周期状态与权利感知查询
+cba-kb --instance-root /tmp/cbakb-demo archive-status --all
+cba-kb --instance-root /tmp/cbakb-demo archive-query --keyword "Harbor Falcons"
+cba-kb --instance-root /tmp/cbakb-demo archive-query --title "Synthetic CBA Bulletin"
+cba-kb --instance-root /tmp/cbakb-demo archive-query --visibility public --keyword "Harbor"
+```
+
+安全约束（默认 fail-closed）：
+
+- 每个 `.txt` 都需要同名 `.txt.source.json` sidecar，声明标题、来源
+  与权利。缺失/非法元数据、非 UTF-8 字节、无可验证证据的公开声明，
+  一律进入 `REVIEW_REQUIRED`——绝不静默入库，绝不进入公开搜索。
+- `local` 可见性（默认）面向该外置实例的操作者；`public` 可见性只返回
+  有真实权利证据的合成样例。
+- Inbox 原件永不重命名、移动或删除（`archive_status` 保持
+  `NOT_REQUESTED`）。
+- 所有状态保存在 `<instance>/data/` 下；引擎源码目录永不被写入。
+
+PR-1 不包含（仍属 v2.0.4 后续工作）：Drive 侧发现与适配器、受控归档
+移动/保留、完整跨后端恢复、Production 发布。
 
 ## 7. 语义原则
 
