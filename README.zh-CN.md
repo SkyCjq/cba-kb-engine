@@ -145,21 +145,26 @@ cba-kb --instance-root /tmp/cbakb-demo archive-query --visibility public --keywo
 - Inbox 原件永不重命名、移动或删除（`archive_status` 保持
   `NOT_REQUESTED`）。
 - 所有状态保存在 `<instance>/data/` 下；引擎源码目录永不被写入。
-  若 `<instance>/data`（或 inbox，或 `data/inbox_lifecycle/sources` 等状态
-  子目录，或 DocumentLane 写入目标）是符号链接，或解析后落在实例之外
-  或引擎目录之内，生命周期在任何写入前以 `INBOX_LIFECYCLE_PATH_ESCAPE`
-  拒绝启动。`.lock` 文件以 `O_NOFOLLOW` 打开并验证为普通文件；符号链接
-  的锁文件无法截断外部文件。
-- 归档的字节即验证的字节：生命周期直接解析已验证的字节快照，通过
-  `_ingest_parsed` 交给 DocumentLane，绝不从磁盘二次读取文件。验证与
-  入库之间不存在 TOCTOU 窗口；1 MiB 限制作用于已验证字节。
-- 未解决的近重复人工复核基于 TXT 内容身份持久保留。Sidecar 变更（含
-  空白）不会清除复核；仅 TXT 内容变更才会重新触发判断。Lane 的
-  `exact_merge` 不能覆盖未解决的人工决定。
-- 公开搜索要求每个关联来源的当前权利都允许公开，而不仅是 archive 的
-  权利。收紧为 private 的来源会阻断公开搜索，即使 archive 仍保留旧的
-  public 权利。残余风险：这是一个搜索过滤器，不是发布审批；任何真实
-  暴露前仍需人工权利审查。
+  `data/inbox_lifecycle` 本身不得为符号链接（在解析前检查）；若其或任一
+  状态子目录（`sources/`、`ledger/`、`review/`、各 `review/<id>/`）为符号
+  链接，生命周期以 `INBOX_LIFECYCLE_PATH_ESCAPE` 拒绝启动。`.lock` 文件以
+  `O_NOFOLLOW` 打开并验证为普通文件。
+  残余风险：检查与使用之间的符号链接竞态通过 mkdir 后复查缓解，但未使用
+  目录文件描述符彻底消除。
+- 归档的字节即验证的字节（不变量1）：生命周期以 `O_NOFOLLOW` 打开文件，
+  经 `fstat` 验证后做有界读取（最多 1 MiB + 1 字节），读后复核文件描述符
+  身份，再将字节快照直接传给 `DocumentLane._ingest_parsed`。文件绝不从
+  路径二次读取。1 MiB 限制作用于已验证字节，处理入口另有长度断言。
+  残余风险：`_ingest_parsed` 为 DocumentLane 私有 API；若其内部变更，
+  集成将 fail-closed 中断，而非静默通过。
+- 未解决的近重复人工复核持久保留（不变量3）。Lane 的 `exact_merge`/
+  `ACCEPTED` 不能覆盖它：若来源有 `NEAR_DUPLICATE` 复核且 doc_id 未变，
+  即使 lane 接受也保持 REVIEW_REQUIRED。规范化等价的 TXT 修改不视为
+  人工批准。
+- 公开搜索要求每个关联来源的当前权利都允许公开（不变量4，统一谓词）。
+  收紧为 private 的来源会阻断公开搜索。处理失败不会解链来源（保留限制）。
+  残余风险：这是一个搜索过滤器，不是发布审批；任何真实暴露前仍需
+  人工权利审查。
 
 PR-1 不包含（仍属 v2.0.4 后续工作）：Drive 侧发现与适配器、受控归档
 移动/保留、完整跨后端恢复、Production 发布。

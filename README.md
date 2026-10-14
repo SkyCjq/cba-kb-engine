@@ -153,24 +153,32 @@ Security constraints (fail-closed by default):
 - Inbox originals are never renamed, moved, or deleted
   (`archive_status` stays `NOT_REQUESTED`).
 - All state lives under `<instance>/data/`; the engine source tree is
-  never written to. If `<instance>/data` (or the inbox, or any state
-  subdirectory like `data/inbox_lifecycle/sources`, or the DocumentLane write
-  targets) is a symlink or resolves outside the instance or inside the engine
-  tree, the lifecycle refuses to start with `INBOX_LIFECYCLE_PATH_ESCAPE`
-  before any write. The `.lock` file is opened with `O_NOFOLLOW` and verified
-  as a regular file; a symlinked lock cannot truncate external files.
-- The bytes archived are the bytes verified: the lifecycle parses the
-  verified byte snapshot and passes it directly to the DocumentLane via
-  `_ingest_parsed`, never re-reading the file from disk. There is no TOCTOU
-  window between verification and ingest; the 1 MiB limit is enforced on the
-  verified bytes.
-- An unresolved near-duplicate human review persists based on TXT content
-  identity. Sidecar changes (including whitespace) do not clear it; only a
-  TXT content change re-opens the determination. The lane's `exact_merge`
-  cannot override an unresolved human decision.
-- Public search requires every linked source's current rights to allow it,
-  not just the archive's rights. A source that tightens to private blocks
-  public search even if the archive still has old public rights.
+  never written to. `data/inbox_lifecycle` itself must not be a symlink
+  (checked before resolving); if it or any state subdirectory
+  (`sources/`, `ledger/`, `review/`, per-source `review/<id>/`) is a symlink,
+  the lifecycle refuses with `INBOX_LIFECYCLE_PATH_ESCAPE`. The `.lock` file
+  is opened with `O_NOFOLLOW` and verified as a regular file.
+  Residual risk: symlink attacks between the check and use (TOCTOU) are
+  mitigated by re-checking after mkdir, but not eliminated by directory
+  file descriptors.
+- The bytes archived are the bytes verified (Invariant 1): the lifecycle
+  opens the file with `O_NOFOLLOW`, verifies via `fstat`, does a bounded
+  read (max 1 MiB + 1 byte), re-verifies the file descriptor identity, and
+  passes the byte snapshot directly to `DocumentLane._ingest_parsed`.
+  The file is never re-read from its path. The 1 MiB limit is enforced on
+  the verified bytes, with an explicit length assertion at the processing
+  boundary.
+  Residual risk: `_ingest_parsed` is a private DocumentLane API; if the
+  lane's internals change, this integration breaks (fail-closed, not silent).
+- An unresolved near-duplicate human review persists (Invariant 3).
+  The lane's `exact_merge`/`ACCEPTED` cannot override it: if the source had
+  a `NEAR_DUPLICATE` review and the doc_id is unchanged, the review is kept
+  even when the lane accepts. Normalized-equivalent TXT edits do not count
+  as human approval.
+- Public search requires every linked source's current rights to allow it
+  (Invariant 4, unified predicate). A source that tightens to private blocks
+  public search. A processing failure does not unlink the source (the
+  restriction is preserved).
   Residual risk: this is a search filter, not a publication approval; human
   rights clearance is still required before any real-world exposure.
 

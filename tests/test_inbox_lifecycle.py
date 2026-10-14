@@ -1107,3 +1107,86 @@ def test_b04_public_to_private_not_publicly_searchable(tmp_path):
                      "--visibility", "local")
     assert result.returncode == 0
     assert json.loads(result.stdout)["count"] >= 1
+
+
+def test_c01_intra_instance_symlink_rejected(tmp_path):
+    """R5 A3: data/inbox_lifecycle -> ../inbox/documents (intra-instance)
+    must be rejected. State must not be relocated."""
+    private = private_instance(tmp_path)
+    # Create the symlink BEFORE the lifecycle runs.
+    import shutil
+    state_link = private / "data" / "inbox_lifecycle"
+    # private_instance already created the real dir; replace with symlink.
+    if state_link.is_symlink():
+        state_link.unlink()
+    elif state_link.exists():
+        shutil.rmtree(state_link)
+    target = private / "inbox" / "documents"
+    target.mkdir(parents=True, exist_ok=True)
+    # Ensure parent of state_link exists.
+    state_link.parent.mkdir(parents=True, exist_ok=True)
+    state_link.symlink_to(target)
+    result = command("--instance-root", str(private), "inbox-scan")
+    assert result.returncode != 0, "intra-instance symlink must be rejected"
+    assert "PATH_ESCAPE" in (result.stdout + result.stderr)
+
+
+def test_c02_review_subdir_symlink_rejected(tmp_path):
+    """R5 C1: pre-created review/<source_id> symlink must be rejected."""
+    private = private_instance(tmp_path)
+    write_txt(private, "r1.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    write_txt(private, "r2.txt", NEAR_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    # Find the reviewed source_id.
+    records = source_records(private)
+    reviewed = [r for r in records.values()
+                if r["review_status"] == "REVIEW_REQUIRED"]
+    assert reviewed, "need a reviewed source"
+    sid = reviewed[0]["source_id"]
+    # Pre-create the review subdir as a symlink to an outside dir.
+    review_sub = lifecycle_dir(private) / "review" / sid
+    if review_sub.exists() or review_sub.is_symlink():
+        import shutil
+        shutil.rmtree(review_sub, ignore_errors=True)
+        if review_sub.is_symlink():
+            review_sub.unlink()
+    outside = tmp_path / "evil_review"
+    outside.mkdir(exist_ok=True)
+    review_sub.symlink_to(outside)
+    # Trigger a re-scan that would write to the review dir.
+    # The lifecycle should refuse, not write outside.
+    result = command("--instance-root", str(private), "inbox-scan")
+    # Either it fails, or it succeeds without writing outside.
+    outside_files = list(outside.rglob("*"))
+    assert result.returncode != 0 or outside_files == [], \
+        f"review symlink must be rejected, found {outside_files}"
+
+
+def test_c03_normalized_equiv_txt_does_not_clear_review(tmp_path):
+    """R5 A2: changing TXT whitespace (normalized-equivalent) must not
+    clear an unresolved near-duplicate review via lane exact_merge."""
+    private = private_instance(tmp_path)
+    write_txt(private, "a.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    write_txt(private, "b.txt", NEAR_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    records = source_records(private)
+    target = next((r["relative_path"] for r in records.values()
+                   if r["review_status"] == "REVIEW_REQUIRED"), None)
+    assert target is not None, "need a review target"
+    # Modify TXT with whitespace only (normalized-equivalent).
+    # NEAR_TXT ends with newline; add trailing spaces to a line.
+    tp = private / "inbox/documents" / target
+    content = tp.read_text(encoding="utf-8")
+    # Add a trailing space to the first line (whitespace-only change).
+    lines = content.split("\n")
+    lines[0] = lines[0] + " "
+    tp.write_text("\n".join(lines), encoding="utf-8")
+    scan(private)
+    scan(private)
+    records = source_records(private)
+    rec = next(r for r in records.values()
+               if r["relative_path"] == target)
+    assert rec["review_status"] == "REVIEW_REQUIRED", (
+        "normalized-equivalent TXT change must not clear near-duplicate review")
