@@ -162,10 +162,8 @@ cba-kb --instance-root /tmp/cbakb-demo archive-query --title "Synthetic CBA Bull
   `ACCEPTED` 不能覆盖它：若来源有 `NEAR_DUPLICATE` 复核且 doc_id 未变，
   即使 lane 接受也保持 REVIEW_REQUIRED。规范化等价的 TXT 修改不视为
   人工批准。
-- 公开搜索要求每个关联来源的当前权利都允许公开（不变量4，统一谓词）。
-  收紧为 private 的来源会阻断公开搜索。处理失败不会解链来源（保留限制）。
-  残余风险：这是一个搜索过滤器，不是发布审批；任何真实暴露前仍需
-  人工权利审查。
+- SCOPED：公开搜索已延期。处理失败不会解链来源（保留链接以供恢复/审计）。
+  残余风险：任何真实暴露前仍需人工权利审查。
 
 PR-1 不包含（仍属 v2.0.4 后续工作）：Drive 侧发现与适配器、受控归档
 移动/保留、完整跨后端恢复、Production 发布。

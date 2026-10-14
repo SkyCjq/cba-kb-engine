@@ -154,9 +154,12 @@ def _load_sidecar_inner(path: Path):
         return None, "METADATA_UNREADABLE", None
     try:
         with os.fdopen(fd, "rb") as handle:
-            raw = handle.read()
+            # C2-01 (R11): bound sidecar read to prevent resource exhaustion.
+            raw = handle.read(_JSON_MAX_BYTES + 1)
     except OSError:
         return None, "METADATA_UNREADABLE", None
+    if len(raw) > _JSON_MAX_BYTES:
+        return None, "METADATA_TOO_LARGE", None
     try:
         data = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError, UnicodeDecodeError):
