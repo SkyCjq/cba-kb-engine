@@ -1602,8 +1602,23 @@ class InboxLifecycle:
                     haystacks = [_normalize_query_text(t or "")
                                  for t in all_titles]
                     if keyword is not None:
-                        haystacks.append(_normalize_query_text(
-                            self._indexed_text(item["doc_id"])))
+                        # R9: verify source eligibility BEFORE reading
+                        # archive text. Do not read files for documents
+                        # with no eligible source.
+                        has_eligible = False
+                        for link in item.get("links", []):
+                            rec = self._load_source(link.get("source_id"))
+                            if (rec is not None
+                                    and rec.get("review_status") == "NONE"
+                                    and rec.get("processing_status")
+                                    == "PROCESSING_COMPLETE"
+                                    and rec.get("doc_id")
+                                    == item.get("doc_id")):
+                                has_eligible = True
+                                break
+                        if has_eligible:
+                            haystacks.append(_normalize_query_text(
+                                self._indexed_text(item["doc_id"])))
                     if any(needle in hay for hay in haystacks):
                         # B1: try every link; a shared document may be
                         # reachable via a clean source even if the first
@@ -1645,9 +1660,10 @@ class InboxLifecycle:
             self._release_lock()
 
     def _indexed_text(self, doc_id):
-        # C2: guard the archive directory BEFORE reading. The keyword
-        # search calls this before _verify_candidate, so the symlink check
-        # in _archive_record is not sufficient on its own.
+        # C2 (R9 fix): open with O_NOFOLLOW. The directory check alone
+        # is insufficient: a symlink at text.txt itself (inside a normal
+        # directory) would bypass it. O_NOFOLLOW refuses symlinks at the
+        # final component too.
         doc_dir = (Path(self.instance.data_root).resolve() / "document_lane"
                    / "archive" / doc_id)
         if os.path.islink(doc_dir):
@@ -1655,8 +1671,15 @@ class InboxLifecycle:
                 "INDEX_FAILED: archive directory is a symlink:" + doc_id)
         path = doc_dir / "text.txt"
         try:
-            return path.read_text(encoding="utf-8")
+            # O_NOFOLLOW: refuse symlink at text.txt itself.
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         except OSError as exc:
+            raise InboxLifecycleError(
+                "INDEX_FAILED: archive text unreadable:" + doc_id) from exc
+        try:
+            with os.fdopen(fd, "r", encoding="utf-8") as handle:
+                return handle.read()
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
             raise InboxLifecycleError(
                 "INDEX_FAILED: archive text unreadable:" + doc_id) from exc
 
