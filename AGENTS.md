@@ -1,6 +1,6 @@
-# AGENTS.md — cba-kb-engine（Mode 2.1）
+# AGENTS.md — cba-kb-engine（LACD v1.0.2）
 
-> 给 AI 执行者的仓库速查（≤2 页）。Governance 以 Mode 2.1 执行手册为准；本文件只讲"这个仓库怎么干活"。
+> 给 AI 执行者的仓库速查（≤2 页）。Governance 以 LACD v1.0.2 流程为准（见下方 LACD 受管章节）；本文件只讲"这个仓库怎么干活"。
 
 ## 项目一句话
 
@@ -23,7 +23,7 @@ Engine 仓库公开；Private Instance（私有数据/凭证/生产）严格分�
 - 敏感扫描：`python scripts/check_secrets.py`
 - lint/类型：以 `pyproject.toml` 为准（TODO：与 CI 对齐后回填具体命令）
 
-## 规范（Mode 2.1）
+## 规范（LACD v1.0.2）
 
 - exact SHA：一切验证绑定 commit SHA；HEAD 变则旧证据作废
 - 测试先行：验收测试由 Web 先出，commit 1 落盘（应红）；实现者只让它变绿，**不改它**

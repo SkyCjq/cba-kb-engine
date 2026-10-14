@@ -29,7 +29,7 @@ Testing 状态下授权可能需要重新进行；长期运行前应检查 OAuth
 
 ## GitHub
 
-已选择：SkyCjq / cba-kb-engine，私有仓库。GitHub CLI 使用本机系统凭据存储。
+已选择：SkyOneBranch / cba-kb-engine，私有仓库。GitHub CLI 使用本机系统凭据存储。
 重新授权命令：`/opt/homebrew/bin/gh auth login --hostname github.com --git-protocol https --web`。
 不要把 PAT 或 OAuth token 放入仓库、文档或对话。
 

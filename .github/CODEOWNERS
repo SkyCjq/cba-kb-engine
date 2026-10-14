@@ -1,37 +1,37 @@
 # Mode 2.1 CODEOWNERS — 以下路径必须 Human review
 # 与 tiering.py 内联 T2 分级表镜像；T2 变更走 13 阶段前也须 owner 先看
-# @SkyCjq 已确认为 owner 本人 GitHub 账号（2026-10-09）
+# 2026-10-13 账户迁移：@SkyCjq 已停用（API 404），owner 更新为 @SkyOneBranch（现属主账号）
 
-.github/ @SkyCjq
-**/AGENTS.md @SkyCjq
-**/CLAUDE.md @SkyCjq
-**/.claude/** @SkyCjq
-**/.cursor/** @SkyCjq
-Makefile @SkyCjq
-Dockerfile @SkyCjq
-docker-compose*.yml @SkyCjq
-compose*.yml @SkyCjq
-setup.py @SkyCjq
-setup.cfg @SkyCjq
-pyproject.toml @SkyCjq
-requirements*.txt @SkyCjq
-requirements/ @SkyCjq
-requirements.lock @SkyCjq
-uv.lock @SkyCjq
-docs/mode2/ @SkyCjq
-tests/acceptance/ @SkyCjq
-tests/conftest.py @SkyCjq
-tests/fixtures/ @SkyCjq
-src/**/release/** @SkyCjq
-src/**/drive*.py @SkyCjq
-src/**/schema/** @SkyCjq
-src/**/evidence/** @SkyCjq
-automation/drive_io.py @SkyCjq
-automation/verify.py @SkyCjq
-scripts/prepare_production.py @SkyCjq
-scripts/check_secrets.py @SkyCjq
+.github/ @SkyOneBranch
+**/AGENTS.md @SkyOneBranch
+**/CLAUDE.md @SkyOneBranch
+**/.claude/** @SkyOneBranch
+**/.cursor/** @SkyOneBranch
+Makefile @SkyOneBranch
+Dockerfile @SkyOneBranch
+docker-compose*.yml @SkyOneBranch
+compose*.yml @SkyOneBranch
+setup.py @SkyOneBranch
+setup.cfg @SkyOneBranch
+pyproject.toml @SkyOneBranch
+requirements*.txt @SkyOneBranch
+requirements/ @SkyOneBranch
+requirements.lock @SkyOneBranch
+uv.lock @SkyOneBranch
+docs/mode2/ @SkyOneBranch
+tests/acceptance/ @SkyOneBranch
+tests/conftest.py @SkyOneBranch
+tests/fixtures/ @SkyOneBranch
+src/**/release/** @SkyOneBranch
+src/**/drive*.py @SkyOneBranch
+src/**/schema/** @SkyOneBranch
+src/**/evidence/** @SkyOneBranch
+automation/drive_io.py @SkyOneBranch
+automation/verify.py @SkyOneBranch
+scripts/prepare_production.py @SkyOneBranch
+scripts/check_secrets.py @SkyOneBranch
 
 # Q2-141-H01（2026-10-12）：兜底规则。tiering.py 将未知路径定为 T2，
 # LACD 下 policy 不再硬阻断 T2，故 CODEOWNERS 必须覆盖所有路径，
 # 否则未知 T2 路径（如根目录新增文件）将无指定 owner。
-* @SkyCjq
+* @SkyOneBranch

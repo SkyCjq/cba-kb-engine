@@ -50,7 +50,7 @@ CBA-KB 为中国篮球研究提供高可复现性的数据与分析管线。它�
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/SkyCjq/cba-kb-engine.git
+git clone https://github.com/SkyOneBranch/cba-kb-engine.git
 cd cba-kb-engine
 
 # 2. 创建并激活虚拟环境

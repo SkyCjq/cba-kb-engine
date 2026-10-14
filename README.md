@@ -50,7 +50,7 @@ The public repository contains the reusable open-source **Engine**: schemas, ada
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/SkyCjq/cba-kb-engine.git
+git clone https://github.com/SkyOneBranch/cba-kb-engine.git
 cd cba-kb-engine
 
 # 2. Set up virtual environment

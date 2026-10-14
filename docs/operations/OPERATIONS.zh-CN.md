@@ -14,7 +14,7 @@
 
 ### 1.1 环境初始化
 ```bash
-git clone https://github.com/SkyCjq/cba-kb-engine.git
+git clone https://github.com/SkyOneBranch/cba-kb-engine.git
 cd cba-kb-engine
 
 python3.11 -m venv .venv
