@@ -145,15 +145,21 @@ cba-kb --instance-root /tmp/cbakb-demo archive-query --visibility public --keywo
 - Inbox 原件永不重命名、移动或删除（`archive_status` 保持
   `NOT_REQUESTED`）。
 - 所有状态保存在 `<instance>/data/` 下；引擎源码目录永不被写入。
-  若 `<instance>/data`（或 inbox，或 `data/inbox_lifecycle` 等状态子目录，
-  或 DocumentLane 写入目标）解析后落在实例之外或引擎目录之内
-  （例如经由符号链接），生命周期在任何写入前以
-  `INBOX_LIFECYCLE_PATH_ESCAPE` 拒绝启动。验证的是最终解析路径，
-  而非仅其父目录。
-- 归档的字节即验证的字节：稳定性门之后，生命周期会验证 DocumentLane
-  实际入库的字节与已验证字节一致（内容哈希匹配）。若 lane 读取到了
-  不同的字节（例如验证与入库之间文件被替换），入库将以
-  `LANE_CONTENT_MISMATCH` fail-closed，而非归档未验证内容。
+  若 `<instance>/data`（或 inbox，或 `data/inbox_lifecycle/sources` 等状态
+  子目录，或 DocumentLane 写入目标）是符号链接，或解析后落在实例之外
+  或引擎目录之内，生命周期在任何写入前以 `INBOX_LIFECYCLE_PATH_ESCAPE`
+  拒绝启动。`.lock` 文件以 `O_NOFOLLOW` 打开并验证为普通文件；符号链接
+  的锁文件无法截断外部文件。
+- 归档的字节即验证的字节：生命周期直接解析已验证的字节快照，通过
+  `_ingest_parsed` 交给 DocumentLane，绝不从磁盘二次读取文件。验证与
+  入库之间不存在 TOCTOU 窗口；1 MiB 限制作用于已验证字节。
+- 未解决的近重复人工复核基于 TXT 内容身份持久保留。Sidecar 变更（含
+  空白）不会清除复核；仅 TXT 内容变更才会重新触发判断。Lane 的
+  `exact_merge` 不能覆盖未解决的人工决定。
+- 公开搜索要求每个关联来源的当前权利都允许公开，而不仅是 archive 的
+  权利。收紧为 private 的来源会阻断公开搜索，即使 archive 仍保留旧的
+  public 权利。残余风险：这是一个搜索过滤器，不是发布审批；任何真实
+  暴露前仍需人工权利审查。
 
 PR-1 不包含（仍属 v2.0.4 后续工作）：Drive 侧发现与适配器、受控归档
 移动/保留、完整跨后端恢复、Production 发布。

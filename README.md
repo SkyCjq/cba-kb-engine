@@ -154,16 +154,25 @@ Security constraints (fail-closed by default):
   (`archive_status` stays `NOT_REQUESTED`).
 - All state lives under `<instance>/data/`; the engine source tree is
   never written to. If `<instance>/data` (or the inbox, or any state
-  subdirectory like `data/inbox_lifecycle`, or the DocumentLane write
-  targets) resolves outside the instance or inside the engine tree — e.g.
-  via a symlink — the lifecycle refuses to start with
-  `INBOX_LIFECYCLE_PATH_ESCAPE` before any write. The final resolved paths
-  are validated, not just their parents.
-- The bytes archived are the bytes verified: after the stability gate, the
-  lifecycle verifies that the DocumentLane ingested the exact bytes it
-  verified (content hash match). If the lane saw different bytes (e.g. a
-  file swapped between verification and ingest), the ingest fails closed
-  with `LANE_CONTENT_MISMATCH` instead of archiving unverified content.
+  subdirectory like `data/inbox_lifecycle/sources`, or the DocumentLane write
+  targets) is a symlink or resolves outside the instance or inside the engine
+  tree, the lifecycle refuses to start with `INBOX_LIFECYCLE_PATH_ESCAPE`
+  before any write. The `.lock` file is opened with `O_NOFOLLOW` and verified
+  as a regular file; a symlinked lock cannot truncate external files.
+- The bytes archived are the bytes verified: the lifecycle parses the
+  verified byte snapshot and passes it directly to the DocumentLane via
+  `_ingest_parsed`, never re-reading the file from disk. There is no TOCTOU
+  window between verification and ingest; the 1 MiB limit is enforced on the
+  verified bytes.
+- An unresolved near-duplicate human review persists based on TXT content
+  identity. Sidecar changes (including whitespace) do not clear it; only a
+  TXT content change re-opens the determination. The lane's `exact_merge`
+  cannot override an unresolved human decision.
+- Public search requires every linked source's current rights to allow it,
+  not just the archive's rights. A source that tightens to private blocks
+  public search even if the archive still has old public rights.
+  Residual risk: this is a search filter, not a publication approval; human
+  rights clearance is still required before any real-world exposure.
 
 Not in PR-1 (remains v2.0.4 follow-up work): Drive-backed discovery and
 adapters, guarded archive move/retain, full cross-backend recovery,

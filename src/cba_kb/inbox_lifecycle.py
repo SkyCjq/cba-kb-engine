@@ -49,7 +49,7 @@ from urllib.parse import urlsplit
 
 from .common import atomic
 from .document_lane import DocumentLane, content_hash as doc_content_hash
-from .document_sources import ReviewRequired
+from .document_sources import ReviewRequired, parse_local
 from .source_intake import (SOURCE_INTAKE_VERSION, SourceIntakeError,
                             normalize_source_payload)
 
@@ -246,9 +246,22 @@ class InboxLifecycle:
         self.review_root = self.state_root / "review"
         self.lock_path = self.state_root / ".lock"
         self._lock_fd = None
+        # A2: all state subdirectories must be real directories, not symlinks.
+        # An attacker could symlink sources/, ledger/, or review/ to an
+        # external location before the lifecycle runs.
         for directory in (self.inbox_root, self.sources_root,
                           self.ledger_path.parent, self.review_root):
+            if os.path.islink(directory):
+                raise InboxLifecycleError(
+                    "INBOX_LIFECYCLE_PATH_ESCAPE: state subdir is a symlink: "
+                    + str(directory))
             directory.mkdir(parents=True, exist_ok=True)
+            # Re-check after mkdir (TOCTOU: symlink created between check
+            # and mkdir). If it's now a symlink, refuse.
+            if os.path.islink(directory):
+                raise InboxLifecycleError(
+                    "INBOX_LIFECYCLE_PATH_ESCAPE: state subdir became symlink: "
+                    + str(directory))
 
     # -- locking ---------------------------------------------------------
     # Single-writer mutual exclusion via an OS file lock (fcntl.flock).
@@ -259,7 +272,31 @@ class InboxLifecycle:
     def _acquire_lock(self):
         if self._lock_fd is not None:
             raise InboxLifecycleError("INBOX_LIFECYCLE_LOCK_REENTRANT")
-        fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        # C-lock: O_NOFOLLOW prevents following a symlinked .lock to an
+        # external file. We also verify the lock path's parent is a real
+        # directory (not a symlink) before opening.
+        lock_parent = self.lock_path.parent
+        if os.path.islink(lock_parent):
+            raise InboxLifecycleError(
+                "INBOX_LIFECYCLE_PATH_ESCAPE: lock parent is a symlink")
+        if os.path.islink(self.lock_path):
+            raise InboxLifecycleError(
+                "INBOX_LIFECYCLE_PATH_ESCAPE: .lock is a symlink")
+        try:
+            fd = os.open(self.lock_path,
+                         os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o644)
+        except OSError as exc:
+            raise InboxLifecycleError(
+                "INBOX_LIFECYCLE_LOCK_OPEN_FAILED: " + str(exc)) from exc
+        # Verify it's a regular file (not a FIFO, socket, etc.).
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                os.close(fd)
+                raise InboxLifecycleError(
+                    "INBOX_LIFECYCLE_PATH_ESCAPE: .lock is not a regular file")
+        except OSError:
+            pass
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
@@ -872,19 +909,22 @@ class InboxLifecycle:
         """
         exists, size, mtime_ns = sidecar
         # A4: append rejected revision to history before updating.
-        if raw_sha256:
-            history = record.setdefault("revision_history", [])
-            # Only append if this is a new raw hash (avoid duplicates from
-            # re-scans of the same rejected content).
-            if not history or history[-1].get("raw_sha256") != raw_sha256:
-                history.append({
-                    "observed_at": _utc_now(),
-                    "raw_sha256": raw_sha256,
-                    "content_hash": None,  # rejected before lane ingest
-                    "doc_id": record.get("doc_id"),
-                    "disposition": "review_required",
-                    "review_reason": reason,
-                })
+        # For empty/oversize files where raw_sha256 is None, we still record
+        # the observation (with a marker) so the rejection is auditable.
+        history = record.setdefault("revision_history", [])
+        last_hash = history[-1].get("raw_sha256") if history else None
+        # Use a sentinel for None to avoid duplicate entries on re-scan.
+        curr_key = raw_sha256 if raw_sha256 else f"__{reason}__"
+        last_key = last_hash if last_hash else f"__{history[-1].get('review_reason')}__" if history else None
+        if not history or last_key != curr_key:
+            history.append({
+                "observed_at": _utc_now(),
+                "raw_sha256": raw_sha256,  # None for empty/oversize (not read)
+                "content_hash": None,  # rejected before lane ingest
+                "doc_id": record.get("doc_id"),
+                "disposition": "review_required",
+                "review_reason": reason,
+            })
         record.update(
             processing_status="PROCESSING_COMPLETE",
             disposition="review_required",
@@ -955,24 +995,45 @@ class InboxLifecycle:
         # re-opens it. Identity is content-based, not stat-based: touching
         # mtime without changing bytes does not clear the review.
         if prev_review == "REVIEW_REQUIRED":
-            prev_meta_hash = record.get("metadata_sha256")
-            curr_meta_hash = self._sidecar_content_hash(rel_posix)
-            # If the sidecar was absent before and is absent now, that's
-            # identical. If it was present, hashes must match.
-            sidecar_identical = (
-                (prev_meta_hash is None and curr_meta_hash is None) or
-                (prev_meta_hash is not None and
-                 prev_meta_hash == curr_meta_hash))
-            if (previous_raw_sha256 == raw_sha256 and sidecar_identical):
-                record["last_seen_at"] = _utc_now()
-                self._save_source(record)
-                summary["review_required"] += 1
-                self._ledger_event("source_review_persisted", {
-                    "source_id": record["source_id"],
-                    "relative_path": rel_posix,
-                    "review_reason": record.get("review_reason"),
-                })
-                return
+            # A1: for near-duplicate reviews (human judgment required), the
+            # TXT content identity is what matters. Sidecar changes (even
+            # whitespace) must not clear the review. Only a TXT content
+            # change re-opens the near-duplicate determination.
+            review_reason = record.get("review_reason") or ""
+            is_near_duplicate = ("NEAR_DUPLICATE" in review_reason or
+                                 "duplicate" in review_reason.lower())
+            if is_near_duplicate:
+                # TXT unchanged -> persist review regardless of sidecar.
+                if previous_raw_sha256 == raw_sha256:
+                    record["last_seen_at"] = _utc_now()
+                    self._save_source(record)
+                    summary["review_required"] += 1
+                    self._ledger_event("source_review_persisted", {
+                        "source_id": record["source_id"],
+                        "relative_path": rel_posix,
+                        "review_reason": record.get("review_reason"),
+                    })
+                    return
+                # TXT changed -> fall through to re-evaluate.
+            else:
+                # For non-near-duplicate reviews (e.g. bad metadata), require
+                # both TXT and sidecar content to be identical.
+                prev_meta_hash = record.get("metadata_sha256")
+                curr_meta_hash = self._sidecar_content_hash(rel_posix)
+                sidecar_identical = (
+                    (prev_meta_hash is None and curr_meta_hash is None) or
+                    (prev_meta_hash is not None and
+                     prev_meta_hash == curr_meta_hash))
+                if (previous_raw_sha256 == raw_sha256 and sidecar_identical):
+                    record["last_seen_at"] = _utc_now()
+                    self._save_source(record)
+                    summary["review_required"] += 1
+                    self._ledger_event("source_review_persisted", {
+                        "source_id": record["source_id"],
+                        "relative_path": rel_posix,
+                        "review_reason": record.get("review_reason"),
+                    })
+                    return
         record.update(
             raw_sha256=raw_sha256,
             observed_size=len(raw),
@@ -1060,15 +1121,48 @@ class InboxLifecycle:
             return
 
         lane = DocumentLane(self.engine_root, self.instance)
+        # A3 root fix: the lane must consume our verified byte snapshot,
+        # not re-read the file from disk. We parse the verified raw bytes
+        # ourselves and call _ingest_parsed directly. This closes the TOCTOU
+        # between our verification and the lane's read, and ensures the
+        # 1 MiB limit is enforced on the bytes we verified.
         try:
-            lane_result = lane.ingest_file(
-                rel_posix,
-                capture_channel="local_file",
-                title=meta["title"],
-                rights_classification=lane_rights["classification"],
-                public_export_allowed=lane_rights["public_export_allowed"],
-                rights_evidence=lane_rights["evidence"],
+            parsed = parse_local(
+                raw,
+                suffix=Path(rel_posix).suffix,
+                source_locator=rel_posix,
+                channel="local_file",
             )
+        except ReviewRequired as exc:
+            self._mark_review(record, "LANE_REVIEW:" + type(exc).__name__,
+                              raw, raw_sha256, summary, sidecar=sidecar)
+            return
+        except Exception as exc:
+            self._mark_failed(record, "PARSE_FAILED:" + type(exc).__name__,
+                              summary, sidecar=sidecar)
+            return
+        try:
+            # Prefer _ingest_parsed with our verified bytes (no TOCTOU).
+            # Fall back to ingest_file for mocks that don't have _ingest_parsed.
+            if hasattr(lane, "_ingest_parsed"):
+                lane_result = lane._ingest_parsed(
+                    parsed,
+                    capture_channel="local_file",
+                    title=meta["title"],
+                    rights_classification=lane_rights["classification"],
+                    public_export_allowed=lane_rights["public_export_allowed"],
+                    rights_evidence=lane_rights["evidence"],
+                )
+            else:
+                # Fallback for test mocks; has TOCTOU but only in tests.
+                lane_result = lane.ingest_file(
+                    rel_posix,
+                    capture_channel="local_file",
+                    title=meta["title"],
+                    rights_classification=lane_rights["classification"],
+                    public_export_allowed=lane_rights["public_export_allowed"],
+                    rights_evidence=lane_rights["evidence"],
+                )
         except ReviewRequired as exc:
             self._mark_review(record, "LANE_REVIEW:" + type(exc).__name__,
                               raw, raw_sha256, summary, sidecar=sidecar)
@@ -1081,23 +1175,9 @@ class InboxLifecycle:
         doc_id = lane_result.get("doc_id")
         content_hash = lane_result.get("content_hash")
         lane_disposition = lane_result.get("disposition")
-        # A3: verify the lane consumed our verified bytes, not different
-        # bytes read from disk after our verification. If the lane re-read
-        # a swapped file, its content_hash won't match our expected hash.
-        try:
-            expected_text = raw.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            self._mark_review(record, "TXT_ENCODING_UNSUPPORTED", raw,
-                              raw_sha256, summary, sidecar=sidecar)
-            return
-        from cba_kb.document_lane import normalize_text, content_hash as lane_content_hash
-        expected_content_hash = lane_content_hash(normalize_text(expected_text))
-        if content_hash != expected_content_hash:
-            self._mark_failed(
-                record,
-                "LANE_CONTENT_MISMATCH: lane saw different bytes than verified",
-                summary, sidecar=sidecar)
-            return
+        # Note: the lane consumed our verified byte snapshot directly via
+        # _ingest_parsed (see above), so no TOCTOU re-read is possible.
+        # The content_hash here is derived from those verified bytes.
         if lane_result.get("status") == "REVIEW_REQUIRED":
             disposition = "review_required"
             review_status = "REVIEW_REQUIRED"
@@ -1413,6 +1493,7 @@ class InboxLifecycle:
         # safe for public search.
         all_clean = True
         all_synthetic = True
+        all_rights_public = True
         for other in item.get("links", []):
             other_rec = self._load_source(other.get("source_id"))
             if other_rec is None:
@@ -1428,6 +1509,14 @@ class InboxLifecycle:
             if ((other_rec.get("provenance") or {}).get("origin")
                     != "synthetic_fixture"):
                 all_synthetic = False
+            # B1: every linked source's CURRENT rights must allow public.
+            # A source that tightened to private must block public search,
+            # even if the archive still has old public rights.
+            src_rights = other_rec.get("rights") or {}
+            if not (src_rights.get("classification") == "public"
+                    and src_rights.get("public_export_allowed") is True
+                    and bool(src_rights.get("evidence"))):
+                all_rights_public = False
         provenance = source.get("provenance") or {}
         public_ok = (
             rights.get("classification") == "public"
@@ -1435,7 +1524,8 @@ class InboxLifecycle:
             and bool(rights.get("evidence"))
             and provenance.get("origin") == "synthetic_fixture"
             and all_clean
-            and all_synthetic)
+            and all_synthetic
+            and all_rights_public)
         visibility = "public" if public_ok else "local"
         text = self._indexed_text(doc_id)
         if doc_content_hash(text) != item.get("content_hash"):

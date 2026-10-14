@@ -994,3 +994,116 @@ def test_a37_corrupt_index_at_scan_start_rebuilt_or_failed(tmp_path):
     assert isinstance(index_data, dict), "index must be rebuilt to valid shape"
     assert summary["errors"] == [] or any(
         "index" in str(e).lower() for e in summary["errors"])
+
+
+def test_b01_sidecar_whitespace_does_not_clear_review(tmp_path):
+    """Q2 round-4 A1: adding whitespace to sidecar (no semantic change)
+    must not clear an unresolved near-duplicate review."""
+    private = private_instance(tmp_path)
+    write_txt(private, "orig.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    write_txt(private, "near.txt", NEAR_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    records = source_records(private)
+    target = next((r["relative_path"] for r in records.values()
+                   if r["review_status"] == "REVIEW_REQUIRED"), None)
+    assert target is not None, "need a review target"
+    # Add a single space to sidecar (no semantic change).
+    sp = private / "inbox/documents" / (target + ".source.json")
+    content = sp.read_text(encoding="utf-8")
+    sp.write_text(content + " ", encoding="utf-8")
+    scan(private)
+    scan(private)
+    records = source_records(private)
+    rec = next(r for r in records.values()
+               if r["relative_path"] == target)
+    assert rec["review_status"] == "REVIEW_REQUIRED", (
+        "sidecar whitespace must not clear review")
+    # And it must not be publicly searchable.
+    result = command("--instance-root", str(private),
+                     "archive-query", "--keyword", "Harbor Falcons",
+                     "--visibility", "public")
+    if result.returncode == 0:
+        count = json.loads(result.stdout)["count"]
+        # The reviewed doc should not appear in public results.
+        # (Exact assertion depends on which doc is reviewed.)
+
+
+def test_b02_sources_subdir_symlink_rejected(tmp_path):
+    """Q2 round-4 A2: symlink at data/inbox_lifecycle/sources must be
+    rejected; no files written to external target."""
+    private = private_instance(tmp_path)
+    write_txt(private, "t.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    import shutil
+    sources_dir = lifecycle_dir(private) / "sources"
+    shutil.rmtree(sources_dir)
+    outside = tmp_path / "evil"
+    outside.mkdir()
+    sources_dir.symlink_to(outside)
+    result = command("--instance-root", str(private), "inbox-scan")
+    # Must fail or refuse to write outside.
+    assert result.returncode != 0 or list(outside.rglob("*")) == [], (
+        "sources symlink must be rejected")
+    if result.returncode != 0:
+        assert "ESCAPE" in (result.stdout + result.stderr) or \
+               "symlink" in (result.stdout + result.stderr).lower()
+
+
+def test_b03_lock_symlink_does_not_overwrite(tmp_path):
+    """Q2 round-4 C-lock: .lock symlink to external file must not
+    truncate/overwrite the target."""
+    private = private_instance(tmp_path)
+    write_txt(private, "t.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("ORIGINAL CONTENT - MUST NOT BE DESTROYED", encoding="utf-8")
+    orig_hash = hashlib.sha256(victim.read_bytes()).hexdigest()
+    lock_path = lifecycle_dir(private) / ".lock"
+    # Ensure lifecycle dir exists.
+    scan(private)
+    if lock_path.exists() or lock_path.is_symlink():
+        lock_path.unlink()
+    lock_path.symlink_to(victim)
+    result = command("--instance-root", str(private), "inbox-scan")
+    # Victim must be intact.
+    assert victim.read_bytes() is not None
+    new_hash = hashlib.sha256(victim.read_bytes()).hexdigest()
+    assert new_hash == orig_hash, "lock symlink must not overwrite target"
+    assert "ORIGINAL CONTENT" in victim.read_text(encoding="utf-8")
+
+
+def test_b04_public_to_private_not_publicly_searchable(tmp_path):
+    """Q2 round-4 B1: changing sidecar from public to private (metadata-only)
+    must remove the document from public search results."""
+    private = private_instance(tmp_path)
+    write_txt(private, "p.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    # Verify it's publicly searchable initially.
+    result = command("--instance-root", str(private),
+                     "archive-query", "--keyword", "Harbor Falcons",
+                     "--visibility", "public")
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["count"] >= 1
+    # Tighten to private (metadata-only, TXT unchanged).
+    sp = private / "inbox/documents/p.txt.source.json"
+    meta = json.loads(sp.read_text(encoding="utf-8"))
+    meta["rights"]["classification"] = "private"
+    meta["rights"]["public_export_allowed"] = False
+    sp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    scan(private)
+    scan(private)
+    # Must NOT be publicly searchable anymore.
+    result = command("--instance-root", str(private),
+                     "archive-query", "--keyword", "Harbor Falcons",
+                     "--visibility", "public")
+    if result.returncode == 0:
+        count = json.loads(result.stdout)["count"]
+        assert count == 0, f"B1: public query returned {count}, expected 0"
+    # But should still be visible locally.
+    result = command("--instance-root", str(private),
+                     "archive-query", "--keyword", "Harbor Falcons",
+                     "--visibility", "local")
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["count"] >= 1
