@@ -49,6 +49,20 @@ def main():
     q.add_argument('--lenient-clubs',action='store_true')
     q=sub.add_parser('catalog');q.add_argument('--candidate',type=Path,required=True);q.add_argument('--output',type=Path,required=True)
     q=sub.add_parser('watch');q.add_argument('--output',type=Path,required=True);q.add_argument('--previous-root',type=Path)
+    q=sub.add_parser('inbox-scan')
+    q=sub.add_parser('inbox-poll')
+    q.add_argument('--interval-seconds',type=float,default=30.0)
+    q.add_argument('--max-scans',type=int,default=None)
+    q=sub.add_parser('archive-status')
+    g=q.add_mutually_exclusive_group(required=True)
+    g.add_argument('--all',action='store_true')
+    g.add_argument('--source-id')
+    q=sub.add_parser('archive-query')
+    g=q.add_mutually_exclusive_group(required=True)
+    g.add_argument('--id'); g.add_argument('--title'); g.add_argument('--keyword')
+    # SCOPED PR1: --visibility public is deferred. Kept for CLI compat but
+    # rejected with a clear message.
+    q.add_argument('--visibility',choices=('local','public'),default='local')
     q=sub.add_parser('document-ingest')
     q.add_argument('--capture-channel',choices=(
         'wechat_browser_clip','ima_file_export','local_file','google_drive_doc'))
@@ -368,6 +382,32 @@ def main():
             from .source_watcher import run_planned
             instance=private_instance()
             result=run_planned(instance,a.output,previous_root=a.previous_root)
+        elif a.command=='inbox-scan':
+            from .inbox_lifecycle import InboxLifecycle
+            result=InboxLifecycle(root,private_instance()).scan_once()
+        elif a.command=='inbox-poll':
+            from .inbox_lifecycle import InboxLifecycle
+            result=InboxLifecycle(root,private_instance()).poll(
+                a.interval_seconds,max_scans=a.max_scans)
+        elif a.command=='archive-status':
+            from .inbox_lifecycle import InboxLifecycle
+            lifecycle=InboxLifecycle(root,private_instance())
+            result=lifecycle.status_all() if a.all else lifecycle.status_source(
+                a.source_id)
+        elif a.command=='archive-query':
+            from .inbox_lifecycle import InboxLifecycle
+            for flag in (a.id,a.title,a.keyword):
+                if flag is not None and not flag.strip():
+                    raise ValueError('ARCHIVE_QUERY_TEXT_REQUIRED')
+            # SCOPED PR1: public visibility is deferred.
+            if a.visibility == 'public':
+                raise ValueError(
+                    'ARCHIVE_QUERY_PUBLIC_DEFERRED: automatic public '
+                    'authorization is deferred to a future PR; '
+                    'use --visibility local')
+            result=InboxLifecycle(root,private_instance()).query(
+                id=a.id,title=a.title,keyword=a.keyword,
+                visibility=a.visibility)
         elif a.command in {'document-ingest','document-batch'}:
             from .document_lane import DocumentLane
             if a.command=='document-ingest' and not a.capture_channel:

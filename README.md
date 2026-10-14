@@ -40,6 +40,7 @@ The public repository contains the reusable open-source **Engine**: schemas, ada
 - **v1.9.0**: Source Intake Contract v1, Statement model, Claim MVP, Verification Queue, and Research View synthesis.
 - **v2.0.x**: Placement enforcement guard, fail-closed consumer profiles, and hardened release orchestration.
 - **v2.0.2**: Public Engine open-source readiness, Apache-2.0 licensing, CC BY 4.0 docs, and sanitized history.
+- **v2.0.4 (development, PR-1)**: Local-first TXT inbox lifecycle — polling auto-discovery, persistent Source/Document registry, rights-aware query, CLI status/report. Development capability, **not** a production release.
 
 ## 5. Roadmap
 
@@ -74,6 +75,119 @@ public workflow with CC0 synthetic data and no private configuration, follow the
 ```bash
 cba-kb --help
 ```
+
+### Local-First Inbox Lifecycle (v2.0.4 development, PR-1)
+
+Current production release stays **v2.0.2 — COMPLETE**. The commands below
+exercise the in-development PR-1 capability: automatic discovery of local
+`.txt` files, Source/Document registration with deduplication, rights-aware
+query, and lifecycle status. No Google credentials are needed; everything
+runs against an external instance directory you choose.
+
+```bash
+# 1. Create an external instance (outside the engine tree)
+mkdir -p /tmp/cbakb-demo/{config,inbox/documents}
+
+# 2. Drop a synthetic TXT plus its rights sidecar
+cat > /tmp/cbakb-demo/inbox/documents/synthetic-news.txt <<'EOF'
+Synthetic CBA Bulletin
+The Harbor Falcons won a fictional preseason game.
+The team scored 88 points in this synthetic report.
+EOF
+cat > /tmp/cbakb-demo/inbox/documents/synthetic-news.txt.source.json <<'EOF'
+{
+  "schema_version": 1,
+  "title": "Synthetic CBA Bulletin",
+  "origin": "synthetic_fixture",
+  "source_url": null,
+  "rights": {
+    "classification": "private",
+    "public_export_allowed": false,
+    "evidence": []
+  }
+}
+EOF
+# Note: "classification": "public" would route to REVIEW_REQUIRED in SCOPED PR1.
+# Public auto-authorization is deferred to a future PR.
+
+# 3. Scan twice: a file is processed only after it looks identical
+#    in two consecutive scans at least 1 second apart (stability gate)
+cba-kb --instance-root /tmp/cbakb-demo inbox-scan
+sleep 2
+cba-kb --instance-root /tmp/cbakb-demo inbox-scan
+
+# 4. Or poll continuously instead of manual scans (Ctrl-C to stop)
+cba-kb --instance-root /tmp/cbakb-demo inbox-poll --interval-seconds 30
+
+# 5. Lifecycle status and rights-aware query
+cba-kb --instance-root /tmp/cbakb-demo archive-status --all
+cba-kb --instance-root /tmp/cbakb-demo archive-query --keyword "Harbor Falcons"
+cba-kb --instance-root /tmp/cbakb-demo archive-query --title "Synthetic CBA Bulletin"
+# Note: --visibility public is deferred to a future PR (SCOPED PR1).
+# All documents are local-only in this release.
+```
+
+Security constraints (fail-closed by default):
+
+- Every `.txt` needs a same-named `.txt.source.json` sidecar declaring
+  title, origin, and rights. Missing/invalid/unreadable metadata (including
+  structurally malformed values), non-UTF-8 bytes, a symlinked sidecar, or a
+  public claim without verifiable evidence routes the file to
+  `REVIEW_REQUIRED` — never silently ingested. (SCOPED: there is no
+  public search in this release, so "publicly searchable" does not apply.)
+  An unresolved human review persists across rescans: re-ingesting identical
+  inputs (verified by content hash, not mtime/size) does not clear it.
+  Touching mtime without changing bytes, or changing sidecar bytes while
+  restoring mtime/size, does not bypass the review.
+- **SCOPED PR1 (2026-10-14)**: Automatic public authorization is
+  DEFERRED to a future independent PR. All documents are local-only;
+  `--visibility public` is rejected. The rights metadata is still parsed
+  and stored, but never triggers automatic public visibility. A public
+  classification claim routes the file to `REVIEW_REQUIRED` for human
+  review. If a linked source record is missing, the query fails closed
+  (`INDEX_FAILED`) rather than treating the missing source as clean.
+  There is no publish path in PR-1.
+- Inbox originals are never renamed, moved, or deleted
+  (`archive_status` stays `NOT_REQUESTED`).
+- All state lives under `<instance>/data/`; the engine source tree is
+  never written to. `data/inbox_lifecycle` itself must not be a symlink
+  (checked before resolving); if it or any state subdirectory
+  (`sources/`, `ledger/`, `review/`, per-source `review/<id>/`) is a symlink,
+  the lifecycle refuses with `INBOX_LIFECYCLE_PATH_ESCAPE`. The `.lock` file
+  is opened with `O_NOFOLLOW`, verified as a regular file, and rejected if
+  it has hardlinks (`st_nlink > 1`) to prevent truncating external files.
+  Residual risk: symlink attacks between the check and use (TOCTOU) are
+  mitigated by re-checking after mkdir, but not eliminated by directory
+  file descriptors.
+- **Filesystem trust model (DELTA 2026-10-14)**: Unix-only (`fcntl`).
+  `<instance>/data` must be owned by the runtime user with no group/other
+  write permission. A same-UID malicious process, concurrent directory
+  substitution after startup, and root/bind-mount attacks are explicitly
+  out of scope (require OS-level isolation). Archive `record.json` and
+  `text.txt` are opened with `O_NOFOLLOW`; keyword search verifies source
+  eligibility before reading archive text.
+- The bytes archived are the bytes verified (Invariant 1): the lifecycle
+  opens the file with `O_NOFOLLOW`, verifies via `fstat`, does a bounded
+  read (max 1 MiB + 1 byte), re-verifies the file descriptor identity, and
+  passes the byte snapshot directly to `DocumentLane._ingest_parsed`.
+  The file is never re-read from its path. The 1 MiB limit is enforced on
+  the verified bytes, with an explicit length assertion at the processing
+  boundary.
+  Residual risk: `_ingest_parsed` is a private DocumentLane API; if the
+  lane's internals change, this integration breaks (fail-closed, not silent).
+- An unresolved near-duplicate human review persists (Invariant 3).
+  The lane's `exact_merge`/`ACCEPTED` cannot override it: if the source had
+  a `NEAR_DUPLICATE` review and the doc_id is unchanged, the review is kept
+  even when the lane accepts. Normalized-equivalent TXT edits do not count
+  as human approval.
+- SCOPED: Public search is deferred. A processing failure does not
+  unlink the source (the link is preserved for recovery/audit).
+  Residual risk: human rights clearance is still required before any
+  real-world exposure.
+
+Not in PR-1 (remains v2.0.4 follow-up work): Drive-backed discovery and
+adapters, guarded archive move/retain, full cross-backend recovery,
+Production release.
 
 ## 7. Semantic Principles
 
