@@ -100,12 +100,9 @@ cat > /tmp/cbakb-demo/inbox/documents/synthetic-news.txt.source.json <<'EOF'
   "origin": "synthetic_fixture",
   "source_url": null,
   "rights": {
-    "classification": "public",
-    "public_export_allowed": true,
-    "evidence": [
-      {"type": "author_attestation", "license": "CC0-1.0",
-       "description": "Original synthetic test content"}
-    ]
+    "classification": "private",
+    "public_export_allowed": false,
+    "evidence": []
   }
 }
 EOF

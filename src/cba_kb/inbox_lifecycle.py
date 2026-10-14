@@ -866,6 +866,19 @@ class InboxLifecycle:
             summary["unsupported"] += 1
             return
 
+        # A1: If the stat matches a COMPLETE record but we are not on
+        # the fast path, the content hash must have changed (same-stat
+        # content swap). Reset stability observations; the old checkpoint
+        # trust does not survive a hash-only change.
+        if (record.get("processing_status") == "PROCESSING_COMPLETE"
+                and record.get("observed_size") == size
+                and record.get("observed_mtime_ns") == mtime_ns
+                and record.get("sidecar_exists") == sidecar_exists
+                and record.get("sidecar_size") == sidecar_size
+                and record.get("sidecar_mtime_ns") == sidecar_mtime_ns):
+            # Fast path was not taken despite matching stat -> hash changed.
+            checkpoint.pop(source_id, None)
+
         # Stability gate: identical TXT and sidecar size/mtime across >=2
         # consecutive scans spanning the stability window before any byte
         # is processed.
@@ -1520,10 +1533,27 @@ class InboxLifecycle:
 
     # -- query ------------------------------------------------------------
     def _match_link(self, item, wanted):
-        """Return the linked source matching an exact id, or None."""
+        """Return the linked source matching an exact id, or None.
+
+        A2: for doc_id lookup, prefer a review-clean, complete link over
+        links[0]. A document shared by multiple sources must be findable
+        via its clean sources even if the first link is in review.
+        """
         if wanted == item.get("doc_id"):
             links = item.get("links", [])
-            return links[0] if links else None
+            if not links:
+                return None
+            # Prefer a clean, complete link.
+            for link in links:
+                rec = self._load_source(link.get("source_id"))
+                if (rec is not None
+                        and rec.get("review_status") == "NONE"
+                        and rec.get("processing_status")
+                        == "PROCESSING_COMPLETE"
+                        and rec.get("doc_id") == item.get("doc_id")):
+                    return link
+            # Fallback to first link (will be filtered by _verify_candidate).
+            return links[0]
         for link in item.get("links", []):
             if wanted in (link.get("source_id"), link.get("file_id")):
                 return link
@@ -1615,8 +1645,15 @@ class InboxLifecycle:
             self._release_lock()
 
     def _indexed_text(self, doc_id):
-        path = (Path(self.instance.data_root).resolve() / "document_lane"
-                / "archive" / doc_id / "text.txt")
+        # C2: guard the archive directory BEFORE reading. The keyword
+        # search calls this before _verify_candidate, so the symlink check
+        # in _archive_record is not sufficient on its own.
+        doc_dir = (Path(self.instance.data_root).resolve() / "document_lane"
+                   / "archive" / doc_id)
+        if os.path.islink(doc_dir):
+            raise InboxLifecycleError(
+                "INDEX_FAILED: archive directory is a symlink:" + doc_id)
+        path = doc_dir / "text.txt"
         try:
             return path.read_text(encoding="utf-8")
         except OSError as exc:
@@ -1637,6 +1674,11 @@ class InboxLifecycle:
             raise InboxLifecycleError(
                 "INDEX_FAILED: source record missing:" + doc_id)
         if source.get("review_status") != "NONE":
+            return None
+        # C1: only PROCESSING_COMPLETE sources are searchable. A FAILED
+        # or PENDING_STABILITY source must not remain searchable via its
+        # old index link.
+        if source.get("processing_status") != "PROCESSING_COMPLETE":
             return None
         if source.get("doc_id") != doc_id:
             # Stale link: the source has moved on (revision/review); drop it.

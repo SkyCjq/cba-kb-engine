@@ -101,15 +101,14 @@ cat > /tmp/cbakb-demo/inbox/documents/synthetic-news.txt.source.json <<'EOF'
   "origin": "synthetic_fixture",
   "source_url": null,
   "rights": {
-    "classification": "public",
-    "public_export_allowed": true,
-    "evidence": [
-      {"type": "author_attestation", "license": "CC0-1.0",
-       "description": "Original synthetic test content"}
-    ]
+    "classification": "private",
+    "public_export_allowed": false,
+    "evidence": []
   }
 }
 EOF
+# Note: "classification": "public" would route to REVIEW_REQUIRED in SCOPED PR1.
+# Public auto-authorization is deferred to a future PR.
 
 # 3. Scan twice: a file is processed only after it looks identical
 #    in two consecutive scans at least 1 second apart (stability gate)
@@ -172,12 +171,10 @@ Security constraints (fail-closed by default):
   a `NEAR_DUPLICATE` review and the doc_id is unchanged, the review is kept
   even when the lane accepts. Normalized-equivalent TXT edits do not count
   as human approval.
-- Public search requires every linked source's current rights to allow it
-  (Invariant 4, unified predicate). A source that tightens to private blocks
-  public search. A processing failure does not unlink the source (the
-  restriction is preserved).
-  Residual risk: this is a search filter, not a publication approval; human
-  rights clearance is still required before any real-world exposure.
+- SCOPED: Public search is deferred. A processing failure does not
+  unlink the source (the link is preserved for recovery/audit).
+  Residual risk: human rights clearance is still required before any
+  real-world exposure.
 
 Not in PR-1 (remains v2.0.4 follow-up work): Drive-backed discovery and
 adapters, guarded archive move/retain, full cross-backend recovery,
