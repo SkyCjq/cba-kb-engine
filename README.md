@@ -112,8 +112,9 @@ cat > /tmp/cbakb-demo/inbox/documents/synthetic-news.txt.source.json <<'EOF'
 EOF
 
 # 3. Scan twice: a file is processed only after it looks identical
-#    in two consecutive scans (stability gate)
+#    in two consecutive scans at least 1 second apart (stability gate)
 cba-kb --instance-root /tmp/cbakb-demo inbox-scan
+sleep 2
 cba-kb --instance-root /tmp/cbakb-demo inbox-scan
 
 # 4. Or poll continuously instead of manual scans (Ctrl-C to stop)
@@ -134,7 +135,11 @@ Security constraints (fail-closed by default):
   `REVIEW_REQUIRED` — never silently ingested, never publicly searchable.
 - `local` visibility (default) is for the operator of that external
   instance; `public` visibility only returns attested synthetic fixtures
-  with real rights evidence.
+  with real rights evidence. This is a search filter, not a publication
+  approval: there is no publish path in PR-1, and operators should still
+  treat any public exposure as a residual risk to be reviewed (rights are
+  re-evaluated on every metadata change and re-verified at query time,
+  but no automated check replaces human rights clearance).
 - Inbox originals are never renamed, moved, or deleted
   (`archive_status` stays `NOT_REQUESTED`).
 - All state lives under `<instance>/data/`; the engine source tree is

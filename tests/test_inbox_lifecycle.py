@@ -47,12 +47,18 @@ def command(*args, env=None):
     merged = {**os.environ, **(env or {}),
               "PYTHONPATH": str(ROOT / "src"),
               "PYTHONDONTWRITEBYTECODE": "1"}
-    # Stability window default is 1s; tests use instant stability.
-    merged.setdefault("CBA_KB_INBOX_STABILITY_SECONDS", "0")
+    # The 1.0 s stability window is frozen and not configurable (Q2 A4).
+    merged.pop("CBA_KB_INBOX_STABILITY_SECONDS", None)
     return subprocess.run(
         [sys.executable, "-m", "cba_kb.cli", "--root", str(ROOT), *args],
         cwd=ROOT, env=merged, capture_output=True, text=True, timeout=120,
     )
+
+
+# The frozen minimum stability window is 1.0 s and deliberately not
+# configurable. Tests wait it out for real so the suite demonstrates the
+# production behavior.
+STABILITY_WAIT = 1.2
 
 
 def private_instance(tmp_path):
@@ -70,6 +76,16 @@ def write_txt(private, name, text, meta):
 
 
 def scan(private, *extra):
+    """Run inbox-scan after waiting out the real stability window."""
+    time.sleep(STABILITY_WAIT)
+    result = command("--instance-root", str(private), "inbox-scan", *extra)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def scan_nowait(private, *extra):
+    """Run inbox-scan immediately (no stability wait): proves the frozen
+    1.0 s window is enforced between qualifying observations."""
     result = command("--instance-root", str(private), "inbox-scan", *extra)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
@@ -340,10 +356,10 @@ def test_poll_discovers_file_without_manual_intake(tmp_path):
     private = private_instance(tmp_path)
     write_txt(private, "synthetic-news.txt", SYNTHETIC_TXT, SYNTHETIC_META)
     result = command("--instance-root", str(private),
-                     "inbox-poll", "--interval-seconds", "1", "--max-scans", "3")
+                     "inbox-poll", "--interval-seconds", "1", "--max-scans", "4")
     assert result.returncode == 0, result.stderr
     summary = json.loads(result.stdout)
-    assert summary["scans_completed"] == 3
+    assert summary["scans_completed"] == 4
     assert len(source_records(private)) == 1
 
 
@@ -376,3 +392,269 @@ def test_modified_file_creates_revision_not_silent_overwrite(tmp_path):
     assert len(after["revision_history"]) >= 2
     assert after["revision_history"][0]["content_hash"] != \
         after["revision_history"][-1]["content_hash"]
+
+
+# ---- Q2 remediation tests (second round) ----
+
+def _tightened_meta():
+    return {
+        "schema_version": 1,
+        "title": "Synthetic CBA Bulletin",
+        "origin": "third_party",
+        "source_url": "https://example.com/report",
+        "rights": {"classification": "copyrighted",
+                   "public_export_allowed": False,
+                   "evidence": [{"type": "claim", "note": "unverified"}]},
+    }
+
+
+def test_a14_sidecar_only_rights_tightening_is_reevaluated(tmp_path):
+    """Q2 A1/B1: a sidecar-only change must invalidate the fast path and
+    re-trigger rights evaluation; a tightened document must disappear from
+    public search."""
+    private = private_instance(tmp_path)
+    write_txt(private, "pub.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    hit = command("--instance-root", str(private), "archive-query",
+                  "--keyword", "Harbor", "--visibility", "public")
+    assert hit.returncode == 0, hit.stderr
+    assert json.loads(hit.stdout)["count"] == 1
+    # Attack: tighten only the sidecar, leave the TXT untouched.
+    (private / "inbox/documents/pub.txt.source.json").write_text(
+        json.dumps(_tightened_meta(), ensure_ascii=False, indent=2),
+        encoding="utf-8")
+    first = scan(private)
+    second = scan(private)
+    assert second["review_required"] >= 1
+    rec = next(iter(source_records(private).values()))
+    assert rec["review_status"] == "REVIEW_REQUIRED"
+    assert rec["review_reason"] == "RIGHTS_UNDETERMINED"
+    pub = command("--instance-root", str(private), "archive-query",
+                  "--keyword", "Harbor", "--visibility", "public")
+    assert json.loads(pub.stdout)["count"] == 0
+    local = command("--instance-root", str(private), "archive-query",
+                    "--keyword", "Harbor")
+    assert json.loads(local.stdout)["count"] == 0
+
+
+def test_a15_sidecar_removed_after_success_goes_review(tmp_path):
+    """Q2 A1: removing the sidecar after success must not ride the fast
+    path; the source goes to METADATA_MISSING review."""
+    private = private_instance(tmp_path)
+    write_txt(private, "pub.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    (private / "inbox/documents/pub.txt.source.json").unlink()
+    scan(private)
+    result = scan(private)
+    assert result["review_required"] >= 1
+    rec = next(iter(source_records(private).values()))
+    assert rec["review_status"] == "REVIEW_REQUIRED"
+    assert rec["review_reason"] == "METADATA_MISSING"
+
+
+def test_a16_metadata_remediation_reprocesses(tmp_path):
+    """Q2 A1: a metadata review is not stuck; fixing the sidecar
+    re-triggers processing."""
+    private = private_instance(tmp_path)
+    inbox = private / "inbox/documents"
+    (inbox / "fixme.txt").write_text(SYNTHETIC_TXT, encoding="utf-8")
+    scan(private)
+    scan(private)
+    rec = next(iter(source_records(private).values()))
+    assert rec["review_status"] == "REVIEW_REQUIRED"
+    (inbox / "fixme.txt.source.json").write_text(
+        json.dumps(SYNTHETIC_META, ensure_ascii=False, indent=2),
+        encoding="utf-8")
+    scan(private)  # first scan after the fix: re-stabilizes the sidecar
+    result = scan(private)  # second scan: reprocesses
+    assert result["processed_total"] >= 1
+    rec = next(iter(source_records(private).values()))
+    assert rec["review_status"] == "NONE"
+    assert rec["index_status"] == "SEARCHABLE"
+
+
+def test_a17_whitespace_only_change_appends_revision(tmp_path):
+    """Q2 A2: a raw change that normalizes to the same doc_id still
+    appends a revision-history entry (never a silent overwrite)."""
+    private = private_instance(tmp_path)
+    write_txt(private, "ws.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    before = next(iter(source_records(private).values()))
+    assert len(before["revision_history"]) == 1
+    time.sleep(0.05)
+    (private / "inbox/documents/ws.txt").write_text(
+        SYNTHETIC_TXT.replace("\n", "\r\n"), encoding="utf-8")
+    scan(private)
+    scan(private)
+    after = next(iter(source_records(private).values()))
+    assert after["disposition"] == "revision"
+    assert len(after["revision_history"]) == 2
+    assert after["revision_history"][0]["raw_sha256"] != \
+        after["revision_history"][1]["raw_sha256"]
+
+
+def test_a18_merged_source_ids_all_queryable(tmp_path):
+    """Q2 A3: exact --id lookup works for every linked source/file id of a
+    shared document, not only the primary entry."""
+    private = private_instance(tmp_path)
+    write_txt(private, "first.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    write_txt(private, "second.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    records = source_records(private)
+    assert len(records) == 2
+    assert len({r["doc_id"] for r in records.values()}) == 1
+    doc_id = next(iter(records.values()))["doc_id"]
+    for rec in records.values():
+        for wanted in (rec["source_id"], rec["file_id"]):
+            result = command("--instance-root", str(private),
+                             "archive-query", "--id", wanted)
+            assert result.returncode == 0, result.stderr
+            hits = json.loads(result.stdout)["results"]
+            assert len(hits) == 1, wanted
+            assert hits[0]["doc_id"] == doc_id
+    doc_result = command("--instance-root", str(private),
+                         "archive-query", "--id", doc_id)
+    assert len(json.loads(doc_result.stdout)["results"]) == 1
+
+
+def test_a19_index_deletion_is_index_failed(tmp_path):
+    """Q2 C2: a deleted index.json with existing sources is INDEX_FAILED,
+    never a silent empty result."""
+    private = private_instance(tmp_path)
+    write_txt(private, "synthetic-news.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    (lifecycle_dir(private) / "index.json").unlink()
+    result = command("--instance-root", str(private),
+                     "archive-query", "--keyword", "Harbor")
+    assert result.returncode != 0
+    assert "INDEX_FAILED" in result.stderr
+
+
+def test_a20_stability_window_enforced(tmp_path):
+    """Q2 A4: the frozen 1.0 s window gates processing. Two observations
+    closer than 1.0 s leave the file PENDING_STABILITY; only a scan pair
+    spanning the real window processes it. Uses the in-process API so the
+    inter-scan gap is deterministically milliseconds."""
+    sys.path.insert(0, str(ROOT / "src"))
+    try:
+        import cba_kb.inbox_lifecycle as lifecycle_mod
+        from cba_kb.instance import load_instance
+        private = private_instance(tmp_path)
+        write_txt(private, "synthetic-news.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+        instance = load_instance(str(ROOT), str(private))
+        lifecycle = lifecycle_mod.InboxLifecycle(str(ROOT), instance)
+        # One CLI-speed scan without waiting: single observation, pending.
+        first = scan_nowait(private)
+        assert first["processed_new"] == 0
+        rec = next(iter(source_records(private).values()))
+        assert rec["processing_status"] == "PENDING_STABILITY"
+        # Second observation milliseconds later: still inside the window.
+        lifecycle2 = lifecycle_mod.InboxLifecycle(str(ROOT), instance)
+        summary = lifecycle2.scan_once()
+        assert summary["processed_new"] == 0
+        rec = next(iter(source_records(private).values()))
+        assert rec["processing_status"] == "PENDING_STABILITY"
+        # After the real window elapses, the next scan processes.
+        time.sleep(STABILITY_WAIT)
+        lifecycle3 = lifecycle_mod.InboxLifecycle(str(ROOT), instance)
+        summary = lifecycle3.scan_once()
+        assert summary["processed_new"] == 1
+    finally:
+        sys.path.remove(str(ROOT / "src"))
+
+
+def test_a21_oversized_file_not_read_or_stored(tmp_path):
+    """Q2 C3: oversized files are routed by stat size; their bytes are
+    never read into memory nor copied into the review area."""
+    private = private_instance(tmp_path)
+    big = "x" * (1024 * 1024 + 16)
+    write_txt(private, "big.txt", big, SYNTHETIC_META)
+    scan(private)
+    result = scan(private)
+    assert result["review_required"] >= 1
+    rec = next(iter(source_records(private).values()))
+    assert rec["review_reason"] == "FILE_TOO_LARGE"
+    review_dir = lifecycle_dir(private) / "review" / rec["source_id"]
+    assert (review_dir / "review.json").is_file()
+    assert not (review_dir / "original.bin").exists()
+
+
+def test_a22_processing_failure_is_distinct_from_review(tmp_path, monkeypatch):
+    """Q2 C4: unexpected lane failures become PROCESSING_FAILED (with
+    attempt count), never REVIEW_REQUIRED."""
+    sys.path.insert(0, str(ROOT / "src"))
+    try:
+        import cba_kb.inbox_lifecycle as lifecycle_mod
+        from cba_kb.instance import load_instance
+
+        class BoomLane:
+            def __init__(self, engine_root, instance):
+                pass
+
+            def ingest_file(self, *args, **kwargs):
+                raise RuntimeError("simulated lane explosion")
+
+        monkeypatch.setattr(lifecycle_mod, "DocumentLane", BoomLane)
+        private = private_instance(tmp_path)
+        write_txt(private, "boom.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+        instance = load_instance(str(ROOT), str(private))
+        lifecycle = lifecycle_mod.InboxLifecycle(str(ROOT), instance)
+        lifecycle.scan_once()
+        time.sleep(STABILITY_WAIT)
+        lifecycle.scan_once()
+        rec = next(iter(source_records(private).values()))
+        assert rec["processing_status"] == "PROCESSING_FAILED"
+        assert rec["review_status"] == "NONE"
+        assert rec["attempt_count"] == 1
+        assert rec["review_reason"] == "LANE_FAILED:RuntimeError"
+    finally:
+        sys.path.remove(str(ROOT / "src"))
+
+
+def test_a23_malformed_url_and_weak_evidence_rejected(tmp_path):
+    """Q2 C5: a URL without a hostname and non-dict evidence entries are
+    metadata rejections, not silent acceptances."""
+    private = private_instance(tmp_path)
+    bad_url = dict(SYNTHETIC_META)
+    bad_url["source_url"] = "https://"
+    write_txt(private, "badurl.txt", SYNTHETIC_TXT, bad_url)
+    bad_evidence = {
+        "schema_version": 1, "title": "t", "origin": "synthetic_fixture",
+        "source_url": None,
+        "rights": {"classification": "public",
+                   "public_export_allowed": True,
+                   "evidence": ["just a string"]},
+    }
+    write_txt(private, "badev.txt", SYNTHETIC_TXT, bad_evidence)
+    scan(private)
+    scan(private)
+    records = source_records(private)
+    assert len(records) == 2
+    reasons = {r["review_reason"] for r in records.values()}
+    assert "METADATA_SOURCE_URL_INVALID" in reasons
+    assert "METADATA_RIGHTS_EVIDENCE_STRUCTURE_INVALID" in reasons
+
+
+def test_a24_skip_reasons_are_reported(tmp_path):
+    """Q2 A5: scan summaries expose per-file skip reasons."""
+    private = private_instance(tmp_path)
+    inbox = private / "inbox/documents"
+    (inbox / ".hidden.txt").write_text("x", encoding="utf-8")
+    target = inbox / "real-target.txt"
+    target.write_text("y", encoding="utf-8")
+    try:
+        (inbox / "link.txt").symlink_to(target)
+        have_link = True
+    except OSError:
+        have_link = False
+    summary = scan_nowait(private)
+    reasons = {item["reason"] for item in summary["skipped"]}
+    assert "SYSTEM_FILE_SKIPPED" in reasons
+    if have_link:
+        assert "SYMLINK_NOT_FOLLOWED" in reasons
+    assert "METADATA_SIDECAR" not in reasons  # no sidecars written here

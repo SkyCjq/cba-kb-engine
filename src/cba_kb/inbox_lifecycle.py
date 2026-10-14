@@ -26,9 +26,8 @@ Design notes (frozen by Q1, summarized here for implementers):
 
 - A file is processed only after it is observed with identical size/mtime
   in at least two consecutive scans spanning the stability window
-  (default 1.0 s, overridable for tests via
-  ``CBA_KB_INBOX_STABILITY_SECONDS``). The bytes are re-read and re-statted
-  before processing.
+  (1.0 s, frozen by contract and deliberately not configurable).
+  The bytes are re-read and re-statted before processing.
 - All state lives under ``<instance>/data/inbox_lifecycle/`` and is written
   atomically. The engine source tree is never written to. A PID lock file
   refuses concurrent writers.
@@ -43,14 +42,23 @@ import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
+import fcntl
+
+from urllib.parse import urlsplit
+
 from .common import atomic
 from .document_lane import DocumentLane, content_hash as doc_content_hash
-from .source_intake import SOURCE_INTAKE_VERSION, normalize_source_payload
+from .document_sources import ReviewRequired
+from .source_intake import (SOURCE_INTAKE_VERSION, SourceIntakeError,
+                            normalize_source_payload)
 
 SCHEMA_VERSION = 1
 MAX_AUTO_TXT_BYTES = 1024 * 1024
-STABILITY_ENV_VAR = "CBA_KB_INBOX_STABILITY_SECONDS"
-DEFAULT_STABILITY_SECONDS = 1.0
+# Frozen minimum: a file is processed only after identical size/mtime in
+# >=2 consecutive scans spanning at least this window. Deliberately not
+# configurable: the Q1 contract fixes the minimum at one second and no
+# production knob may weaken it.
+STABILITY_WINDOW_SECONDS = 1.0
 DEFAULT_POLL_INTERVAL_SECONDS = 30.0
 MIN_POLL_INTERVAL_SECONDS = 1.0
 SIDECAR_SUFFIX = ".source.json"
@@ -69,14 +77,6 @@ def _utc_now():
 
 def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
-
-
-def _stability_window() -> float:
-    try:
-        return max(0.0, float(os.environ.get(
-            STABILITY_ENV_VAR, str(DEFAULT_STABILITY_SECONDS))))
-    except ValueError:
-        return DEFAULT_STABILITY_SECONDS
 
 
 def file_id_for(relative_posix: str) -> str:
@@ -120,8 +120,8 @@ def load_sidecar(path: Path):
     if source_url is not None:
         if not isinstance(source_url, str) or not source_url.strip():
             return None, "METADATA_SOURCE_URL_INVALID"
-        lowered = source_url.strip().lower()
-        if not (lowered.startswith("http://") or lowered.startswith("https://")):
+        parts = urlsplit(source_url.strip())
+        if parts.scheme not in ("http", "https") or not parts.hostname:
             return None, "METADATA_SOURCE_URL_INVALID"
     rights = data.get("rights")
     if not isinstance(rights, dict):
@@ -130,8 +130,11 @@ def load_sidecar(path: Path):
         return None, "METADATA_RIGHTS_CLASSIFICATION_INVALID"
     if not isinstance(rights.get("public_export_allowed"), bool):
         return None, "METADATA_RIGHTS_EXPORT_FLAG_INVALID"
-    if not isinstance(rights.get("evidence"), list):
+    evidence = rights.get("evidence")
+    if not isinstance(evidence, list):
         return None, "METADATA_RIGHTS_EVIDENCE_INVALID"
+    if any(not isinstance(item, dict) for item in evidence):
+        return None, "METADATA_RIGHTS_EVIDENCE_STRUCTURE_INVALID"
     return {
         "schema_version": 1,
         "title": title.strip(),
@@ -180,37 +183,44 @@ class InboxLifecycle:
         self.checkpoint_path = self.state_root / "scan_checkpoint.json"
         self.review_root = self.state_root / "review"
         self.lock_path = self.state_root / ".lock"
+        self._lock_fd = None
         for directory in (self.inbox_root, self.sources_root,
                           self.ledger_path.parent, self.review_root):
             directory.mkdir(parents=True, exist_ok=True)
 
     # -- locking ---------------------------------------------------------
+    # Single-writer mutual exclusion via an OS file lock (fcntl.flock).
+    # The lock is atomic: LOCK_EX|LOCK_NB either succeeds (we own it) or
+    # fails (someone else owns it). A dead process's lock is released by
+    # the OS itself, so there is no "stale lock" to take over and no
+    # takeover race. The PID written into the file is diagnostic only.
     def _acquire_lock(self):
+        if self._lock_fd is not None:
+            raise InboxLifecycleError("INBOX_LIFECYCLE_LOCK_REENTRANT")
+        fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o644)
         try:
-            fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            try:
-                data = _read_json(self.lock_path)
-                pid = int(data.get("pid", 0))
-            except (OSError, ValueError, TypeError):
-                pid = 0
-            if pid:
-                try:
-                    os.kill(pid, 0)
-                    raise InboxLifecycleError(
-                        "INBOX_LIFECYCLE_LOCKED: another writer holds the "
-                        "instance lock")
-                except OSError:
-                    pass  # stale lock; fall through and replace
-            fd = os.open(self.lock_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"pid": os.getpid(), "started_at": _utc_now()}, handle)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            os.close(fd)
+            raise InboxLifecycleError(
+                "INBOX_LIFECYCLE_LOCKED: another writer holds the "
+                "instance lock") from exc
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, json.dumps(
+                {"pid": os.getpid(), "started_at": _utc_now()}).encode())
+        except OSError:
+            pass  # diagnostic content only; the flock is the mechanism
+        self._lock_fd = fd
 
     def _release_lock(self):
+        fd, self._lock_fd = self._lock_fd, None
+        if fd is None:
+            return
         try:
-            self.lock_path.unlink()
-        except OSError:
-            pass
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
     # -- persistent state -------------------------------------------------
     def _load_source(self, source_id):
@@ -264,9 +274,20 @@ class InboxLifecycle:
                 separators=(",", ":")).encode("utf-8")),
         }
 
-    def _load_index_documents(self):
-        """Return the materialized index entries; raise on corruption."""
+    def _load_index_documents(self, *, strict=True):
+        """Return the materialized index entries; raise on corruption.
+
+        Every scan materializes the index (possibly empty), and source
+        records are only ever created by a scan. So a missing index.json
+        with existing source records means the index was deleted or lost:
+        that is INDEX_FAILED, never a silent empty result. A missing index
+        with no source records is a fresh instance: [].
+        With strict=False (mutation paths), a missing index is treated as
+        empty; the read path (query) always stays strict.
+        """
         if not self.index_path.is_file():
+            if strict and self._all_sources():
+                raise InboxLifecycleError("INDEX_FAILED: index.json missing")
             return []
         try:
             payload = _read_json(self.index_path)
@@ -284,12 +305,96 @@ class InboxLifecycle:
     def _write_index(self, documents):
         _atomic_json(self.index_path, self._index_payload(documents))
 
-    def _upsert_index_entry(self, entry):
-        documents = self._load_index_documents()
-        documents = [item for item in documents
-                     if item["doc_id"] != entry["doc_id"]]
-        documents.append(entry)
+    def _index_link(self, doc_id, *, source_id, file_id, relative_path,
+                    title, content_hash, visibility):
+        """Link a source to a document entry, creating it if needed."""
+        documents = self._load_index_documents(strict=False)
+        entry = next((item for item in documents
+                      if item["doc_id"] == doc_id), None)
+        link = {"source_id": source_id, "file_id": file_id,
+                "relative_path": relative_path}
+        if entry is None:
+            entry = {"doc_id": doc_id, "title": title,
+                     "content_hash": content_hash, "visibility": visibility,
+                     "indexed_at": _utc_now(), "links": [link]}
+            documents.append(entry)
+        else:
+            entry["title"] = title
+            entry["content_hash"] = content_hash
+            entry["visibility"] = visibility
+            entry["indexed_at"] = _utc_now()
+            entry["links"] = [item for item in entry.get("links", [])
+                              if item.get("source_id") != source_id]
+            entry["links"].append(link)
         self._write_index(documents)
+
+    def _index_unlink_source(self, source_id, doc_id=None):
+        """Drop a source's links; remove entries left with no links."""
+        documents = self._load_index_documents(strict=False)
+        changed = False
+        kept = []
+        for item in documents:
+            if doc_id is not None and item["doc_id"] != doc_id:
+                kept.append(item)
+                continue
+            links = [link for link in item.get("links", [])
+                     if link.get("source_id") != source_id]
+            if len(links) != len(item.get("links", [])):
+                changed = True
+            if links:
+                item["links"] = links
+                kept.append(item)
+            else:
+                changed = True
+        if changed:
+            self._write_index(kept)
+
+    def _doc_visibility(self, doc_id, linked_records):
+        """Recompute a document's visibility from archive rights + origins."""
+        archive_record = self._archive_record(doc_id)
+        rights = (archive_record.get("rights")
+                  if archive_record else {}) or {}
+        public_ok = (
+            rights.get("classification") == "public"
+            and rights.get("public_export_allowed") is True
+            and bool(rights.get("evidence"))
+            and all((rec.get("provenance") or {}).get("origin")
+                    == "synthetic_fixture" for rec in linked_records))
+        return "public" if public_ok else "local"
+
+    def _rebuild_index(self):
+        """Rebuild the materialized index from the source records.
+
+        The source records are the source of truth; the index is a derived
+        view. Rebuilding is deterministic and logged, never silent.
+        """
+        by_doc = {}
+        for rec in self._all_sources():
+            if rec.get("index_status") != "SEARCHABLE" or not rec.get("doc_id"):
+                continue
+            doc_id = rec["doc_id"]
+            entry = by_doc.setdefault(doc_id, {"records": []})
+            entry["records"].append(rec)
+        documents = []
+        for doc_id, grouped in by_doc.items():
+            records = grouped["records"]
+            first = records[0]
+            documents.append({
+                "doc_id": doc_id,
+                "title": first.get("title"),
+                "content_hash": first.get("content_hash"),
+                "visibility": self._doc_visibility(doc_id, records),
+                "indexed_at": _utc_now(),
+                "links": [{"source_id": rec["source_id"],
+                           "file_id": rec["file_id"],
+                           "relative_path": rec["relative_path"]}
+                          for rec in records],
+            })
+        self._write_index(documents)
+        self._ledger_event("index_rebuilt", {
+            "documents": len(documents),
+            "reason": "index.json missing with existing sources",
+        })
 
     # -- scan -------------------------------------------------------------
     def _iter_inbox_files(self):
@@ -324,8 +429,13 @@ class InboxLifecycle:
 
     def _scan_once_locked(self):
         started = _utc_now()
-        window = _stability_window()
+        window = STABILITY_WINDOW_SECONDS
         checkpoint = self._load_checkpoint()
+        # If the index was deleted or lost while source records exist,
+        # rebuild it deterministically from the source records (logged,
+        # never silent) instead of continuing with a partial view.
+        if not self.index_path.is_file() and self._all_sources():
+            self._rebuild_index()
         summary = {
             "schema_version": SCHEMA_VERSION,
             "started_at": started,
@@ -336,6 +446,7 @@ class InboxLifecycle:
             "unsupported": 0,
             "review_required": 0,
             "skipped_system_or_symlink": 0,
+            "skipped": [],
             "errors": [],
         }
         for name, skip_reason in self._iter_inbox_files():
@@ -343,6 +454,8 @@ class InboxLifecycle:
                 if skip_reason in ("SYMLINK_NOT_FOLLOWED",
                                    "SYSTEM_FILE_SKIPPED"):
                     summary["skipped_system_or_symlink"] += 1
+                summary["skipped"].append(
+                    {"file": name, "reason": skip_reason})
                 continue
             summary["scanned_files"] += 1
             try:
@@ -351,6 +464,11 @@ class InboxLifecycle:
                 summary["errors"].append(
                     {"file": name, "reason": str(exc)})
         self._save_checkpoint(checkpoint)
+        # Every scan materializes the index (possibly empty). This keeps the
+        # invariant "a scan ran => index.json exists", so a later missing
+        # index.json with existing source records is detectable index loss.
+        if not self.index_path.is_file():
+            self._write_index([])
         summary["finished_at"] = _utc_now()
         self._ledger_event("scan_completed", {
             "started_at": started,
@@ -362,49 +480,75 @@ class InboxLifecycle:
         })
         return summary
 
+    def _sidecar_stat(self, rel_posix):
+        """Return (exists, size, mtime_ns) for the sidecar, without reading."""
+        path = self.inbox_root / (rel_posix + SIDECAR_SUFFIX)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return False, None, None
+        return True, stat.st_size, stat.st_mtime_ns
+
     def _scan_file(self, name, checkpoint, window, summary):
         rel_posix = name
         source_id = source_id_for(rel_posix)
         file_id = file_id_for(rel_posix)
         stat = os.stat(self.inbox_root / name)
         size, mtime_ns = stat.st_size, stat.st_mtime_ns
+        sidecar_exists, sidecar_size, sidecar_mtime_ns = \
+            self._sidecar_stat(rel_posix)
 
         record = self._load_source(source_id)
         if record is None:
             summary["discoveries"] += 1
             record = self._new_source_record(source_id, file_id, rel_posix)
 
-        # Idempotent fast path: unchanged and already fully processed.
+        # Idempotent fast path: the TXT and its sidecar are both unchanged
+        # and the source was fully processed. Sidecar state is part of the
+        # identity: a metadata-only change must re-trigger rights
+        # re-evaluation, never ride the fast path.
         if (record.get("processing_status") == "PROCESSING_COMPLETE"
                 and record.get("observed_size") == size
-                and record.get("observed_mtime_ns") == mtime_ns):
+                and record.get("observed_mtime_ns") == mtime_ns
+                and record.get("sidecar_exists") == sidecar_exists
+                and record.get("sidecar_size") == sidecar_size
+                and record.get("sidecar_mtime_ns") == sidecar_mtime_ns):
             record["last_seen_at"] = _utc_now()
             self._save_source(record)
             return
 
         suffix = Path(name).suffix.lower()
         if suffix != ".txt":
+            # Unsupported formats are never read: size/mtime from stat only.
             record.update(
                 processing_status="PROCESSING_COMPLETE",
                 disposition="unsupported",
                 review_status="UNSUPPORTED",
                 index_status="NOT_INDEXED",
-                raw_sha256=_sha256_hex(
-                    (self.inbox_root / name).read_bytes()),
+                raw_sha256=None,
                 observed_size=size,
                 observed_mtime_ns=mtime_ns,
+                sidecar_exists=sidecar_exists,
+                sidecar_size=sidecar_size,
+                sidecar_mtime_ns=sidecar_mtime_ns,
                 last_seen_at=_utc_now(),
             )
             self._save_source(record)
+            self._index_unlink_source(source_id)
             summary["unsupported"] += 1
             return
 
-        # Stability gate: identical size/mtime across >=2 consecutive scans
-        # spanning the stability window before any byte is processed.
+        # Stability gate: identical TXT and sidecar size/mtime across >=2
+        # consecutive scans spanning the stability window before any byte
+        # is processed.
         observed = checkpoint.get(source_id)
         now = time.time()
-        same_as_before = (observed and observed.get("size") == size
-                          and observed.get("mtime_ns") == mtime_ns)
+        same_as_before = (
+            observed and observed.get("size") == size
+            and observed.get("mtime_ns") == mtime_ns
+            and observed.get("sidecar_exists") == sidecar_exists
+            and observed.get("sidecar_size") == sidecar_size
+            and observed.get("sidecar_mtime_ns") == sidecar_mtime_ns)
         if same_as_before:
             observations = int(observed.get("observations", 0)) + 1
             first_observed = observed.get("first_observed_at", now)
@@ -414,6 +558,9 @@ class InboxLifecycle:
         checkpoint[source_id] = {
             "size": size,
             "mtime_ns": mtime_ns,
+            "sidecar_exists": sidecar_exists,
+            "sidecar_size": sidecar_size,
+            "sidecar_mtime_ns": sidecar_mtime_ns,
             "first_observed_at": first_observed,
             "observations": observations,
             "last_scan_at": now,
@@ -423,21 +570,40 @@ class InboxLifecycle:
                 record["processing_status"] = "PENDING_STABILITY"
                 record["observed_size"] = size
                 record["observed_mtime_ns"] = mtime_ns
+                record["sidecar_exists"] = sidecar_exists
+                record["sidecar_size"] = sidecar_size
+                record["sidecar_mtime_ns"] = sidecar_mtime_ns
                 record["last_seen_at"] = _utc_now()
                 self._save_source(record)
             return
 
         # Stable: re-read and re-stat before processing.
-        raw = (self.inbox_root / name).read_bytes()
         restat = os.stat(self.inbox_root / name)
         if restat.st_size != size or restat.st_mtime_ns != mtime_ns:
             checkpoint[source_id] = {
                 "size": restat.st_size, "mtime_ns": restat.st_mtime_ns,
+                "sidecar_exists": sidecar_exists,
+                "sidecar_size": sidecar_size,
+                "sidecar_mtime_ns": sidecar_mtime_ns,
                 "first_observed_at": now, "observations": 1,
                 "last_scan_at": now,
             }
             return
-        self._process_stable_txt(record, rel_posix, raw, summary)
+        # Size guards from stat, before any byte is read.
+        if size == 0:
+            self._mark_review(record, "EMPTY_FILE", None, None, summary,
+                              sidecar=(sidecar_exists, sidecar_size,
+                                       sidecar_mtime_ns))
+            return
+        if size > MAX_AUTO_TXT_BYTES:
+            self._mark_review(record, "FILE_TOO_LARGE", None, None, summary,
+                              sidecar=(sidecar_exists, sidecar_size,
+                                       sidecar_mtime_ns))
+            return
+        raw = (self.inbox_root / name).read_bytes()
+        self._process_stable_txt(record, rel_posix, raw, summary,
+                                 sidecar=(sidecar_exists, sidecar_size,
+                                          sidecar_mtime_ns))
 
     def _new_source_record(self, source_id, file_id, rel_posix):
         return {
@@ -458,6 +624,10 @@ class InboxLifecycle:
             "last_seen_at": _utc_now(),
             "observed_size": None,
             "observed_mtime_ns": None,
+            "sidecar_exists": None,
+            "sidecar_size": None,
+            "sidecar_mtime_ns": None,
+            "attempt_count": 0,
             "processing_status": "DISCOVERED",
             "disposition": None,
             "review_status": "NONE",
@@ -468,18 +638,29 @@ class InboxLifecycle:
             "revision_history": [],
         }
 
-    def _mark_review(self, record, reason, raw, raw_sha256, summary):
+    def _mark_review(self, record, reason, raw, raw_sha256, summary,
+                     sidecar=(None, None, None), store_raw=True):
+        """Route a source to human review.
+
+        The source is unlinked from the search index: a review decision is
+        never publicly (or locally) searchable as document content. Oversized
+        inputs are never copied into the review area.
+        """
+        exists, size, mtime_ns = sidecar
         record.update(
             processing_status="PROCESSING_COMPLETE",
             disposition="review_required",
             review_status="REVIEW_REQUIRED",
             index_status="NOT_INDEXED",
             review_reason=reason,
+            sidecar_exists=exists,
+            sidecar_size=size,
+            sidecar_mtime_ns=mtime_ns,
             last_seen_at=_utc_now(),
         )
         review_dir = self.review_root / record["source_id"]
         review_dir.mkdir(parents=True, exist_ok=True)
-        if raw:
+        if raw and store_raw:
             atomic(review_dir / "original.bin", raw)
         _atomic_json(review_dir / "review.json", {
             "schema_version": SCHEMA_VERSION,
@@ -490,6 +671,7 @@ class InboxLifecycle:
             "reviewed_at": _utc_now(),
         })
         self._save_source(record)
+        self._index_unlink_source(record["source_id"])
         summary["review_required"] += 1
         self._ledger_event("source_review_required", {
             "source_id": record["source_id"],
@@ -497,29 +679,55 @@ class InboxLifecycle:
             "reason": reason,
         })
 
-    def _process_stable_txt(self, record, rel_posix, raw, summary):
+    def _mark_failed(self, record, reason, summary,
+                     sidecar=(None, None, None)):
+        """Record a genuine processing failure (distinct from review)."""
+        exists, size, mtime_ns = sidecar
+        record.update(
+            processing_status="PROCESSING_FAILED",
+            disposition=None,
+            review_status="NONE",
+            index_status="NOT_INDEXED",
+            review_reason=reason,
+            sidecar_exists=exists,
+            sidecar_size=size,
+            sidecar_mtime_ns=mtime_ns,
+            attempt_count=int(record.get("attempt_count", 0)) + 1,
+            last_seen_at=_utc_now(),
+        )
+        self._save_source(record)
+        self._index_unlink_source(record["source_id"])
+        summary["errors"].append(
+            {"file": record["relative_path"], "reason": reason})
+        self._ledger_event("source_processing_failed", {
+            "source_id": record["source_id"],
+            "relative_path": record["relative_path"],
+            "reason": reason,
+            "attempt_count": record["attempt_count"],
+        })
+
+    def _process_stable_txt(self, record, rel_posix, raw, summary,
+                            sidecar=(None, None, None)):
         raw_sha256 = _sha256_hex(raw)
+        previous_raw_sha256 = record.get("raw_sha256")
         record.update(
             raw_sha256=raw_sha256,
             observed_size=len(raw),
             observed_mtime_ns=os.stat(self.inbox_root / rel_posix).st_mtime_ns,
+            sidecar_exists=sidecar[0],
+            sidecar_size=sidecar[1],
+            sidecar_mtime_ns=sidecar[2],
             last_seen_at=_utc_now(),
         )
-        if not raw:
-            self._mark_review(record, "EMPTY_FILE", raw, raw_sha256, summary)
-            return
-        if len(raw) > MAX_AUTO_TXT_BYTES:
-            self._mark_review(record, "FILE_TOO_LARGE", raw, raw_sha256,
-                              summary)
-            return
         try:
             text = raw.decode("utf-8-sig")
         except UnicodeDecodeError:
             self._mark_review(record, "TXT_ENCODING_UNSUPPORTED", raw,
-                              raw_sha256, summary)
+                              raw_sha256, summary, sidecar=sidecar)
             return
         if not text.strip():
-            self._mark_review(record, "EMPTY_TEXT", raw, raw_sha256, summary)
+            self._mark_review(record, "EMPTY_TEXT", raw, raw_sha256, summary,
+                              sidecar=sidecar)
             return
 
         sidecar_path = self.inbox_root / (rel_posix + SIDECAR_SUFFIX)
@@ -541,7 +749,7 @@ class InboxLifecycle:
             visibility, visibility_reason = "review", meta_error
         if visibility == "review":
             self._mark_review(record, visibility_reason, raw, raw_sha256,
-                              summary)
+                              summary, sidecar=sidecar)
             return
 
         lane_rights = {
@@ -560,6 +768,10 @@ class InboxLifecycle:
             "visibility_decision": visibility_reason,
             "inbox_lifecycle": "pr1",
         }
+        # Failure taxonomy: domain rejections (invalid intake, lane review
+        # signals) -> REVIEW_REQUIRED for a human; unexpected failures
+        # (I/O, programming errors) -> PROCESSING_FAILED with attempt count,
+        # retried on the next scan. The two are never conflated.
         try:
             envelope, _norm_text = normalize_source_payload(
                 raw,
@@ -570,9 +782,13 @@ class InboxLifecycle:
                 provenance=provenance,
                 raw_ref=rel_posix,
             )
-        except Exception as exc:
+        except SourceIntakeError as exc:
             self._mark_review(record, "INTAKE_REJECTED:" + type(exc).__name__,
-                              raw, raw_sha256, summary)
+                              raw, raw_sha256, summary, sidecar=sidecar)
+            return
+        except Exception as exc:
+            self._mark_failed(record, "INTAKE_FAILED:" + type(exc).__name__,
+                              summary, sidecar=sidecar)
             return
 
         lane = DocumentLane(self.engine_root, self.instance)
@@ -585,14 +801,17 @@ class InboxLifecycle:
                 public_export_allowed=lane_rights["public_export_allowed"],
                 rights_evidence=lane_rights["evidence"],
             )
+        except ReviewRequired as exc:
+            self._mark_review(record, "LANE_REVIEW:" + type(exc).__name__,
+                              raw, raw_sha256, summary, sidecar=sidecar)
+            return
         except Exception as exc:
-            self._mark_review(record, "LANE_REJECTED:" + type(exc).__name__,
-                              raw, raw_sha256, summary)
+            self._mark_failed(record, "LANE_FAILED:" + type(exc).__name__,
+                              summary, sidecar=sidecar)
             return
 
         doc_id = lane_result.get("doc_id")
         content_hash = lane_result.get("content_hash")
-        previous_doc_id = record.get("doc_id")
         lane_disposition = lane_result.get("disposition")
         if lane_result.get("status") == "REVIEW_REQUIRED":
             disposition = "review_required"
@@ -601,7 +820,9 @@ class InboxLifecycle:
         else:
             review_status = "NONE"
             index_status = "SEARCHABLE"
-            if previous_doc_id and previous_doc_id != doc_id:
+            # A revision is any raw-content change, even when normalization
+            # yields the same doc_id (e.g. whitespace/line-ending edits).
+            if previous_raw_sha256 and previous_raw_sha256 != raw_sha256:
                 disposition = "revision"
             else:
                 disposition = lane_disposition or "new"
@@ -621,8 +842,10 @@ class InboxLifecycle:
             else "local")
 
         is_new = record.get("doc_id") is None and disposition == "new"
-        if previous_doc_id != doc_id or not record.get("revision_history"):
-            record.setdefault("revision_history", []).append({
+        history = record.setdefault("revision_history", [])
+        if (not history or history[-1].get("raw_sha256") != raw_sha256
+                or history[-1].get("doc_id") != doc_id):
+            history.append({
                 "observed_at": _utc_now(),
                 "raw_sha256": raw_sha256,
                 "content_hash": content_hash,
@@ -648,22 +871,17 @@ class InboxLifecycle:
         self._save_source(record)
 
         if index_status == "SEARCHABLE":
-            entry = {
-                "doc_id": doc_id,
-                "source_id": record["source_id"],
-                "source_ids": sorted({record["source_id"]} | set(
-                    item.get("source_id") for item in
-                    self._load_index_documents()
-                    if item["doc_id"] == doc_id and item.get("source_id"))),
-                "file_id": record["file_id"],
-                "title": meta["title"],
-                "content_hash": content_hash,
-                "visibility": effective_visibility,
-                "indexed_at": _utc_now(),
-            }
-            # Preserve every linked source for a shared doc_id.
-            entry["source_ids"] = sorted(set(entry["source_ids"]))
-            self._upsert_index_entry(entry)
+            # The source's link moves to the current document; its old
+            # document loses this link (and vanishes from the index when no
+            # source links to it anymore). History stays in the archive.
+            self._index_unlink_source(record["source_id"])
+            self._index_link(
+                doc_id, source_id=record["source_id"],
+                file_id=record["file_id"], relative_path=rel_posix,
+                title=meta["title"], content_hash=content_hash,
+                visibility=effective_visibility)
+        else:
+            self._index_unlink_source(record["source_id"])
 
         summary["processed_total"] += 1
         if is_new:
@@ -774,6 +992,16 @@ class InboxLifecycle:
         return detail
 
     # -- query ------------------------------------------------------------
+    def _match_link(self, item, wanted):
+        """Return the linked source matching an exact id, or None."""
+        if wanted == item.get("doc_id"):
+            links = item.get("links", [])
+            return links[0] if links else None
+        for link in item.get("links", []):
+            if wanted in (link.get("source_id"), link.get("file_id")):
+                return link
+        return None
+
     def query(self, *, id=None, title=None, keyword=None,
               visibility="local"):
         """Rights-aware search over the materialized index."""
@@ -792,10 +1020,11 @@ class InboxLifecycle:
                 wanted = id.strip()
                 if not wanted:
                     raise InboxLifecycleError("ARCHIVE_QUERY_TEXT_REQUIRED")
-                candidates = [item for item in documents
-                              if wanted in (item.get("file_id"),
-                                            item.get("source_id"),
-                                            item.get("doc_id"))]
+                # Exact id matches the doc id or ANY linked source/file id.
+                candidates = [(item, self._match_link(item, wanted))
+                              for item in documents]
+                candidates = [(item, link) for item, link in candidates
+                              if link is not None]
             else:
                 text = (title if title is not None else keyword) or ""
                 if not text.strip():
@@ -809,11 +1038,15 @@ class InboxLifecycle:
                         haystacks.append(_normalize_query_text(
                             self._indexed_text(item["doc_id"])))
                     if any(needle in hay for hay in haystacks):
-                        candidates.append(item)
+                        links = item.get("links", [])
+                        candidates.append(
+                            (item, links[0] if links else None))
+                candidates = [(item, link) for item, link in candidates
+                              if link is not None]
             results = []
             healed = False
-            for item in candidates:
-                verified = self._verify_candidate(item)
+            for item, link in candidates:
+                verified = self._verify_candidate(item, link)
                 if verified is None:
                     continue
                 if verified["visibility"] != item.get("visibility"):
@@ -844,24 +1077,36 @@ class InboxLifecycle:
             raise InboxLifecycleError(
                 "INDEX_FAILED: archive text unreadable:" + doc_id) from exc
 
-    def _verify_candidate(self, item):
-        """Re-check rights and integrity; return the hit or None to skip."""
+    def _verify_candidate(self, item, link):
+        """Re-check rights, origin and integrity; hit or None to skip.
+
+        The public-visibility predicate is implemented independently here:
+        archive rights AND the linked source's persisted origin must both
+        qualify. A stale link (source moved on to another document) is
+        healed away and skipped.
+        """
         doc_id = item["doc_id"]
-        source = self._load_source(item.get("source_id"))
+        source = self._load_source(link.get("source_id"))
         if source is None:
             raise InboxLifecycleError(
                 "INDEX_FAILED: source record missing:" + doc_id)
         if source.get("review_status") != "NONE":
+            return None
+        if source.get("doc_id") != doc_id:
+            # Stale link: the source has moved on (revision/review); drop it.
+            self._index_unlink_source(link.get("source_id"), doc_id)
             return None
         archive_record = self._archive_record(doc_id)
         if archive_record is None:
             raise InboxLifecycleError(
                 "INDEX_FAILED: archive record missing:" + doc_id)
         rights = archive_record.get("rights") or {}
+        provenance = source.get("provenance") or {}
         public_ok = (
             rights.get("classification") == "public"
             and rights.get("public_export_allowed") is True
-            and bool(rights.get("evidence")))
+            and bool(rights.get("evidence"))
+            and provenance.get("origin") == "synthetic_fixture")
         visibility = "public" if public_ok else "local"
         text = self._indexed_text(doc_id)
         if doc_content_hash(text) != item.get("content_hash"):
@@ -872,11 +1117,13 @@ class InboxLifecycle:
                 "INDEX_FAILED: archive content drift:" + doc_id)
         return {
             "doc_id": doc_id,
-            "file_id": item.get("file_id"),
-            "source_id": item.get("source_id"),
-            "source_ids": item.get("source_ids", [item.get("source_id")]),
+            "file_id": link.get("file_id"),
+            "source_id": link.get("source_id"),
+            "source_ids": sorted(
+                link.get("source_id") for link in item.get("links", [])
+                if link.get("source_id")),
             "title": item.get("title"),
-            "relative_path": source.get("relative_path"),
+            "relative_path": link.get("relative_path"),
             "content_hash": item.get("content_hash"),
             "visibility": visibility,
         }

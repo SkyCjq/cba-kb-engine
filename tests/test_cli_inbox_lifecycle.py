@@ -15,11 +15,16 @@ def command(*args, env=None):
     merged = {**os.environ, **(env or {}),
               "PYTHONPATH": str(ROOT / "src"),
               "PYTHONDONTWRITEBYTECODE": "1"}
-    merged.setdefault("CBA_KB_INBOX_STABILITY_SECONDS", "0")
+    # The 1.0 s stability window is frozen and not configurable (Q2 A4).
+    merged.pop("CBA_KB_INBOX_STABILITY_SECONDS", None)
     return subprocess.run(
         [sys.executable, "-m", "cba_kb.cli", "--root", str(ROOT), *args],
         cwd=ROOT, env=merged, capture_output=True, text=True, timeout=120,
     )
+
+
+# Real wait for the frozen 1.0 s stability window (see the sibling module).
+STABILITY_WAIT = 1.2
 
 
 def private_instance(tmp_path):
@@ -93,8 +98,7 @@ def test_concurrent_writer_is_refused(tmp_path):
          "inbox-poll", "--interval-seconds", "30", "--max-scans", "100"],
         cwd=ROOT,
         env={**os.environ, "PYTHONPATH": str(ROOT / "src"),
-             "PYTHONDONTWRITEBYTECODE": "1",
-             "CBA_KB_INBOX_STABILITY_SECONDS": "0"},
+             "PYTHONDONTWRITEBYTECODE": "1"},
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
@@ -120,6 +124,7 @@ def test_scan_never_writes_into_engine_source_tree(tmp_path):
         "rights": {"classification": "private",
                    "public_export_allowed": False, "evidence": []}}))
     command("--instance-root", str(private), "inbox-scan")
+    time.sleep(STABILITY_WAIT)
     command("--instance-root", str(private), "inbox-scan")
     after = {p for p in ROOT.rglob("*") if p.is_file()}
     assert after - before == set()

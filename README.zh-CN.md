@@ -110,8 +110,9 @@ cat > /tmp/cbakb-demo/inbox/documents/synthetic-news.txt.source.json <<'EOF'
 }
 EOF
 
-# 3. 扫描两次：文件须在连续两次扫描中完全一致才会处理（稳定性门）
+# 3. 扫描两次：文件须在间隔至少 1 秒的连续两次扫描中完全一致才会处理（稳定性门）
 cba-kb --instance-root /tmp/cbakb-demo inbox-scan
+sleep 2
 cba-kb --instance-root /tmp/cbakb-demo inbox-scan
 
 # 4. 或用持续轮询代替手工扫描（Ctrl-C 停止）
@@ -130,7 +131,10 @@ cba-kb --instance-root /tmp/cbakb-demo archive-query --visibility public --keywo
   与权利。缺失/非法元数据、非 UTF-8 字节、无可验证证据的公开声明，
   一律进入 `REVIEW_REQUIRED`——绝不静默入库，绝不进入公开搜索。
 - `local` 可见性（默认）面向该外置实例的操作者；`public` 可见性只返回
-  有真实权利证据的合成样例。
+  有真实权利证据的合成样例。这是一个搜索过滤器，不是发布审批：
+  PR-1 没有任何发布路径，任何公开暴露仍应视为需要人工复核的残余风险
+  （每次元数据变更都会重估权利，查询时也会重验，但自动化检查不能
+  替代人工权利审查）。
 - Inbox 原件永不重命名、移动或删除（`archive_status` 保持
   `NOT_REQUESTED`）。
 - 所有状态保存在 `<instance>/data/` 下；引擎源码目录永不被写入。
