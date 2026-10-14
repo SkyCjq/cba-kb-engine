@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import time
 import unicodedata
 from datetime import datetime, timezone
@@ -102,10 +103,32 @@ def _normalize_query_text(value: str) -> str:
 
 
 def load_sidecar(path: Path):
-    """Return (metadata, error_code). error_code is None when valid."""
+    """Return (metadata, error_code). error_code is None when valid.
+
+    C1: any structural anomaly (wrong types, unparsable URL, unreadable
+    file) is a metadata rejection, never an exception escaping to the
+    scan loop.
+    """
     try:
-        data = _read_json(path)
-    except (OSError, ValueError):
+        return _load_sidecar_inner(path)
+    except Exception:
+        return None, "METADATA_INVALID"
+
+
+def _load_sidecar_inner(path: Path):
+    try:
+        # O_NOFOLLOW: never follow a symlinked sidecar (A2).
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None, "METADATA_UNREADABLE"
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return None, "METADATA_UNREADABLE"
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
         return None, "METADATA_UNREADABLE"
     if not isinstance(data, dict):
         return None, "METADATA_OBJECT_REQUIRED"
@@ -114,19 +137,25 @@ def load_sidecar(path: Path):
     title = data.get("title")
     if not isinstance(title, str) or not title.strip():
         return None, "METADATA_TITLE_REQUIRED"
-    if data.get("origin") not in ORIGINS:
+    origin = data.get("origin")
+    if not isinstance(origin, str) or origin not in ORIGINS:
         return None, "METADATA_ORIGIN_INVALID"
     source_url = data.get("source_url")
     if source_url is not None:
         if not isinstance(source_url, str) or not source_url.strip():
             return None, "METADATA_SOURCE_URL_INVALID"
-        parts = urlsplit(source_url.strip())
+        try:
+            parts = urlsplit(source_url.strip())
+        except ValueError:
+            return None, "METADATA_SOURCE_URL_INVALID"
         if parts.scheme not in ("http", "https") or not parts.hostname:
             return None, "METADATA_SOURCE_URL_INVALID"
     rights = data.get("rights")
     if not isinstance(rights, dict):
         return None, "METADATA_RIGHTS_REQUIRED"
-    if rights.get("classification") not in RIGHTS_CLASSIFICATIONS:
+    classification = rights.get("classification")
+    if not isinstance(classification, str) \
+            or classification not in RIGHTS_CLASSIFICATIONS:
         return None, "METADATA_RIGHTS_CLASSIFICATION_INVALID"
     if not isinstance(rights.get("public_export_allowed"), bool):
         return None, "METADATA_RIGHTS_EXPORT_FLAG_INVALID"
@@ -138,7 +167,7 @@ def load_sidecar(path: Path):
     return {
         "schema_version": 1,
         "title": title.strip(),
-        "origin": data["origin"],
+        "origin": origin,
         "source_url": source_url.strip() if isinstance(source_url, str) else None,
         "rights": {
             "classification": rights["classification"],
@@ -174,9 +203,29 @@ class InboxLifecycle:
     def __init__(self, engine_root, instance):
         self.engine_root = Path(engine_root).resolve()
         self.instance = instance
+        instance_root = Path(instance.root).resolve()
         self.inbox_root = Path(instance.document_input_root).resolve()
         self.state_root = (Path(instance.data_root).resolve()
                            / "inbox_lifecycle")
+        # A6: the resolved state and inbox paths must stay inside the
+        # instance and outside the engine tree. A symlinked data/ or
+        # inbox/ directory must not redirect writes elsewhere.
+        for label, path in (("state", self.state_root),
+                            ("inbox", self.inbox_root)):
+            try:
+                path.relative_to(instance_root)
+            except ValueError:
+                raise InboxLifecycleError(
+                    "INBOX_LIFECYCLE_PATH_ESCAPE: " + label +
+                    " resolves outside the instance")
+            try:
+                path.relative_to(self.engine_root)
+            except ValueError:
+                pass
+            else:
+                raise InboxLifecycleError(
+                    "INBOX_LIFECYCLE_PATH_ESCAPE: " + label +
+                    " resolves inside the engine tree")
         self.sources_root = self.state_root / "sources"
         self.ledger_path = self.state_root / "ledger" / "ledger.json"
         self.index_path = self.state_root / "index.json"
@@ -294,9 +343,22 @@ class InboxLifecycle:
         except (OSError, ValueError) as exc:
             raise InboxLifecycleError("INDEX_FAILED: index.json unreadable"
                                       ) from exc
+        # C2: validate the top-level shape before touching it.
+        if not isinstance(payload, dict):
+            raise InboxLifecycleError("INDEX_FAILED: index.json shape invalid")
         documents = payload.get("documents")
         if not isinstance(documents, list):
             raise InboxLifecycleError("INDEX_FAILED: index.json shape invalid")
+        for entry in documents:
+            if not isinstance(entry, dict) or not entry.get("doc_id"):
+                raise InboxLifecycleError(
+                    "INDEX_FAILED: index entry shape invalid")
+            links = entry.get("links", [])
+            if not isinstance(links, list) or not links or not all(
+                    isinstance(link, dict) and link.get("source_id")
+                    for link in links):
+                raise InboxLifecycleError(
+                    "INDEX_FAILED: index entry links invalid")
         expected = self._index_payload(documents)["index_sha256"]
         if payload.get("index_sha256") != expected:
             raise InboxLifecycleError("INDEX_FAILED: index.json hash mismatch")
@@ -307,14 +369,20 @@ class InboxLifecycle:
 
     def _index_link(self, doc_id, *, source_id, file_id, relative_path,
                     title, content_hash, visibility):
-        """Link a source to a document entry, creating it if needed."""
+        """Link a source to a document entry, creating it if needed.
+
+        A5: every linked source's title is retained and searchable; the
+        entry title is the latest writer's (display), but queries match
+        against all of them.
+        """
         documents = self._load_index_documents(strict=False)
         entry = next((item for item in documents
                       if item["doc_id"] == doc_id), None)
         link = {"source_id": source_id, "file_id": file_id,
-                "relative_path": relative_path}
+                "relative_path": relative_path, "title": title}
         if entry is None:
             entry = {"doc_id": doc_id, "title": title,
+                     "titles": [title],
                      "content_hash": content_hash, "visibility": visibility,
                      "indexed_at": _utc_now(), "links": [link]}
             documents.append(entry)
@@ -326,6 +394,9 @@ class InboxLifecycle:
             entry["links"] = [item for item in entry.get("links", [])
                               if item.get("source_id") != source_id]
             entry["links"].append(link)
+            entry["titles"] = sorted({
+                item.get("title") for item in entry["links"]
+                if item.get("title")})
         self._write_index(documents)
 
     def _index_unlink_source(self, source_id, doc_id=None):
@@ -350,7 +421,12 @@ class InboxLifecycle:
             self._write_index(kept)
 
     def _doc_visibility(self, doc_id, linked_records):
-        """Recompute a document's visibility from archive rights + origins."""
+        """Recompute a document's visibility from archive rights + origins.
+
+        B1: if any linked source has an unresolved review, the document is
+        not public (quarantined). The query path re-verifies this at read
+        time; the stored value is a hint.
+        """
         archive_record = self._archive_record(doc_id)
         rights = (archive_record.get("rights")
                   if archive_record else {}) or {}
@@ -359,7 +435,9 @@ class InboxLifecycle:
             and rights.get("public_export_allowed") is True
             and bool(rights.get("evidence"))
             and all((rec.get("provenance") or {}).get("origin")
-                    == "synthetic_fixture" for rec in linked_records))
+                    == "synthetic_fixture" for rec in linked_records)
+            and all(rec.get("review_status") == "NONE"
+                    for rec in linked_records))
         return "public" if public_ok else "local"
 
     def _rebuild_index(self):
@@ -367,10 +445,23 @@ class InboxLifecycle:
 
         The source records are the source of truth; the index is a derived
         view. Rebuilding is deterministic and logged, never silent.
+
+        B1: sources in review keep their links so the query-time quarantine
+        (shared doc not public while any linked source is in review) survives
+        a rebuild. A5: all linked titles are retained.
         """
         by_doc = {}
         for rec in self._all_sources():
-            if rec.get("index_status") != "SEARCHABLE" or not rec.get("doc_id"):
+            # Include SEARCHABLE sources AND reviewed sources (for B1
+            # quarantine). A reviewed source's link is kept; the query path
+            # refuses to serve via it and quarantines the shared doc.
+            if not rec.get("doc_id"):
+                continue
+            if rec.get("index_status") not in ("SEARCHABLE", "NOT_INDEXED"):
+                continue
+            # Only include NOT_INDEXED if it's a review (not a failure).
+            if (rec.get("index_status") == "NOT_INDEXED"
+                    and rec.get("review_status") != "REVIEW_REQUIRED"):
                 continue
             doc_id = rec["doc_id"]
             entry = by_doc.setdefault(doc_id, {"records": []})
@@ -379,16 +470,20 @@ class InboxLifecycle:
         for doc_id, grouped in by_doc.items():
             records = grouped["records"]
             first = records[0]
+            links = [{"source_id": rec["source_id"],
+                      "file_id": rec["file_id"],
+                      "relative_path": rec["relative_path"],
+                      "title": rec.get("title")}
+                     for rec in records]
             documents.append({
                 "doc_id": doc_id,
                 "title": first.get("title"),
+                "titles": sorted({rec.get("title") for rec in records
+                                  if rec.get("title")}),
                 "content_hash": first.get("content_hash"),
                 "visibility": self._doc_visibility(doc_id, records),
                 "indexed_at": _utc_now(),
-                "links": [{"source_id": rec["source_id"],
-                           "file_id": rec["file_id"],
-                           "relative_path": rec["relative_path"]}
-                          for rec in records],
+                "links": links,
             })
         self._write_index(documents)
         self._ledger_event("index_rebuilt", {
@@ -463,6 +558,22 @@ class InboxLifecycle:
             except InboxLifecycleError as exc:
                 summary["errors"].append(
                     {"file": name, "reason": str(exc)})
+            except Exception as exc:
+                # C1: one bad file must not abort the whole scan. Record
+                # it as a processing failure and continue.
+                summary["errors"].append(
+                    {"file": name,
+                     "reason": "UNEXPECTED:" + type(exc).__name__})
+                self._ledger_event("source_scan_error", {
+                    "relative_path": name,
+                    "reason": type(exc).__name__,
+                })
+        # A3: a file absent from this scan loses its stability observations;
+        # "consecutive scans" must not span a disappearance.
+        seen_ids = {source_id_for(name) for name, reason
+                    in self._iter_inbox_files() if reason is None}
+        for stale_id in [key for key in checkpoint if key not in seen_ids]:
+            del checkpoint[stale_id]
         self._save_checkpoint(checkpoint)
         # Every scan materializes the index (possibly empty). This keeps the
         # invariant "a scan ran => index.json exists", so a later missing
@@ -480,14 +591,42 @@ class InboxLifecycle:
         })
         return summary
 
+    def _fast_path_hash_ok(self, name, size, record):
+        """Verify stored content hash for the fast path (A4).
+
+        Returns True only for TXT files with a stored raw_sha256 whose
+        current bytes hash to the same value. Anything else (unsupported
+        suffix, empty/too-large, missing hash) falls back to trusting the
+        stat identity, which is safe because those states are terminal and
+        content-independent.
+        """
+        if Path(name).suffix.lower() != ".txt":
+            return True
+        expected = record.get("raw_sha256")
+        if not expected or size == 0 or size > MAX_AUTO_TXT_BYTES:
+            return True
+        try:
+            raw = (self.inbox_root / name).read_bytes()
+        except OSError:
+            return False
+        return _sha256_hex(raw) == expected
+
     def _sidecar_stat(self, rel_posix):
-        """Return (exists, size, mtime_ns) for the sidecar, without reading."""
+        """Return (exists, size, mtime_ns) for the sidecar, without reading.
+
+        Uses lstat: a symlinked sidecar is never followed and reports as
+        non-existent here; the processing path rejects it explicitly.
+        """
         path = self.inbox_root / (rel_posix + SIDECAR_SUFFIX)
         try:
-            stat = os.stat(path)
+            lst = os.lstat(path)
         except OSError:
             return False, None, None
-        return True, stat.st_size, stat.st_mtime_ns
+        if stat.S_ISLNK(lst.st_mode):
+            return False, None, None
+        if not stat.S_ISREG(lst.st_mode):
+            return False, None, None
+        return True, lst.st_size, lst.st_mtime_ns
 
     def _scan_file(self, name, checkpoint, window, summary):
         rel_posix = name
@@ -507,12 +646,16 @@ class InboxLifecycle:
         # and the source was fully processed. Sidecar state is part of the
         # identity: a metadata-only change must re-trigger rights
         # re-evaluation, never ride the fast path.
+        # A4: stat alone is spoofable (same size + restored mtime), so for
+        # TXT files we also verify the content hash. Reading + hashing is
+        # cheaper than reprocessing and closes the silent-staleness gap.
         if (record.get("processing_status") == "PROCESSING_COMPLETE"
                 and record.get("observed_size") == size
                 and record.get("observed_mtime_ns") == mtime_ns
                 and record.get("sidecar_exists") == sidecar_exists
                 and record.get("sidecar_size") == sidecar_size
-                and record.get("sidecar_mtime_ns") == sidecar_mtime_ns):
+                and record.get("sidecar_mtime_ns") == sidecar_mtime_ns
+                and self._fast_path_hash_ok(name, size, record)):
             record["last_seen_at"] = _utc_now()
             self._save_source(record)
             return
@@ -601,6 +744,20 @@ class InboxLifecycle:
                                        sidecar_mtime_ns))
             return
         raw = (self.inbox_root / name).read_bytes()
+        # A3: TOCTOU close — re-stat AFTER the read; if the file changed
+        # under us, discard the bytes and re-stabilize instead of
+        # processing unverified content.
+        poststat = os.stat(self.inbox_root / name)
+        if poststat.st_size != size or poststat.st_mtime_ns != mtime_ns:
+            checkpoint[source_id] = {
+                "size": poststat.st_size, "mtime_ns": poststat.st_mtime_ns,
+                "sidecar_exists": sidecar_exists,
+                "sidecar_size": sidecar_size,
+                "sidecar_mtime_ns": sidecar_mtime_ns,
+                "first_observed_at": now, "observations": 1,
+                "last_scan_at": now,
+            }
+            return
         self._process_stable_txt(record, rel_posix, raw, summary,
                                  sidecar=(sidecar_exists, sidecar_size,
                                           sidecar_mtime_ns))
@@ -642,9 +799,12 @@ class InboxLifecycle:
                      sidecar=(None, None, None), store_raw=True):
         """Route a source to human review.
 
-        The source is unlinked from the search index: a review decision is
-        never publicly (or locally) searchable as document content. Oversized
-        inputs are never copied into the review area.
+        B1: the source's index link is KEPT (not unlinked). The query path
+        refuses to serve a document via a source that is in review, and
+        quarantines a shared document from public search while any linked
+        source has an unresolved review. Removing the link would hide the
+        dispute; keeping it makes the quarantine visible. Oversized inputs
+        are never copied into the review area.
         """
         exists, size, mtime_ns = sidecar
         record.update(
@@ -671,7 +831,6 @@ class InboxLifecycle:
             "reviewed_at": _utc_now(),
         })
         self._save_source(record)
-        self._index_unlink_source(record["source_id"])
         summary["review_required"] += 1
         self._ledger_event("source_review_required", {
             "source_id": record["source_id"],
@@ -710,6 +869,25 @@ class InboxLifecycle:
                             sidecar=(None, None, None)):
         raw_sha256 = _sha256_hex(raw)
         previous_raw_sha256 = record.get("raw_sha256")
+        prev_review = record.get("review_status")
+        prev_sidecar = (record.get("sidecar_exists"),
+                        record.get("sidecar_size"),
+                        record.get("sidecar_mtime_ns"))
+        # A1: an unresolved human review persists. Re-ingesting identical
+        # inputs (same bytes, same sidecar) is not an approval and must not
+        # clear the review decision. Only a real input change re-opens it.
+        if (prev_review == "REVIEW_REQUIRED"
+                and previous_raw_sha256 == raw_sha256
+                and prev_sidecar == tuple(sidecar)):
+            record["last_seen_at"] = _utc_now()
+            self._save_source(record)
+            summary["review_required"] += 1
+            self._ledger_event("source_review_persisted", {
+                "source_id": record["source_id"],
+                "relative_path": rel_posix,
+                "review_reason": record.get("review_reason"),
+            })
+            return
         record.update(
             raw_sha256=raw_sha256,
             observed_size=len(raw),
@@ -731,6 +909,11 @@ class InboxLifecycle:
             return
 
         sidecar_path = self.inbox_root / (rel_posix + SIDECAR_SUFFIX)
+        if os.path.islink(sidecar_path):
+            # A2: never follow a symlinked sidecar; its metadata is untrusted.
+            self._mark_review(record, "METADATA_SYMLINK_REJECTED", raw,
+                              raw_sha256, summary, sidecar=sidecar)
+            return
         meta, meta_error = (load_sidecar(sidecar_path)
                             if sidecar_path.is_file()
                             else (None, "METADATA_MISSING"))
@@ -1032,23 +1215,35 @@ class InboxLifecycle:
                 needle = _normalize_query_text(text)
                 candidates = []
                 for item in documents:
-                    haystacks = [_normalize_query_text(
-                        item.get("title") or "")]
+                    # A5: match against every linked source's title, not
+                    # just the latest writer's display title.
+                    all_titles = item.get("titles") or [item.get("title")]
+                    haystacks = [_normalize_query_text(t or "")
+                                 for t in all_titles]
                     if keyword is not None:
                         haystacks.append(_normalize_query_text(
                             self._indexed_text(item["doc_id"])))
                     if any(needle in hay for hay in haystacks):
-                        links = item.get("links", [])
-                        candidates.append(
-                            (item, links[0] if links else None))
+                        # B1: try every link; a shared document may be
+                        # reachable via a clean source even if the first
+                        # link is in review.
+                        for link in item.get("links", []):
+                            candidates.append((item, link))
                 candidates = [(item, link) for item, link in candidates
                               if link is not None]
             results = []
             healed = False
+            seen_doc_ids = set()
             for item, link in candidates:
+                if item["doc_id"] in seen_doc_ids:
+                    continue
                 verified = self._verify_candidate(item, link)
                 if verified is None:
                     continue
+                # B1: a shared document is reported once; if any link
+                # verifies, the document is included (visibility is the
+                # quarantined value from _verify_candidate).
+                seen_doc_ids.add(item["doc_id"])
                 if verified["visibility"] != item.get("visibility"):
                     item["visibility"] = verified["visibility"]
                     healed = True
@@ -1080,10 +1275,12 @@ class InboxLifecycle:
     def _verify_candidate(self, item, link):
         """Re-check rights, origin and integrity; hit or None to skip.
 
-        The public-visibility predicate is implemented independently here:
-        archive rights AND the linked source's persisted origin must both
-        qualify. A stale link (source moved on to another document) is
-        healed away and skipped.
+        The public-visibility predicate is implemented independently here.
+        B1: a document shared by multiple sources is publicly searchable
+        only if EVERY linked source is clean (not in review) and qualifies.
+        If any linked source has an unresolved review, the document is
+        quarantined from public search (still visible locally via the
+        clean sources). A stale link (source moved on) is healed away.
         """
         doc_id = item["doc_id"]
         source = self._load_source(link.get("source_id"))
@@ -1101,12 +1298,32 @@ class InboxLifecycle:
             raise InboxLifecycleError(
                 "INDEX_FAILED: archive record missing:" + doc_id)
         rights = archive_record.get("rights") or {}
+        # B1 quarantine: every linked source that still belongs to this
+        # document must be review-clean and origin-qualified for the
+        # shared document to be public. A stale link (source moved to a
+        # different document) is ignored here; the matched-link path
+        # heals it away.
+        all_clean = True
+        all_synthetic = True
+        for other in item.get("links", []):
+            other_rec = self._load_source(other.get("source_id"))
+            if other_rec is None:
+                continue
+            if other_rec.get("doc_id") != doc_id:
+                continue
+            if other_rec.get("review_status") != "NONE":
+                all_clean = False
+            if ((other_rec.get("provenance") or {}).get("origin")
+                    != "synthetic_fixture"):
+                all_synthetic = False
         provenance = source.get("provenance") or {}
         public_ok = (
             rights.get("classification") == "public"
             and rights.get("public_export_allowed") is True
             and bool(rights.get("evidence"))
-            and provenance.get("origin") == "synthetic_fixture")
+            and provenance.get("origin") == "synthetic_fixture"
+            and all_clean
+            and all_synthetic)
         visibility = "public" if public_ok else "local"
         text = self._indexed_text(doc_id)
         if doc_content_hash(text) != item.get("content_hash"):

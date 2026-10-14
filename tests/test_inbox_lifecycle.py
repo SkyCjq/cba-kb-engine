@@ -685,3 +685,186 @@ def test_a25_index_rebuilt_from_sources_after_deletion(tmp_path):
             encoding="utf-8"))
     assert any(entry.get("kind") == "index_rebuilt"
                for entry in ledger["events"])
+
+
+def test_a26_near_duplicate_review_persists_after_touch(tmp_path):
+    """Q2 round-2 A1: an unresolved near-duplicate human review must persist.
+
+    Touching only the mtime (no content/sidecar change) and rescanning must
+    NOT clear the review via an exact_merge re-ingest. Re-ingestion of
+    identical inputs is not an approval.
+    """
+    private = private_instance(tmp_path)
+    write_txt(private, "orig.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    write_txt(private, "near.txt", NEAR_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    records = source_records(private)
+    near_dup = [r for r in records.values()
+                if r["review_status"] == "REVIEW_REQUIRED"]
+    assert len(near_dup) == 1, "expected one near-duplicate in review"
+    target = near_dup[0]["relative_path"]
+    # mtime-only change: touch, no content or sidecar modification.
+    os.utime(private / "inbox/documents" / target, None)
+    scan(private)
+    summary = scan(private)
+    records = source_records(private)
+    rec = next(r for r in records.values()
+               if r["relative_path"] == target)
+    assert rec["review_status"] == "REVIEW_REQUIRED", (
+        "touch must not clear an unresolved review")
+    assert rec["disposition"] == "review_required"
+    # The reviewed document must not be publicly searchable.
+    result = command("--instance-root", str(private),
+                     "archive-query", "--keyword", "pre-season",
+                     "--visibility", "public")
+    assert result.returncode == 0, result.stderr
+    # Only the clean near.txt (public) may match; the reviewed orig.txt
+    # must not contribute. Count the reviewed doc's absence via status.
+    statuses = json.loads(command(
+        "--instance-root", str(private), "archive-status", "--all"
+    ).stdout)["sources"]
+    reviewed = [s for s in statuses if s["relative_path"] == target][0]
+    assert reviewed["index_status"] == "NOT_INDEXED"
+
+
+def test_a27_shared_doc_quarantined_when_source_tightened(tmp_path):
+    """Q2 round-2 B1: tightening one source of a shared document must remove
+    the shared document from public search (quarantine), while local search
+    via the clean source still works."""
+    private = private_instance(tmp_path)
+    txt = "Shared quarantine content. Identical bytes in both files."
+    write_txt(private, "qa.txt", txt, SYNTHETIC_META)
+    write_txt(private, "qb.txt", txt, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    result = command("--instance-root", str(private),
+                     "archive-query", "--keyword", "quarantine",
+                     "--visibility", "public")
+    assert json.loads(result.stdout)["count"] == 1
+    # Tighten qa.txt: third-party copyrighted, no public export.
+    meta = dict(SYNTHETIC_META)
+    meta = json.loads(json.dumps(meta))
+    meta["origin"] = "third_party"
+    meta["rights"] = {"classification": "copyrighted",
+                      "public_export_allowed": False, "evidence": []}
+    (private / "inbox/documents/qa.txt.source.json").write_text(
+        json.dumps(meta), encoding="utf-8")
+    scan(private)
+    scan(private)
+    records = source_records(private)
+    qa = next(r for r in records.values()
+              if r["relative_path"] == "qa.txt")
+    assert qa["review_status"] == "REVIEW_REQUIRED"
+    result = command("--instance-root", str(private),
+                     "archive-query", "--keyword", "quarantine",
+                     "--visibility", "public")
+    assert json.loads(result.stdout)["count"] == 0, (
+        "shared doc must be quarantined from public while a linked "
+        "source is in review")
+    result = command("--instance-root", str(private),
+                     "archive-query", "--keyword", "quarantine",
+                     "--visibility", "local")
+    assert json.loads(result.stdout)["count"] == 1, (
+        "local search via the clean source must still work")
+
+
+def test_a28_symlinked_data_dir_rejected(tmp_path):
+    """Q2 round-2 A6: a symlinked <instance>/data pointing outside the
+    instance (e.g. at an engine tree) must be refused before any write."""
+    private = private_instance(tmp_path)
+    outside = tmp_path / "fake-engine"
+    outside.mkdir()
+    (private / "data").symlink_to(outside)
+    write_txt(private, "t.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    result = command("--instance-root", str(private), "inbox-scan")
+    assert result.returncode != 0, "path escape must fail the scan"
+    assert "INBOX_LIFECYCLE_PATH_ESCAPE" in (result.stdout + result.stderr)
+    assert list(outside.rglob("*")) == [], "no writes outside the instance"
+
+
+def test_a29_symlinked_sidecar_rejected(tmp_path):
+    """Q2 round-2 A2: a symlinked sidecar is never followed; its metadata
+    is untrusted and the source goes to human review."""
+    private = private_instance(tmp_path)
+    inbox = private / "inbox/documents"
+    (inbox / "s.txt").write_text("sidecar symlink test", encoding="utf-8")
+    (tmp_path / "evil.json").write_text('{"evil": true}', encoding="utf-8")
+    (inbox / "s.txt.source.json").symlink_to(tmp_path / "evil.json")
+    scan(private)
+    scan(private)
+    records = source_records(private)
+    rec = next(iter(records.values()))
+    assert rec["review_status"] == "REVIEW_REQUIRED"
+    assert rec["review_reason"] == "METADATA_SYMLINK_REJECTED"
+
+
+def test_a30_same_size_mtime_content_change_detected(tmp_path):
+    """Q2 round-2 A4: replacing content with same byte size and restoring
+    the mtime must still be detected (hash-verified fast path) and recorded
+    as a revision, not silently ignored."""
+    private = private_instance(tmp_path)
+    inbox = private / "inbox/documents"
+    (inbox / "x.txt").write_text("AAAAAAAAAA", encoding="utf-8")
+    (inbox / "x.txt.source.json").write_text(
+        json.dumps(SYNTHETIC_META), encoding="utf-8")
+    scan(private)
+    scan(private)
+    mtime = os.stat(inbox / "x.txt").st_mtime_ns
+    (inbox / "x.txt").write_text("BBBBBBBBBB", encoding="utf-8")
+    os.utime(inbox / "x.txt", ns=(mtime, mtime))  # restore mtime
+    scan(private)
+    scan(private)
+    records = source_records(private)
+    rec = next(iter(records.values()))
+    assert len(rec.get("revision_history") or []) == 2, (
+        "content change must be recorded even with identical stat")
+    result = command("--instance-root", str(private),
+                     "archive-query", "--keyword", "BBBBBBBBBB",
+                     "--visibility", "local")
+    assert json.loads(result.stdout)["count"] == 1
+
+
+def test_a31_merged_doc_titles_all_searchable(tmp_path):
+    """Q2 round-2 A5: when two sources with different titles merge to one
+    document, a title query for EITHER title must find it."""
+    private = private_instance(tmp_path)
+    txt = "Identical content for the title test."
+    meta1 = json.loads(json.dumps(SYNTHETIC_META))
+    meta1["title"] = "First title"
+    meta2 = json.loads(json.dumps(SYNTHETIC_META))
+    meta2["title"] = "Second title"
+    write_txt(private, "m1.txt", txt, meta1)
+    write_txt(private, "m2.txt", txt, meta2)
+    scan(private)
+    scan(private)
+    for title in ("First title", "Second title"):
+        result = command("--instance-root", str(private),
+                         "archive-query", "--title", title,
+                         "--visibility", "public")
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["count"] == 1, (
+            f"title query {title!r} must find the merged document")
+
+
+def test_a32_malformed_metadata_does_not_abort_scan(tmp_path):
+    """Q2 round-2 C1: structurally invalid metadata (unhashable origin,
+    unparsable URL) routes to review; the scan completes and other files
+    are still processed."""
+    private = private_instance(tmp_path)
+    bad1 = json.loads(json.dumps(SYNTHETIC_META))
+    bad1["origin"] = []  # unhashable; must not raise TypeError
+    bad2 = json.loads(json.dumps(SYNTHETIC_META))
+    bad2["source_url"] = "https://["  # unparsable; must not raise ValueError
+    write_txt(private, "bad1.txt", "bad one", bad1)
+    write_txt(private, "bad2.txt", "bad two", bad2)
+    write_txt(private, "good.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    scan(private)
+    summary = scan(private)
+    assert summary["errors"] == [], "no file may abort the scan"
+    records = source_records(private)
+    by_name = {r["relative_path"]: r for r in records.values()}
+    assert by_name["bad1.txt"]["review_status"] == "REVIEW_REQUIRED"
+    assert by_name["bad2.txt"]["review_status"] == "REVIEW_REQUIRED"
+    assert by_name["good.txt"]["review_status"] == "NONE"
+    assert by_name["good.txt"]["index_status"] == "SEARCHABLE"

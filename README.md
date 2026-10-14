@@ -130,20 +130,28 @@ cba-kb --instance-root /tmp/cbakb-demo archive-query --visibility public --keywo
 Security constraints (fail-closed by default):
 
 - Every `.txt` needs a same-named `.txt.source.json` sidecar declaring
-  title, origin, and rights. Missing/invalid metadata, non-UTF-8 bytes, or a
+  title, origin, and rights. Missing/invalid/unreadable metadata (including
+  structurally malformed values), non-UTF-8 bytes, a symlinked sidecar, or a
   public claim without verifiable evidence routes the file to
   `REVIEW_REQUIRED` — never silently ingested, never publicly searchable.
+  An unresolved human review persists across rescans: re-ingesting identical
+  inputs does not clear it.
 - `local` visibility (default) is for the operator of that external
   instance; `public` visibility only returns attested synthetic fixtures
-  with real rights evidence. This is a search filter, not a publication
-  approval: there is no publish path in PR-1, and operators should still
-  treat any public exposure as a residual risk to be reviewed (rights are
-  re-evaluated on every metadata change and re-verified at query time,
-  but no automated check replaces human rights clearance).
+  with real rights evidence. A document shared by multiple sources is
+  publicly searchable only while every linked source is review-clean; if any
+  linked source enters review, the document is quarantined from public
+  search (still visible locally via clean sources). This is a search filter,
+  not a publication approval: there is no publish path in PR-1, and operators
+  should still treat any public exposure as a residual risk to be reviewed
+  (rights are re-evaluated on every metadata change and re-verified at query
+  time, but no automated check replaces human rights clearance).
 - Inbox originals are never renamed, moved, or deleted
   (`archive_status` stays `NOT_REQUESTED`).
 - All state lives under `<instance>/data/`; the engine source tree is
-  never written to.
+  never written to. If `<instance>/data` (or the inbox) resolves outside the
+  instance or inside the engine tree — e.g. via a symlink — the lifecycle
+  refuses to start with `INBOX_LIFECYCLE_PATH_ESCAPE` before any write.
 
 Not in PR-1 (remains v2.0.4 follow-up work): Drive-backed discovery and
 adapters, guarded archive move/retain, full cross-backend recovery,
