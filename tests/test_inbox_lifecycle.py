@@ -658,3 +658,30 @@ def test_a24_skip_reasons_are_reported(tmp_path):
     if have_link:
         assert "SYMLINK_NOT_FOLLOWED" in reasons
     assert "METADATA_SIDECAR" not in reasons  # no sidecars written here
+
+
+def test_a25_index_rebuilt_from_sources_after_deletion(tmp_path):
+    """Q2 C2: if index.json is deleted but source records exist, the next
+    scan rebuilds it deterministically from the source records (logged),
+    instead of continuing with a partial view or failing silently."""
+    private = private_instance(tmp_path)
+    write_txt(private, "synthetic-news.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    index_path = lifecycle_dir(private) / "index.json"
+    assert index_path.is_file()
+    index_path.unlink()
+    # A scan (not just a query) recovers by rebuilding from sources.
+    summary = scan(private)
+    assert summary["errors"] == []
+    assert index_path.is_file()
+    result = command("--instance-root", str(private),
+                     "archive-query", "--keyword", "Harbor",
+                     "--visibility", "public")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["count"] == 1
+    ledger = json.loads(
+        (lifecycle_dir(private) / "ledger" / "ledger.json").read_text(
+            encoding="utf-8"))
+    assert any(entry.get("kind") == "index_rebuilt"
+               for entry in ledger["events"])
