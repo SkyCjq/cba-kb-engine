@@ -205,6 +205,15 @@ class InboxLifecycle:
         self.instance = instance
         instance_root = Path(instance.root).resolve()
         # Invariant 2: Path-constrained I/O.
+        # R6-A3: verify the UNRESOLVED data root first. The instance's
+        # data_root is already resolved by load_instance(), which would hide
+        # a symlink at <instance>/data. We reconstruct the raw path from
+        # instance.root and check it directly.
+        raw_data_root = Path(instance.root) / "data"
+        if os.path.islink(raw_data_root):
+            raise InboxLifecycleError(
+                "INBOX_LIFECYCLE_PATH_ESCAPE: instance data/ is a symlink "
+                "(state relocation not allowed)")
         # The lifecycle's state path must BE data/inbox_lifecycle, not just
         # resolve inside the instance. A symlink at data/inbox_lifecycle
         # (even to another directory inside the instance, e.g. ../inbox/
@@ -515,19 +524,25 @@ class InboxLifecycle:
         B1: sources in review keep their links so the query-time quarantine
         (shared doc not public while any linked source is in review) survives
         a rebuild. A5: all linked titles are retained.
+        R6-A2: FAILED sources are also kept. A failed source's quarantine
+        must survive a rebuild; dropping it would lose the safety constraint
+        and potentially re-public a document that should stay isolated.
         """
         by_doc = {}
         for rec in self._all_sources():
-            # Include SEARCHABLE sources AND reviewed sources (for B1
-            # quarantine). A reviewed source's link is kept; the query path
-            # refuses to serve via it and quarantines the shared doc.
+            # Include SEARCHABLE sources, reviewed sources (for B1
+            # quarantine), AND failed sources (for R6-A2 quarantine).
+            # A failed source's link is kept; the query path sees
+            # PROCESSING_FAILED and blocks public.
             if not rec.get("doc_id"):
                 continue
             if rec.get("index_status") not in ("SEARCHABLE", "NOT_INDEXED"):
                 continue
-            # Only include NOT_INDEXED if it's a review (not a failure).
+            # Include NOT_INDEXED if it's a review OR a failure.
+            # (Failures were previously dropped, losing the quarantine.)
             if (rec.get("index_status") == "NOT_INDEXED"
-                    and rec.get("review_status") != "REVIEW_REQUIRED"):
+                    and rec.get("review_status") != "REVIEW_REQUIRED"
+                    and rec.get("processing_status") != "PROCESSING_FAILED"):
                 continue
             doc_id = rec["doc_id"]
             entry = by_doc.setdefault(doc_id, {"records": []})
@@ -929,7 +944,19 @@ class InboxLifecycle:
                                   sidecar=(sidecar_exists, sidecar_size,
                                            sidecar_mtime_ns))
                 return
-            # For other verification failures, reset the checkpoint.
+            # R6-C2: For other verification failures, if the source was
+            # previously public (has a doc_id and was PROCESSING_COMPLETE),
+            # we must NOT leave the old public state trusted. Mark failed
+            # to quarantine; the checkpoint is reset for retry, but the
+            # public authorization is revoked until re-verification succeeds.
+            if record.get("doc_id") and record.get(
+                    "processing_status") == "PROCESSING_COMPLETE":
+                self._mark_failed(
+                    record, "VERIFY_FAILED:" + type(exc).__name__,
+                    summary,
+                    sidecar=(sidecar_exists, sidecar_size, sidecar_mtime_ns))
+                # Reset checkpoint for retry, but the source is now FAILED
+                # and _verify_candidate will block public.
             checkpoint[source_id] = {
                 "size": size, "mtime_ns": mtime_ns,
                 "sidecar_exists": sidecar_exists,
@@ -1248,27 +1275,22 @@ class InboxLifecycle:
                               summary, sidecar=sidecar)
             return
         try:
-            # Prefer _ingest_parsed with our verified bytes (no TOCTOU).
-            # Fall back to ingest_file for mocks that don't have _ingest_parsed.
-            if hasattr(lane, "_ingest_parsed"):
-                lane_result = lane._ingest_parsed(
-                    parsed,
-                    capture_channel="local_file",
-                    title=meta["title"],
-                    rights_classification=lane_rights["classification"],
-                    public_export_allowed=lane_rights["public_export_allowed"],
-                    rights_evidence=lane_rights["evidence"],
-                )
-            else:
-                # Fallback for test mocks; has TOCTOU but only in tests.
-                lane_result = lane.ingest_file(
-                    rel_posix,
-                    capture_channel="local_file",
-                    title=meta["title"],
-                    rights_classification=lane_rights["classification"],
-                    public_export_allowed=lane_rights["public_export_allowed"],
-                    rights_evidence=lane_rights["evidence"],
-                )
+            # R6-C1: Invariant 1 requires verified bytes. There is NO fallback
+            # to ingest_file(). If _ingest_parsed is unavailable, fail closed.
+            # The lane must consume our verified byte snapshot, never re-read
+            # from disk.
+            if not hasattr(lane, "_ingest_parsed"):
+                raise InboxLifecycleError(
+                    "INVARIANT_VIOLATED: lane missing _ingest_parsed; "
+                    "refusing path-based ingest")
+            lane_result = lane._ingest_parsed(
+                parsed,
+                capture_channel="local_file",
+                title=meta["title"],
+                rights_classification=lane_rights["classification"],
+                public_export_allowed=lane_rights["public_export_allowed"],
+                rights_evidence=lane_rights["evidence"],
+            )
         except ReviewRequired as exc:
             self._mark_review(record, "LANE_REVIEW:" + type(exc).__name__,
                               raw, raw_sha256, summary, sidecar=sidecar)
@@ -1618,6 +1640,7 @@ class InboxLifecycle:
         all_clean = True
         all_synthetic = True
         all_rights_public = True
+        all_complete = True
         for other in item.get("links", []):
             other_rec = self._load_source(other.get("source_id"))
             if other_rec is None:
@@ -1630,6 +1653,11 @@ class InboxLifecycle:
                 continue
             if other_rec.get("review_status") != "NONE":
                 all_clean = False
+            # R6-A1: every linked source must be PROCESSING_COMPLETE.
+            # A FAILED source (even with old public rights) blocks public.
+            # Historical public permissions do not survive failures.
+            if other_rec.get("processing_status") != "PROCESSING_COMPLETE":
+                all_complete = False
             if ((other_rec.get("provenance") or {}).get("origin")
                     != "synthetic_fixture"):
                 all_synthetic = False
@@ -1649,7 +1677,8 @@ class InboxLifecycle:
             and provenance.get("origin") == "synthetic_fixture"
             and all_clean
             and all_synthetic
-            and all_rights_public)
+            and all_rights_public
+            and all_complete)
         visibility = "public" if public_ok else "local"
         text = self._indexed_text(doc_id)
         if doc_content_hash(text) != item.get("content_hash"):

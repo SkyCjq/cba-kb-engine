@@ -596,7 +596,7 @@ def test_a22_processing_failure_is_distinct_from_review(tmp_path, monkeypatch):
             def __init__(self, engine_root, instance):
                 pass
 
-            def ingest_file(self, *args, **kwargs):
+            def _ingest_parsed(self, *args, **kwargs):
                 raise RuntimeError("simulated lane explosion")
 
         monkeypatch.setattr(lifecycle_mod, "DocumentLane", BoomLane)
@@ -1190,3 +1190,70 @@ def test_c03_normalized_equiv_txt_does_not_clear_review(tmp_path):
                if r["relative_path"] == target)
     assert rec["review_status"] == "REVIEW_REQUIRED", (
         "normalized-equivalent TXT change must not clear near-duplicate review")
+
+
+def test_d01_failed_source_blocks_public(tmp_path, monkeypatch):
+    """R6-A1 P0: public->private with lane failure must not stay public.
+    A FAILED source blocks public search even with old public rights."""
+    private = private_instance(tmp_path)
+    write_txt(private, "p.txt", SYNTHETIC_TXT, SYNTHETIC_META)
+    scan(private)
+    scan(private)
+    # Verify public initially.
+    result = command("--instance-root", str(private),
+                     "archive-query", "--keyword", "Harbor Falcons",
+                     "--visibility", "public")
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["count"] >= 1
+    # Tighten to private AND make lane fail.
+    sp = private / "inbox/documents/p.txt.source.json"
+    meta = json.loads(sp.read_text(encoding="utf-8"))
+    meta["rights"]["classification"] = "private"
+    meta["rights"]["public_export_allowed"] = False
+    sp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    # Force lane to fail via monkeypatch.
+    import cba_kb.inbox_lifecycle as lifecycle_mod
+    orig_init = lifecycle_mod.DocumentLane.__init__
+    def boom_init(self, *a, **k):
+        orig_init(self, *a, **k)
+        orig_parsed = self._ingest_parsed
+        def boom_parsed(*a2, **k2):
+            raise RuntimeError("simulated lane failure")
+        self._ingest_parsed = boom_parsed
+    monkeypatch.setattr(lifecycle_mod.DocumentLane, "__init__", boom_init)
+    scan(private)
+    scan(private)
+    # Must NOT be publicly searchable.
+    result = command("--instance-root", str(private),
+                     "archive-query", "--keyword", "Harbor Falcons",
+                     "--visibility", "public")
+    # Either returns 0 count, or fails closed. Must not return the doc.
+    if result.returncode == 0:
+        assert json.loads(result.stdout)["count"] == 0, \
+            "failed source must block public"
+
+
+def test_d02_data_symlink_rejected(tmp_path):
+    """R6-A3 P0: data/ -> inbox/documents symlink must be rejected."""
+    private = private_instance(tmp_path)
+    import shutil
+    data_link = private / "data"
+    # Replace data/ with symlink to inbox/documents.
+    if data_link.is_symlink():
+        data_link.unlink()
+    elif data_link.exists():
+        shutil.rmtree(data_link)
+    target = private / "inbox" / "documents"
+    target.mkdir(parents=True, exist_ok=True)
+    data_link.symlink_to(target)
+    result = command("--instance-root", str(private), "inbox-scan")
+    assert result.returncode != 0, "data/ symlink must be rejected"
+    assert "PATH_ESCAPE" in (result.stdout + result.stderr)
+    # No state files should be created in inbox.
+    inbox_files = list(target.rglob("*.json"))
+    # Filter out the .source.json sidecars (legitimate).
+    state_files = [f for f in inbox_files
+                   if "inbox_lifecycle" in str(f) or f.name == "index.json"]
+    assert state_files == [], f"no state in inbox, found {state_files}"
+
+
