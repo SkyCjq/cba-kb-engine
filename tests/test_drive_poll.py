@@ -572,3 +572,87 @@ def test_corrupt_state_never_polls(env):
                      ledger_path=env["ledger"], state_path=env["state"])
     assert source.get_start_token_calls == 0
     assert source.list_changes_calls == 0
+
+
+# -------------------------------- slice4: identity wiring in poll_once
+
+class FakeNativeDrive(FakeDrive):
+    """FakeDrive that also serves native-doc JSON."""
+
+    def __init__(self, files, docs):
+        super().__init__(files)
+        self.docs = dict(docs)
+
+    def document_json(self, file_id):
+        if file_id not in self.docs:
+            raise PermissionError(f"denied: {file_id}")
+        return self.docs[file_id]
+
+
+def _native_meta(file_id, name="doc", version="1"):
+    return {"id": file_id, "name": name,
+            "mimeType": "application/vnd.google-apps.document",
+            "version": version, "headRevisionId": f"hr{version}",
+            "parents": ["folder1"],
+            "modifiedTime": f"2026-10-15T00:00:{version}Z"}
+
+
+def test_poll_dedup_two_native_docs_same_content(env):
+    content = {"body": {"content": [{"paragraph": {"text": "hello"}}]}}
+    drive = FakeNativeDrive(
+        {"f1": _native_meta("f1"), "f2": _native_meta("f2")},
+        {"f1": content, "f2": content})
+    source = FakeSource()
+    dp.poll_once(source, drive, registry_path=env["registry"],
+                 ledger_path=env["ledger"], state_path=env["state"])
+    source.add_change("f1")
+    source.add_change("f2")
+    out = dp.poll_once(source, drive, registry_path=env["registry"],
+                       ledger_path=env["ledger"], state_path=env["state"])
+    assert out["counts"]["processed"] == 2
+    reg = json.loads(env["registry"].read_text(encoding="utf-8"))
+    assert reg["f1"]["dedup"] in ("CONTENT_NEW", "CONTENT_KNOWN")
+    assert reg["f2"]["dedup"] == "DUPLICATE_CONTENT"
+    assert reg["f2"]["duplicate_of"] == "f1"
+    # Dedup index persisted; a restart re-detects the duplicate.
+    dedup_path = env["registry"].with_suffix(".dedup.json")
+    assert dedup_path.exists()
+
+
+def test_poll_dedup_survives_restart(env):
+    content = {"body": {"content": [{"paragraph": {"text": "hello"}}]}}
+    drive = FakeNativeDrive(
+        {"f1": _native_meta("f1"), "f2": _native_meta("f2")},
+        {"f1": content, "f2": content})
+    source = FakeSource()
+    dp.poll_once(source, drive, registry_path=env["registry"],
+                 ledger_path=env["ledger"], state_path=env["state"])
+    source.add_change("f1")
+    dp.poll_once(source, drive, registry_path=env["registry"],
+                 ledger_path=env["ledger"], state_path=env["state"])
+    # Simulate a full restart: new source, same files on disk.
+    source2 = FakeSource()
+    source2.token = "tok0"
+    source2.pending = []
+    source2.add_change("f2")
+    out = dp.poll_once(source2, drive, registry_path=env["registry"],
+                       ledger_path=env["ledger"], state_path=env["state"])
+    assert out["counts"]["processed"] == 1
+    reg = json.loads(env["registry"].read_text(encoding="utf-8"))
+    assert reg["f2"]["dedup"] == "DUPLICATE_CONTENT"
+
+
+def test_poll_revision_chain_persisted(env):
+    drive = FakeNativeDrive(
+        {"f1": _native_meta("f1", version="1")},
+        {"f1": {"body": "v1"}})
+    source = FakeSource()
+    dp.poll_once(source, drive, registry_path=env["registry"],
+                 ledger_path=env["ledger"], state_path=env["state"])
+    source.add_change("f1")
+    dp.poll_once(source, drive, registry_path=env["registry"],
+                 ledger_path=env["ledger"], state_path=env["state"])
+    hist_path = env["registry"].with_suffix(".revisions.json")
+    hist = json.loads(hist_path.read_text(encoding="utf-8"))
+    src_id = json.loads(env["registry"].read_text(encoding="utf-8"))["f1"]["source_id"]
+    assert len(hist["entries"][src_id]) == 1

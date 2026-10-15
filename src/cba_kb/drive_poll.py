@@ -212,6 +212,8 @@ def poll_once(
     actor: str = "muse",
     operator: str = "muse",
     policy_version: str = "2.0.4-2-slice3",
+    dedup_index_path: Any = None,
+    revision_history_path: Any = None,
 ) -> Dict[str, Any]:
     """Run one incremental poll. Returns a machine report.
 
@@ -270,6 +272,20 @@ def poll_once(
 
     from .drive_search import load_registry
     known = load_registry(registry_file) if registry_file.exists() else {}
+
+    # Slice 4: persistent identity stores (dedup index + revision history).
+    # Loaded once per poll; persisted with the registry after each file.
+    from .drive_identity import (
+        load_dedup_index, load_revision_history,
+        save_dedup_index, save_revision_history, wire_identity,
+    )
+    dedup_file = (Path(dedup_index_path) if dedup_index_path is not None
+                  else registry_file.with_suffix(".dedup.json"))
+    history_file = (Path(revision_history_path)
+                    if revision_history_path is not None
+                    else registry_file.with_suffix(".revisions.json"))
+    dedup_index = load_dedup_index(dedup_file)
+    revision_history = load_revision_history(history_file)
     # Insertion-ordered set of processed change IDs (dict keys). Eviction
     # drops the oldest first; see _save_state.
     processed_ids: Dict[str, None] = dict.fromkeys(
@@ -343,6 +359,31 @@ def poll_once(
                                 "rights_grant"):
                         if key in prev:
                             new_record[key] = prev[key]
+                # Slice 4: wire content identity (dedup + revision chain).
+                # A revision conflict raises here -> the file is counted as
+                # failed (no silent remap). The change IS marked processed
+                # (it will not retry); the POLL_FILE_FAILED ledger event
+                # carries the conflict for operator review. The registry
+                # keeps the last good mapping; the conflicting remap is
+                # never applied.
+                identity = wire_identity(
+                    dedup_index=dedup_index,
+                    revision_history=revision_history,
+                    file_id=file_id,
+                    source_id=record["source_id"],
+                    doc_id=record["doc_id"],
+                    revision=record["revision"],
+                    digest_kind=verified.get("digest_kind"),
+                    digest=verified.get("digest"),
+                    verify_status=verified["status"],
+                    ts=obj.get("discovered_ts"),
+                    ledger_path=ledger,
+                    actor=actor,
+                    policy_version=policy_version,
+                )
+                new_record["dedup"] = identity["dedup"]
+                if identity["canonical_file_id"]:
+                    new_record["duplicate_of"] = identity["canonical_file_id"]
                 known[file_id] = new_record
                 note = (f"classification={classification} "
                         f"rights={rights_status}/{rights_reason}")
@@ -372,6 +413,8 @@ def poll_once(
         atomic(registry_file,
                json.dumps(known, ensure_ascii=False, indent=2,
                           sort_keys=True).encode("utf-8"))
+        save_dedup_index(dedup_file, dedup_index)
+        save_revision_history(history_file, revision_history)
         append_ledger(ledger, {
             "ts": _utcnow(), "actor": actor, "action": action,
             "prev_state": "POLLING", "new_state": "POLLING",
