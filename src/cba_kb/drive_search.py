@@ -249,11 +249,17 @@ def search_drive_registry(
 
     Results contain ONLY ACCESS_VERIFIED objects whose rights grant strictly
     validates (registry status string AND ``decide_drive_rights`` must agree;
-    see ``_rights_approved_for_search``). ``excluded`` counts each category
-    and ``excluded.details`` names the exact reason per withheld object, so
-    two different failures are never indistinguishable.
-    With ``include_review=True``, withheld review/failed items are listed
-    with their reasons — listed, never returned as searchable content.
+    see ``_rights_approved_for_search``). ``excluded`` counts each category;
+    ``excluded.details`` names the exact reason for every matched-but-excluded
+    object (non-matching objects are counted only, not listed).
+    Verification-failure subtypes are distinguished
+    (e.g. ``VERIFY_FAILED:CHECKSUM_MISMATCH`` vs ``VERIFY_FAILED:REVISION_DRIFT``);
+    grant-invalid cases share the ``DRIVE_RIGHTS_UNVERIFIED`` code — inspect
+    the stored grant for the underlying cause.
+    With ``include_review=True``, verification-withheld items (failed, or
+    review-required with approved rights) are additionally listed with their
+    reasons — listed, never returned as searchable content. Rights-excluded
+    objects are not listed as review items.
     """
     if not query or not query.strip():
         raise ValueError("SEARCH_QUERY_REQUIRED")

@@ -183,8 +183,8 @@ JSON 的 SHA-256（绝非原始字节），不受 `--verify-bytes` 影响。仍�
 开发中（待独立 Q2 与人工合并）：**Drive 搜索**——
 `cba-kb drive-search --registry … --query …` 按文件名查找；只有"访问已核验
 ＋已明确批准"的文件才会出现在结果里，其余按精确原因排除。用
-`cba-kb drive-grant --file-id … --approver …` 批准文件（ledger 留痕，
-无自动批准）。
+`cba-kb drive-grant --registry … --ledger … --file-id … --approver …`
+批准文件（ledger 留痕，无自动批准）。
 
 ## 7. 语义原则
 

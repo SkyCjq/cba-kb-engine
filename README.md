@@ -208,8 +208,8 @@ In development (pending independent Q2 and Human merge): **Drive search**
 — `cba-kb drive-search --registry … --query …` finds files by name; only
 access-verified + explicitly approved files appear as results, everything
 else is excluded with an exact reason. Approve a file with
-`cba-kb drive-grant --file-id … --approver …` (ledger-recorded, no
-automatic approvals).
+`cba-kb drive-grant --registry … --ledger … --file-id … --approver …`
+(ledger-recorded, no automatic approvals).
 
 ## 7. Semantic Principles
 
