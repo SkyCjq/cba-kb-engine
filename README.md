@@ -192,6 +192,16 @@ duplicate/revision handling, and a durable JSONL ledger. It never writes to
 Drive. Remains v2.0.4 follow-up work: guarded archive move/retain, full
 cross-backend recovery, Production release.
 
+Delivered after PR-1 (2.0.4-2 slice 2): guarded Drive search
+(`cba-kb drive-search --registry … --query …`) — results contain only
+access-verified + explicitly rights-approved objects; everything else is
+excluded with an exact reason. Rights are granted per file by an explicit,
+ledger-recorded operator action
+(`cba-kb drive-grant --registry … --ledger … --file-id … --approver …`);
+there is no automatic approval path. Companion hardening: cross-file
+content-dedup identity and per-source revision chains
+(`src/cba_kb/drive_search.py`).
+
 ## 7. Semantic Principles
 
 - **Separation of Concerns**: Statements represent what was said; Claims represent asserted hypotheses; Facts represent canonical audited league records.

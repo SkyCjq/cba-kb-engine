@@ -171,6 +171,14 @@ PR-1 之后已交付（2.0.4-2 slice 1）：Drive 只读发现
 ledger。该命令永不写入 Drive。仍属 v2.0.4 后续工作：受控归档移动/保留、
 完整跨后端恢复、Production 发布。
 
+PR-1 之后已交付（2.0.4-2 slice 2）：受控 Drive 搜索
+（`cba-kb drive-search --registry … --query …`）——结果仅含访问已核验且
+权利已明确批准的对象，其余一律按精确原因排除。权利按文件显式授予，
+经操作员具名、ledger 留痕
+（`cba-kb drive-grant --registry … --ledger … --file-id … --approver …`），
+无任何自动批准路径。配套加固：跨文件内容去重身份与按来源修订链
+（`src/cba_kb/drive_search.py`）。
+
 ## 7. 语义原则
 
 - **关注点分离**：陈述（Statement）表示源头说了什么；主张（Claim）表示提炼出的推论；事实（Fact）表示经官方核验的联赛记录。
