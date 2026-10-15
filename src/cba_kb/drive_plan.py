@@ -354,6 +354,19 @@ def verify_plan(plan_path: Any,
     apply_log = plan.get("apply_log", [])
     if not apply_log:
         return False, ["PLAN_NOT_APPLIED: plan has no apply_log"]
+    operations = plan.get("operations", [])
+    # Completeness: the log must cover EVERY operation, in order.
+    # A partial log (e.g. only the first of two ops) must not verify.
+    if len(apply_log) != len(operations):
+        return False, [f"PLAN_INCOMPLETE: apply_log has {len(apply_log)} "
+                       f"entries but plan has {len(operations)} operations"]
+    for pos, entry in enumerate(apply_log):
+        if entry.get("index") != pos:
+            return False, [f"PLAN_INCOMPLETE: apply_log entry {pos} has "
+                           f"wrong index {entry.get('index')}"]
+        if entry.get("op") != operations[pos].get("op"):
+            return False, [f"PLAN_INCOMPLETE: apply_log entry {pos} op "
+                           f"mismatch"]
     errors = []
     for entry in apply_log:
         op_name = entry.get("op")

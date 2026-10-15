@@ -190,3 +190,24 @@ def test_verify_never_applied_fails(env):
     ok, errors = dp.verify_plan(env["plan"])
     assert not ok
     assert any("PLAN_NOT_APPLIED" in e for e in errors)
+
+
+def test_verify_partial_log_fails(env):
+    """Q2-R2 note: a partial apply_log must not verify."""
+    plan = dp.create_plan([
+        {"op": "rebuild_index",
+         "params": {"registry": str(env["registry"]),
+                    "index": str(env["index"])}},
+        {"op": "rebuild_index",
+         "params": {"registry": str(env["registry"]),
+                    "index": str(env["index"])}},
+    ])
+    dp.save_plan(env["plan"], plan)
+    dp.approve_plan(env["plan"], "boss", env["ledger"])
+    # Simulate a partial apply: only first op logged.
+    data = json.loads(env["plan"].read_text(encoding="utf-8"))
+    data["apply_log"] = [{"op": "rebuild_index", "index": 0, "result": {}}]
+    env["plan"].write_text(json.dumps(data), encoding="utf-8")
+    ok, errors = dp.verify_plan(env["plan"])
+    assert not ok
+    assert any("PLAN_INCOMPLETE" in e for e in errors)
