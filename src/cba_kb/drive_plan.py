@@ -366,9 +366,9 @@ def apply_plan(plan_path: Any, ledger_path: Any,
                     "failed": {"op": op_name, "index": i,
                                "error": str(exc)}}
     # All ops completed.
-    if resilient and wal_entry is not None:
-        from .drive_resilience import wal_finish
-        wal_finish(ledger_path)
+    # F-02 fix: WAL finish AFTER final persistence. If we crash before
+    # wal_finish, the WAL still says IN_PROGRESS and recovery will detect
+    # it. Since ops are idempotent, re-apply is safe.
     append_ledger(ledger_path, {
         "ts": _utcnow(), "actor": actor, "action": "drive_plan_applied",
         "prev_state": "APPLYING", "new_state": "APPLIED",
@@ -381,6 +381,10 @@ def apply_plan(plan_path: Any, ledger_path: Any,
     })
     plan["apply_log"] = completed
     save_plan(plan_path, plan)
+    # WAL finish LAST, after all persistence is durable.
+    if resilient and wal_entry is not None:
+        from .drive_resilience import wal_finish
+        wal_finish(ledger_path)
     return {"plan_id": plan["plan_id"], "completed": completed,
             "failed": None}
 

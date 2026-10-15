@@ -71,20 +71,65 @@ def _wal_path(ledger_path: Any) -> Path:
     return Path(str(ledger_path) + ".wal")
 
 
+def _wal_lock_path(ledger_path: Any) -> Path:
+    return Path(str(ledger_path) + ".wal.lock")
+
+
 def wal_begin(ledger_path: Any, plan_id: str,
               operations: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Record apply intent before execution."""
-    entry = {
-        "plan_id": plan_id,
-        "started_ts": _utcnow(),
-        "operations": [op.get("op") for op in operations],
-        "completed": [],
-        "status": "IN_PROGRESS",
-    }
-    p = _wal_path(ledger_path)
-    p.write_text(json.dumps(entry, ensure_ascii=False, indent=2),
-                 encoding="utf-8")
-    return entry
+    """Record apply intent before execution (atomic with check).
+
+    Uses a dedicated WAL lock to make check-and-begin atomic, preventing
+    two concurrent executors from overwriting each other's WAL.
+
+    If an IN_PROGRESS WAL already exists for the same plan_id, preserves
+    the existing `completed` progress (resume, not overwrite).
+    """
+    # Use a simple file-based mutex for the WAL itself.
+    import time
+    lock_p = _wal_lock_path(ledger_path)
+    lock_p.parent.mkdir(parents=True, exist_ok=True)
+    # Acquire WAL lock (simple spin with timeout).
+    deadline = time.time() + 10.0
+    while True:
+        try:
+            fd = lock_p.open("x")  # O_CREAT|O_EXCL
+            fd.write(str(time.time()))
+            fd.close()
+            break
+        except FileExistsError:
+            if time.time() >= deadline:
+                raise TimeoutError(f"{LOCK_TIMEOUT}: {lock_p}")
+            time.sleep(0.05)
+    try:
+        p = _wal_path(ledger_path)
+        # Check for existing IN_PROGRESS WAL (resume, not overwrite).
+        if p.exists():
+            try:
+                existing = json.loads(p.read_text(encoding="utf-8"))
+                if (isinstance(existing, dict) and
+                        existing.get("status") == "IN_PROGRESS" and
+                        existing.get("plan_id") == plan_id):
+                    # Resume: preserve completed progress (F-04 fix).
+                    return existing
+            except (json.JSONDecodeError, OSError):
+                pass
+        # New WAL entry.
+        entry = {
+            "plan_id": plan_id,
+            "started_ts": _utcnow(),
+            "operations": [op.get("op") for op in operations],
+            "completed": [],
+            "status": "IN_PROGRESS",
+        }
+        p.write_text(json.dumps(entry, ensure_ascii=False, indent=2),
+                     encoding="utf-8")
+        return entry
+    finally:
+        try:
+            lock_p.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def wal_mark_complete(ledger_path: Any, op_index: int) -> None:
@@ -131,24 +176,33 @@ def wal_check_incomplete(ledger_path: Any) -> Optional[Dict[str, Any]]:
 
 def run_with_timeout(func: Callable[[], Any],
                      timeout_s: float = 30.0) -> Any:
-    """Run func with a deadline. Timeout fails closed (raises TimeoutError)."""
-    result: List[Any] = []
-    error: List[BaseException] = []
+    """Run func with a deadline. Timeout fails closed (raises TimeoutError).
 
-    def _target():
-        try:
-            result.append(func())
-        except BaseException as exc:
-            error.append(exc)
+    Uses SIGALRM for true interruption (not a daemon thread that keeps
+    running after timeout). This ensures that when a timeout occurs, the
+    operation is actually stopped and cannot continue modifying files
+    after locks are released.
 
-    thread = threading.Thread(target=_target, daemon=True)
-    thread.start()
-    thread.join(timeout_s)
-    if thread.is_alive():
+    Note: Only works on Unix and in the main thread. All plan operations
+    use atomic writes (temp + rename), so interruption cannot corrupt
+    the target file.
+    """
+    def _handler(signum, frame):
         raise TimeoutError(f"OPERATION_TIMEOUT after {timeout_s}s")
-    if error:
-        raise error[0]
-    return result[0] if result else None
+
+    # Only the main thread can use SIGALRM.
+    if threading.current_thread() is not threading.main_thread():
+        raise RuntimeError("run_with_timeout requires main thread "
+                           "(SIGALRM)")
+
+    old_handler = signal.signal(signal.SIGALRM, _handler)
+    # Use setitimer for sub-second precision.
+    signal.setitimer(signal.ITIMER_REAL, timeout_s)
+    try:
+        return func()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old_handler)
 
 
 # ------------------------------------------------------------- idempotency
