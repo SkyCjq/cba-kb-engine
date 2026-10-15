@@ -8,10 +8,14 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from cba_kb import drive_search_index as si
+
+# Portable: src dir derived from this test file's location, not hardcoded.
+SRC_DIR = str(Path(__file__).resolve().parent.parent / "src")
 
 
 def _grant(file_id, approver="boss", **over):
@@ -216,13 +220,13 @@ def test_cli_search_index_end_to_end(tmp_path):
     r = subprocess.run(
         [sys.executable, "-m", "cba_kb.cli", "drive-build-index",
          "--registry", str(reg_p), "--index", str(idx_p)],
-        capture_output=True, text=True, cwd="/home/hatch/workspace/cba-kb-engine-2042/src")
+        capture_output=True, text=True, cwd=SRC_DIR)
     assert r.returncode == 0, r.stderr
     r = subprocess.run(
         [sys.executable, "-m", "cba_kb.cli", "drive-search-index",
          "--index", str(idx_p), "--registry", str(reg_p),
          "--query", "sales", "--principal", "alice"],
-        capture_output=True, text=True, cwd="/home/hatch/workspace/cba-kb-engine-2042/src")
+        capture_output=True, text=True, cwd=SRC_DIR)
     assert r.returncode == 0, r.stderr
     out = json.loads(r.stdout)
     assert [x["file_id"] for x in out["results"]] == ["f1"]
