@@ -190,8 +190,11 @@ Q2 and Human merge; not released): read-only Drive discovery
 (`cba-kb drive-discover --folder-id ... --ledger ...`) — folder listing,
 access/content/version verification, Source/Document identity with
 duplicate/revision handling, and a durable JSONL ledger. It never writes to
-Drive. `--verify-bytes` is off by default: without it, bytes are NOT
-downloaded or compared and the digest is the metadata-claimed value only.
+Drive. `--verify-bytes` is off by default. For binary files, off means bytes
+are NOT downloaded or compared and the digest is the metadata-claimed value
+only. Native Google Docs are a separate branch: they are always read via the
+Docs API (`document_json`) and digested as SHA-256 over canonical Doc JSON
+— never as raw bytes — regardless of `--verify-bytes`.
 Remains v2.0.4 follow-up work: guarded archive move/retain, full
 cross-backend recovery, Production release.
 

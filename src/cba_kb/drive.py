@@ -138,12 +138,18 @@ class Drive:
     def get_bounded(self, file_id, max_bytes):
         """Download with a hard byte bound enforced during transfer.
 
-        Reads in chunks and aborts as soon as the accumulated bytes exceed
-        ``max_bytes`` (raising ``DownloadTooLargeError``), so a lying or
-        missing ``size`` in metadata can never cause unbounded buffering.
-        The declared size is used only as an early-reject optimization, never
-        as the safety proof. Transient chunk failures are retried under the
-        standard read-retry policy; the bound is enforced on every attempt.
+        Reads in chunks and aborts as soon as a completed chunk pushes the
+        accumulated bytes over ``max_bytes`` (raising
+        ``DownloadTooLargeError``), so a lying or missing ``size`` in
+        metadata can never cause unbounded buffering. The declared size is
+        used only as an early-reject optimization, never as the safety
+        proof. Transient chunk failures are retried under the standard
+        read-retry policy; the bound is enforced on every attempt.
+
+        Residual: the bound is checked after each chunk lands, so the
+        in-memory buffer may transiently hold up to ``max_bytes`` plus one
+        chunk (chunksize) before the abort fires. Over-limit bytes are never
+        checksummed, verified, or returned as success.
         """
         from .transport import DownloadTooLargeError
         if max_bytes <= 0:

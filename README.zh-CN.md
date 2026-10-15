@@ -169,9 +169,11 @@ PR-1 之后开发中（2.0.4-2 slice 1，PR #159——待独立 Q2 与 Human 合
 未发布）：Drive 只读发现
 （`cba-kb drive-discover --folder-id ... --ledger ...`）——文件夹枚举、
 访问/内容/版本核验、带去重与修订处理的 Source/Document 身份、持久 JSONL
-ledger。该命令永不写入 Drive。`--verify-bytes` 默认关闭：关闭时字节不
-会被下载或比对，digest 仅为元数据声称值。仍属 v2.0.4 后续工作：受控归档
-移动/保留、完整跨后端恢复、Production 发布。
+ledger。该命令永不写入 Drive。`--verify-bytes` 默认关闭：对二进制文件，
+关闭时字节不会被下载或比对，digest 仅为元数据声称值。原生 Google 文档
+走独立分支：始终经 Docs API（`document_json`）读取，digest 为规范化 Doc
+JSON 的 SHA-256（绝非原始字节），不受 `--verify-bytes` 影响。仍属 v2.0.4
+后续工作：受控归档移动/保留、完整跨后端恢复、Production 发布。
 
 证据层级（不得混淆）：隔离单元测试跑在脚本化 fake 上，只证明合同行为，
 不证明真实 API 行为；真实 Drive E2E 需要经授权的隔离测试 Drive，尚未

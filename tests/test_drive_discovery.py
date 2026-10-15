@@ -752,3 +752,65 @@ def test_abnormal_states_land_in_ledger_and_report(tmp_path):
                if e["action"] == "drive_object_discovered"}
     assert by_file["bad"]["verification"]["reason"] == CHECKSUM_MISMATCH
     assert by_file["bad"]["new_state"] == VERIFY_FAILED
+
+
+# ================================================== Q2-R2 Finding 1: finished-event failure
+
+def test_run_discovery_finished_event_failure_leaves_registry_untouched(
+        tmp_path, monkeypatch):
+    """Q2-R2 Finding 1: sabotage the FINISHED event's ledger append (3rd
+    write). The run must abort with LEDGER_WRITE_FAILED and the registry
+    must keep its pre-run content — never overwritten as 'complete'."""
+    import os as _os
+    real_write = _os.write
+    calls = {"n": 0}
+
+    def fake_write(fd, data):
+        calls["n"] += 1
+        if calls["n"] == 3:  # the drive_discovery_finished event
+            real_write(fd, data[:10])  # genuine partial write, like Q2's repro
+            return 10
+        return real_write(fd, data)
+
+    monkeypatch.setattr(_os, "write", fake_write)
+    drive = FakeDrive(items=[_meta("f1")])
+    drive.bounded_blobs = {"f1": b"hello-drive"}
+    ledger = tmp_path / "ledger.jsonl"
+    registry = tmp_path / "registry.json"
+    old_content = {"old": {"revision": "rev-0"}}
+    registry.write_text(json.dumps(old_content), encoding="utf-8")
+    with pytest.raises(DriveDiscoveryError) as exc:
+        run_discovery(drive, "folder-1", ledger_path=ledger,
+                      registry_path=registry)
+    assert exc.value.code == LEDGER_WRITE_FAILED
+    assert json.loads(registry.read_text(encoding="utf-8")) == old_content
+    with pytest.raises(ValueError, match="LEDGER_TAIL_INCOMPLETE"):
+        read_ledger_events(ledger, strict=True)
+
+
+# ================================================== Q2-R2 Finding 2: scope exactness
+
+def test_rights_scope_substring_lookalikes_are_denied():
+    for scope in ("not-drive:read", "drive:read:no", "drive:readwrite",
+                  "xdrive:read", "DRIVE:READ"):
+        status, reason = decide_drive_rights(
+            {"file_id": "f1"}, grants={"f1": _grant(scope=scope)})
+        assert (status, reason) == ("review", "DRIVE_RIGHTS_UNVERIFIED"), scope
+
+
+def test_rights_scope_type_confusion_fails_closed_not_crash():
+    for scope in (42, 3.14, True, {"scope": "drive:read"}, object()):
+        status, reason = decide_drive_rights(
+            {"file_id": "f1"}, grants={"f1": _grant(scope=scope)})
+        assert (status, reason) == ("review", "DRIVE_RIGHTS_UNVERIFIED"), scope
+
+
+def test_rights_scope_exact_forms_are_honored():
+    for scope in ("drive:read", "*", ["drive:read"], ("drive:read",),
+                  {"drive:read"}, ["other", "drive:read"]):
+        status, _ = decide_drive_rights(
+            {"file_id": "f1"}, grants={"f1": _grant(scope=scope)})
+        assert status == "approved", scope
+    status, _ = decide_drive_rights(
+        {"file_id": "f1"}, grants={"f1": _grant(scope=["other"])})
+    assert status == "review"

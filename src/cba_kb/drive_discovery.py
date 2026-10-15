@@ -193,9 +193,14 @@ def download_bounded(drive: Any, file_id: str, max_bytes: int) -> bytes:
     (chunked reads that abort once ``max_bytes`` is exceeded); the caller
     additionally re-checks the returned length (defense in depth).
 
+    Residual: the transport checks the bound after each chunk lands, so its
+    buffer may transiently hold up to ``max_bytes`` plus one chunk before
+    aborting. Over-limit bytes are never checksummed, verified, or returned
+    as success — the receipt is always VERIFY_FAILED/DOWNLOAD_TOO_LARGE.
+
     Raises:
     - ``DownloadTooLargeError``: the bound was exceeded. The transport must
-      abort the transfer rather than fully buffering the content.
+      abort the transfer rather than return over-limit bytes as success.
     - ``DriveDiscoveryError(TRANSPORT_UNBOUNDED)``: this drive object has no
       ``get_bounded`` capability, so the hard limit cannot be reliably
       enforced. The caller must fail closed instead of claiming a bounded
@@ -347,7 +352,7 @@ def verify_object(
                 "digest_kind": None, "digest": None,
                 "evidence": {**base["evidence"], "max_bytes": max_bytes,
                              "note": f"bound enforced during transfer: {exc}; "
-                                     "content never fully buffered"}}
+                                     "over-limit bytes never verified or returned"}}
     except Exception as exc:
         if _is_permission_error(exc):
             return {**base, "status": REVIEW_REQUIRED, "reason": ACCESS_DENIED,
@@ -419,6 +424,26 @@ def _grant_not_expired(grant: Dict[str, Any]) -> bool:
     return expiry > now
 
 
+def _scope_covers(scope: Any) -> bool:
+    """Exact scope matching — never substring.
+
+    ``scope`` may be absent (None: no constraint expressed), one exact scope
+    string, or a collection of exact scope strings. A grant covers the
+    discovery read path only when an exact ``"drive:read"`` (or the wildcard
+    ``"*"``) is present. Anything else — including non-string scalars such as
+    ``42``, dicts, or substring lookalikes like ``"not-drive:read"`` — fails
+    closed to False (never raises, never approves).
+    """
+    if scope is None:
+        return True
+    if isinstance(scope, str):
+        return scope in ("drive:read", "*")
+    if isinstance(scope, (list, tuple, set, frozenset)):
+        return any(isinstance(item, str) and item in ("drive:read", "*")
+                   for item in scope)
+    return False
+
+
 def _valid_grant_record(obj: Dict[str, Any], grant: Any) -> bool:
     """Strict validation for one grant record. Anything else is not a grant.
 
@@ -430,7 +455,8 @@ def _valid_grant_record(obj: Dict[str, Any], grant: Any) -> bool:
     and NONE of:
     - ``revoked``: True;
     - ``expires_at``: present and not in the future;
-    - ``scope``: present and not covering ``drive:read``.
+    - ``scope``: present and without an exact ``"drive:read"`` (or ``"*"``)
+      entry — substring lookalikes and non-string values never match.
     ``ACCESS_VERIFIED`` (a content-verification outcome) and a rights grant
     (an authorization decision) are never derived from each other.
     """
@@ -448,8 +474,7 @@ def _valid_grant_record(obj: Dict[str, Any], grant: Any) -> bool:
         return False
     if not _grant_not_expired(grant):
         return False
-    scope = grant.get("scope")
-    if scope is not None and "drive:read" not in scope and scope != "*":
+    if not _scope_covers(grant.get("scope")):
         return False
     return True
 
@@ -501,10 +526,14 @@ def append_ledger(ledger_path: Any, event: Dict[str, Any]) -> None:
     All LEDGER_REQUIRED_FIELDS must be present or ValueError is raised.
     Extra fields are preserved. File is created with 0o600.
 
-    Write integrity: the actual byte count returned by ``os.write()`` is
-    verified — a short write raises ``IOError(LEDGER_SHORT_WRITE)`` instead
-    of silently returning success. ``fsync`` success only proves the bytes
-    actually written reached storage, never that the event is complete.
+    Write integrity (no silent partial success): every ``os.write()`` byte
+    count is verified. For events up to 4096 bytes a single atomic O_APPEND
+    write is used — any short count raises ``IOError(LEDGER_SHORT_WRITE)``.
+    Larger events are completed via retry loop; a write that makes no
+    progress raises instead of returning success. ``fsync`` success only
+    proves the bytes actually written reached storage, never that the event
+    is complete — use ``read_ledger_events(strict=True)`` to detect an
+    incomplete tail on recovery.
     """
     missing = [f for f in LEDGER_REQUIRED_FIELDS if f not in event]
     if missing:
@@ -669,8 +698,10 @@ def run_discovery(
             "rights_reason": rights_reason,
         }, obj["file_id"])
 
-    atomic(registry_file, json.dumps(known, ensure_ascii=False, indent=2,
-                                    sort_keys=True).encode("utf-8"))
+    # Q2-R2 Finding 1: the registry is persisted ONLY after every ledger
+    # event (including the finished event) has been durably appended. A
+    # ledger failure aborts the run before the registry is touched, so a
+    # damaged ledger can never coincide with a "reliably complete" registry.
     finished_ts = _utcnow()
     _append_ledger_run(ledger, {
         "ts": finished_ts, "actor": actor, "action": "drive_discovery_finished",
@@ -680,6 +711,8 @@ def run_discovery(
         "note": f"counts={counts}",
         "counts": counts,
     }, folder_id)
+    atomic(registry_file, json.dumps(known, ensure_ascii=False, indent=2,
+                                    sort_keys=True).encode("utf-8"))
     return {
         "folder_id": folder_id,
         "base_sha": None,
