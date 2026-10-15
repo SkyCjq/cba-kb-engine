@@ -180,13 +180,11 @@ JSON 的 SHA-256（绝非原始字节），不受 `--verify-bytes` 影响。仍�
 执行；Production Activation 与整版完成是独立的 Human 决策，在 65 项交付
 矩阵中跟踪。
 
-PR-1 之后已交付（2.0.4-2 slice 2）：受控 Drive 搜索
-（`cba-kb drive-search --registry … --query …`）——结果仅含访问已核验且
-权利已明确批准的对象，其余一律按精确原因排除。权利按文件显式授予，
-经操作员具名、ledger 留痕
-（`cba-kb drive-grant --registry … --ledger … --file-id … --approver …`），
-无任何自动批准路径。配套加固：跨文件内容去重身份与按来源修订链
-（`src/cba_kb/drive_search.py`）。
+开发中（待独立 Q2 与人工合并）：**Drive 搜索**——
+`cba-kb drive-search --registry … --query …` 按文件名查找；只有"访问已核验
+＋已明确批准"的文件才会出现在结果里，其余按精确原因排除。用
+`cba-kb drive-grant --file-id … --approver …` 批准文件（ledger 留痕，
+无自动批准）。
 
 ## 7. 语义原则
 

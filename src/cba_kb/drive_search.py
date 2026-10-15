@@ -1,20 +1,25 @@
-"""Guarded Drive search + content-identity hardening (2.0.4-2 slice 2, T2).
+"""Guarded Drive search + content-identity helpers (2.0.4-2 slice 2, T2).
 
 Builds on slice-1 (``drive_discovery``): the discovery registry is the
 searchable corpus. Search is rights-guarded by construction:
 
-- Only ``ACCESS_VERIFIED`` + explicitly rights-``approved`` objects are ever
-  returned as *results*.
-- ``REVIEW_REQUIRED`` / ``VERIFY_FAILED`` objects are excluded by default and
-  can only be *listed* (never returned as searchable content) with an
-  explicit ``include_review`` flag.
+- Only ``ACCESS_VERIFIED`` objects whose rights grant strictly validates
+  (registry status AND the base slice's ``decide_drive_rights`` must agree)
+  are ever returned as *results*.
+- ``REVIEW_REQUIRED`` / ``VERIFY_FAILED`` objects are excluded by default;
+  with an explicit ``include_review`` flag they are *listed* with exact
+  reasons — never returned as searchable content.
 - Rights are granted per file by an explicit, ledger-recorded operator
-  action (``grant_rights``); there is no automatic approval path.
+  action (``grant_rights``), ledger-first so a failed audit write never
+  leaves a phantom approval; there is no automatic approval path.
 
-Content identity: two different Drive file_ids carrying the same verified
-digest are ``DUPLICATE_CONTENT`` (the first-seen file_id is canonical).
-Objects without a verified digest are ``UNDEDUPLICABLE`` — never silently
-treated as unique.
+Content identity: ``classify_content_duplicate`` and ``record_revision``
+are available, unit-tested helpers. They are not yet wired into the
+automated discovery path (slice-1's frozen registry does not persist
+digests), so production search does not currently perform cross-file
+content dedup — same digest is not treated as proof of duplication, and no
+byte-level collision check is performed. Wiring a persistent digest index
+is future work, tracked separately.
 """
 from __future__ import annotations
 
@@ -26,9 +31,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from .drive_discovery import (
     ACCESS_VERIFIED,
     LEDGER_REQUIRED_FIELDS,  # noqa: F401  (re-exported for ledger writers)
+    LEDGER_WRITE_FAILED,
     REVIEW_REQUIRED,
     VERIFY_FAILED,
+    DriveDiscoveryError,
     append_ledger,
+    decide_drive_rights,
 )
 
 CONTENT_NEW = "CONTENT_NEW"
@@ -86,6 +94,28 @@ def classify_content_duplicate(
     return DUPLICATE_CONTENT, canonical
 
 
+def _rights_approved_for_search(
+    file_id: str, record: Dict[str, Any]
+) -> Tuple[bool, str]:
+    """Strict rights check for the search path: the registry status string
+    AND a strictly-valid grant must agree.
+
+    The grant is re-validated through the base slice's
+    ``decide_drive_rights`` (exact scope matching, approver/file binding,
+    expiry, revocation). Any inconsistency — missing grant, invalid grant,
+    or status/grant disagreement — fails closed to (False, reason) and the
+    object is excluded from results. Never trusts ``rights_status`` alone.
+    """
+    if record.get("rights_status") != "approved":
+        return False, record.get("rights_reason") or "RIGHTS_NOT_APPROVED"
+    grant = record.get("rights_grant")
+    grants = {file_id: grant} if isinstance(grant, dict) else {}
+    status, reason = decide_drive_rights({"file_id": file_id}, grants=grants)
+    if status != "approved":
+        return False, f"RIGHTS_GRANT_INVALID:{reason}"
+    return True, "DRIVE_RIGHTS_GRANTED"
+
+
 def record_revision(
     history: Dict[str, List[Dict[str, Any]]],
     source_id: str,
@@ -95,12 +125,25 @@ def record_revision(
 ) -> List[Dict[str, Any]]:
     """Append to a source's revision chain; same revision is never duplicated.
 
+    Fail-closed on identity conflict: if ``(source_id, revision)`` already
+    maps to a *different* ``doc_id``, the mapping is unstable and a
+    ``ValueError(REVISION_IDENTITY_CONFLICT)`` is raised instead of silently
+    keeping the old record. Repeating the same ``(revision, doc_id)`` is
+    idempotent.
+
     Returns the (possibly new) chain for ``source_id``.
     """
     chain = history.setdefault(source_id, [])
-    if not any(entry.get("revision") == revision for entry in chain):
-        chain.append({"revision": revision, "doc_id": doc_id,
-                      "ts": ts or _utcnow()})
+    for entry in chain:
+        if entry.get("revision") == revision:
+            if entry.get("doc_id") != doc_id:
+                raise ValueError(
+                    f"REVISION_IDENTITY_CONFLICT: source {source_id!r} "
+                    f"revision {revision!r} already maps to "
+                    f"{entry.get('doc_id')!r}, cannot remap to {doc_id!r}")
+            return chain
+    chain.append({"revision": revision, "doc_id": doc_id,
+                  "ts": ts or _utcnow()})
     return chain
 
 
@@ -117,8 +160,18 @@ def grant_rights(
     """Explicitly grant rights for one discovered file (guarded, audited).
 
     Fail-closed: unknown file_id raises ValueError; only objects currently in
-    ``review`` rights state can transition (already-approved is idempotent).
-    Every grant appends a ledger event naming the approver.
+    ``review`` rights state can transition. The generated grant is a complete
+    strict-schema record (``approved``/``approver``/``file_id``/``scope``) so
+    it passes the base slice's ``decide_drive_rights``.
+
+    Ordering (audit-first): the ledger event is appended BEFORE the registry
+    is persisted. If the ledger write fails, a ``DriveDiscoveryError`` is
+    raised and the registry is untouched — a retry can then complete the
+    grant instead of hitting a phantom "already approved".
+
+    Already-approved is idempotent only when the stored grant strictly
+    validates; a stale/incomplete grant (e.g. from the pre-fix order) is
+    healed by re-running the grant flow, which backfills the audit event.
     """
     from .common import atomic
 
@@ -131,23 +184,43 @@ def grant_rights(
         raise ValueError("RIGHTS_GRANT_APPROVER_REQUIRED")
     prev = record.get("rights_status")
     if prev == "approved":
-        return {"file_id": file_id, "rights_status": "approved",
-                "note": "already approved; idempotent"}
-    if prev != "review":
+        ok, _ = _rights_approved_for_search(file_id, record)
+        if ok:
+            return {"file_id": file_id, "rights_status": "approved",
+                    "note": "already approved; idempotent"}
+        # Stale/incomplete grant: heal by re-running the grant flow below,
+        # which writes the missing audit event.
+    elif prev != "review":
         raise ValueError(f"RIGHTS_GRANT_BAD_STATE: {file_id} rights_status={prev}")
+
+    grant = {
+        "approved": True,
+        "approver": approver.strip(),
+        "file_id": file_id,
+        "scope": "drive:read",
+        "granted_at": _utcnow(),
+        "note": note,
+    }
+    event_ts = grant["granted_at"]
+    try:
+        append_ledger(ledger_path, {
+            "ts": event_ts, "actor": actor, "action": "drive_rights_granted",
+            "prev_state": prev, "new_state": "approved",
+            "evidence_ref": file_id, "policy_version": policy_version,
+            "operator": approver.strip(), "approval_ref": "", "retry_count": 0,
+            "note": note or f"rights granted by {approver.strip()}",
+            "grant": dict(grant),
+        })
+    except Exception as exc:
+        raise DriveDiscoveryError(
+            LEDGER_WRITE_FAILED, file_id=file_id,
+            detail=f"rights grant ledger append failed: {exc}") from exc
+
     record["rights_status"] = "approved"
     record["rights_reason"] = "DRIVE_RIGHTS_GRANTED"
-    record["rights_grant"] = {"approver": approver.strip(), "note": note,
-                              "ts": _utcnow()}
+    record["rights_grant"] = grant
     atomic(registry_file, json.dumps(registry, ensure_ascii=False, indent=2,
                                     sort_keys=True).encode("utf-8"))
-    append_ledger(ledger_path, {
-        "ts": _utcnow(), "actor": actor, "action": "drive_rights_granted",
-        "prev_state": "review", "new_state": "approved",
-        "evidence_ref": file_id, "policy_version": policy_version,
-        "operator": approver.strip(), "approval_ref": "", "retry_count": 0,
-        "note": note or f"rights granted by {approver.strip()}",
-    })
     return {"file_id": file_id, "rights_status": "approved",
             "approver": approver.strip()}
 
@@ -174,11 +247,13 @@ def search_drive_registry(
 ) -> Dict[str, Any]:
     """Rights-guarded search over a discovery registry.
 
-    Results contain ONLY ACCESS_VERIFIED + rights-approved objects.
-    ``excluded`` counts name exactly why each non-result was withheld.
-    With ``include_review=True`` a separate ``review_listing`` names the
-    withheld review items explicitly — they are listed, never returned as
-    searchable content.
+    Results contain ONLY ACCESS_VERIFIED objects whose rights grant strictly
+    validates (registry status string AND ``decide_drive_rights`` must agree;
+    see ``_rights_approved_for_search``). ``excluded`` counts each category
+    and ``excluded.details`` names the exact reason per withheld object, so
+    two different failures are never indistinguishable.
+    With ``include_review=True``, withheld review/failed items are listed
+    with their reasons — listed, never returned as searchable content.
     """
     if not query or not query.strip():
         raise ValueError("SEARCH_QUERY_REQUIRED")
@@ -188,7 +263,8 @@ def search_drive_registry(
     results: List[Dict[str, Any]] = []
     review_listing: List[Dict[str, Any]] = []
     excluded = {"rights_excluded": 0, "failed_excluded": 0,
-                "review_excluded": 0, "no_match": 0}
+                "review_excluded": 0, "no_match": 0,
+                "details": []}
     considered = 0
     for file_id, record in registry.items():
         considered += 1
@@ -197,32 +273,50 @@ def search_drive_registry(
             excluded["no_match"] += 1
             continue
         verify_status = record.get("verify_status")
-        rights_status = record.get("rights_status")
+        verify_reason = record.get("verify_reason")
+        name = record.get("name")
         if verify_status == VERIFY_FAILED:
             excluded["failed_excluded"] += 1
+            reason = f"VERIFY_FAILED:{verify_reason or 'UNKNOWN'}"
+            excluded["details"].append(
+                {"file_id": file_id, "name": name, "reason": reason})
+            if include_review:
+                review_listing.append({
+                    "file_id": file_id, "name": name,
+                    "verify_status": verify_status,
+                    "verify_reason": verify_reason,
+                    "note": "listed, not searchable: verification failed",
+                })
             continue
-        if rights_status != "approved":
+        rights_ok, rights_reason = _rights_approved_for_search(file_id, record)
+        if not rights_ok:
             excluded["rights_excluded"] += 1
+            excluded["details"].append(
+                {"file_id": file_id, "name": name,
+                 "reason": f"RIGHTS_EXCLUDED:{rights_reason}"})
             continue
         if verify_status != ACCESS_VERIFIED:
             # REVIEW_REQUIRED (or unknown): withheld from results by default.
             excluded["review_excluded"] += 1
+            excluded["details"].append(
+                {"file_id": file_id, "name": name,
+                 "reason": f"REVIEW_WITHHELD:{verify_reason or 'UNKNOWN'}"})
             if include_review:
                 review_listing.append({
-                    "file_id": file_id, "name": record.get("name"),
+                    "file_id": file_id, "name": name,
                     "verify_status": verify_status,
-                    "verify_reason": record.get("verify_reason"),
+                    "verify_reason": verify_reason,
                     "note": "listed, not searchable: verification not complete",
                 })
             continue
         if len(results) < limit:
             results.append({
-                "file_id": file_id, "name": record.get("name"),
+                "file_id": file_id, "name": name,
                 "mime_type": record.get("mime_type"),
                 "doc_id": record.get("doc_id"),
                 "source_id": record.get("source_id"),
                 "verify_status": verify_status,
-                "rights_status": rights_status,
+                "rights_status": "approved",
                 "match_on": match_on,
             })
     return {
