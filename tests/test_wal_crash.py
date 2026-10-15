@@ -22,6 +22,9 @@ import pytest
 
 from cba_kb import drive_resilience as dr
 
+# Portable src path for child processes (CI-safe, no hardcoded home dir).
+_SRC_DIR = str(Path(__file__).resolve().parent.parent / "src")
+
 
 @pytest.fixture()
 def tmp_ledger(tmp_path):
@@ -66,7 +69,7 @@ sys.path.insert(0, "src")
 try:
     from cba_kb import drive_resilience as dr
 except ImportError:
-    sys.path.insert(0, "/home/hatch/workspace/cba-kb-engine-2042/src")
+    sys.path.insert(0, os.environ.get("CBA_KB_SRC", "src"))
     from cba_kb import drive_resilience as dr
 ledger = os.environ["TEST_LEDGER"]
 # Acquire the WAL lock and hold it.
@@ -87,7 +90,7 @@ with file_lock(_wal_path(ledger), timeout_s=5.0):
         proc = sp.Popen(
             [sys.executable, script_path],
             env={**os.environ, "TEST_LEDGER": ledger_str,
-                 "PYTHONPATH": "/home/hatch/workspace/cba-kb-engine-2042/src"},
+                 "PYTHONPATH": _SRC_DIR, "CBA_KB_SRC": _SRC_DIR},
         )
         proc.wait(timeout=10)
         assert proc.returncode == 42, f"Child didn't crash as expected: {proc.returncode}"
@@ -112,7 +115,7 @@ def test_B_crash_recovers_wal_progress(tmp_ledger):
     ledger_str = str(tmp_ledger)
     child_script = """
 import os, sys
-sys.path.insert(0, "/home/hatch/workspace/cba-kb-engine-2042/src")
+sys.path.insert(0, os.environ.get("CBA_KB_SRC", "src"))
 from cba_kb import drive_resilience as dr
 ledger = os.environ["TEST_LEDGER"]
 # Create WAL and mark op 0 complete, then crash.
@@ -134,7 +137,7 @@ os._exit(42)
     try:
         proc = subprocess.Popen(
             [sys.executable, script_path],
-            env={**os.environ, "TEST_LEDGER": ledger_str},
+            env={**os.environ, "TEST_LEDGER": ledger_str, "CBA_KB_SRC": _SRC_DIR},
         )
         proc.wait(timeout=10)
         assert proc.returncode == 42
