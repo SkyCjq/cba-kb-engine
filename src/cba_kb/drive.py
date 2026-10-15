@@ -135,6 +135,60 @@ class Drive:
             raise ValueError('Native object requires native adapter; raw download rejected')
         return self._download(file_id)
 
+    def get_bounded(self, file_id, max_bytes):
+        """Download with a hard byte bound enforced during transfer.
+
+        Reads in chunks and aborts as soon as a completed chunk pushes the
+        accumulated bytes over ``max_bytes`` (raising
+        ``DownloadTooLargeError``), so a lying or missing ``size`` in
+        metadata can never cause unbounded buffering. The declared size is
+        used only as an early-reject optimization, never as the safety
+        proof. Transient chunk failures are retried under the standard
+        read-retry policy; the bound is enforced on every attempt.
+
+        Residual: the bound is checked after each chunk lands, so the
+        in-memory buffer may transiently hold up to ``max_bytes`` plus one
+        chunk (chunksize) before the abort fires. Over-limit bytes are never
+        checksummed, verified, or returned as success.
+        """
+        from .transport import DownloadTooLargeError
+        if max_bytes <= 0:
+            raise ValueError('max_bytes must be positive')
+        meta = self.meta(file_id)
+        if meta['mimeType'].startswith('application/vnd.google-apps.'):
+            raise ValueError('Native object requires native adapter; raw download rejected')
+        try:
+            declared = int(meta.get('size') or 0)
+        except (TypeError, ValueError):
+            declared = 0
+        if declared > max_bytes:
+            raise DownloadTooLargeError(
+                f'declared size {declared} exceeds max_bytes={max_bytes}')
+        from googleapiclient.http import MediaIoBaseDownload
+        def bounded():
+            # Fresh buffer + downloader per attempt: a retry after a
+            # transport reset must not reuse a downloader bound to the
+            # closed session (same structure as _download).
+            buf = io.BytesIO()
+            downloader = MediaIoBaseDownload(
+                buf, self.api.files().get_media(fileId=file_id,
+                                                supportsAllDrives=True),
+                chunksize=min(1024 * 1024, max_bytes))
+            done = False
+            while not done:
+                _, done = downloader.next_chunk(num_retries=0)
+                if buf.tell() > max_bytes:
+                    raise DownloadTooLargeError(
+                        f'download exceeded max_bytes={max_bytes}')
+            return buf.getvalue()
+        data = retry_read(bounded, label='bounded download',
+                          reset=self._reset_read_connections)
+        if len(data) > max_bytes:
+            # Defense in depth: the transport must never return more than asked.
+            raise DownloadTooLargeError(
+                f'download returned {len(data)} bytes over max_bytes={max_bytes}')
+        return data
+
     def _download(self, file_id):
         """Raw content read after MIME has been checked by get or the live index."""
         from googleapiclient.http import MediaIoBaseDownload

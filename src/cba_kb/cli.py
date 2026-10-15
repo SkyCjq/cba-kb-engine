@@ -63,6 +63,12 @@ def main():
     # SCOPED PR1: --visibility public is deferred. Kept for CLI compat but
     # rejected with a clear message.
     q.add_argument('--visibility',choices=('local','public'),default='local')
+    q=sub.add_parser('drive-discover')
+    q.add_argument('--folder-id',required=True)
+    q.add_argument('--ledger',type=Path,required=True)
+    q.add_argument('--registry',type=Path,default=None)
+    q.add_argument('--verify-bytes',action='store_true')
+    q.add_argument('--max-bytes-mb',type=float,default=64.0)
     q=sub.add_parser('document-ingest')
     q.add_argument('--capture-channel',choices=(
         'wechat_browser_clip','ima_file_export','local_file','google_drive_doc'))
@@ -408,6 +414,18 @@ def main():
             result=InboxLifecycle(root,private_instance()).query(
                 id=a.id,title=a.title,keyword=a.keyword,
                 visibility=a.visibility)
+        elif a.command=='drive-discover':
+            # READ-ONLY slice: refuses empty folder-id; never writes to Drive.
+            if not (a.folder_id or '').strip():
+                raise ValueError('FOLDER_ID_REQUIRED')
+            if not a.max_bytes_mb or a.max_bytes_mb <= 0:
+                raise ValueError('MAX_BYTES_MUST_BE_POSITIVE')
+            from .drive_discovery import run_discovery
+            instance=private_instance();drive=Drive(root,instance)
+            result=run_discovery(
+                drive, a.folder_id.strip(), ledger_path=a.ledger,
+                registry_path=a.registry, verify_bytes=a.verify_bytes,
+                max_bytes=int(a.max_bytes_mb*1024*1024))
         elif a.command in {'document-ingest','document-batch'}:
             from .document_lane import DocumentLane
             if a.command=='document-ingest' and not a.capture_channel:

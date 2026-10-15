@@ -39,6 +39,16 @@ for _module, _name in (('httplib2', 'HttpLib2Error'),
 READ_RETRY_STATS = {'attempts': 0, 'retries': 0, 'resets': 0, 'failures': 0}
 
 
+class DownloadTooLargeError(RuntimeError):
+    """Raised when a bounded download exceeds its hard byte limit.
+
+    Lives in transport.py (neutral layer) so both ``cba_kb.drive`` (which
+    raises it from chunked reads) and ``cba_kb.drive_discovery`` (which
+    converts it into a VERIFY_FAILED/DOWNLOAD_TOO_LARGE receipt) can use it
+    without import cycles or pulling googleapiclient into unit tests.
+    """
+
+
 def read_retry_stats():
     """Deterministic counters for release evidence; never contains payload data."""
     return dict(READ_RETRY_STATS)
