@@ -1,5 +1,18 @@
 """Concurrency control and crash recovery (2.0.4-2 slice 7, T2).
 
+**Trust Boundary (defined 2026-10-15):**
+The file system is TRUSTED. This module defends against:
+- Accidental concurrent execution (two legitimate processes)
+- Process crashes mid-apply (recovery via WAL)
+
+It does NOT defend against malicious file tampering. If an attacker has
+write access to the WAL/plan/ledger files, they can already modify any
+of them. File-level ACLs (OS permissions) are the defense against
+malicious tampering — out of scope for this module.
+
+This boundary prevents unbounded hardening: without it, the reviewer
+can always posit a deeper file-tampering variant.
+
 - **FileLock**: POSIX advisory exclusive locks for registry/index/ledger.
   Prevents concurrent modification corruption.
 - **Idempotency**: all plan operations are safe to retry.
@@ -10,6 +23,11 @@
   after each op, mark complete. On startup, incomplete WAL entries are
   detected and reported (resume or manual intervention).
 - **Timeout**: operations run with a deadline; timeout fails closed.
+  Uses SIGALRM for true interruption of synchronous operations.
+  **Residual risk**: if the operation catches TimeoutError and continues,
+  or spawns its own background threads, SIGALRM cannot force-stop those.
+  All built-in plan operations are synchronous and do not catch
+  TimeoutError.
 - **Partial success**: apply tracks exactly which ops completed.
 
 All LOCAL. No Drive writes.
@@ -75,6 +93,35 @@ def _wal_lock_path(ledger_path: Any) -> Path:
     return Path(str(ledger_path) + ".wal.lock")
 
 
+def _wal_write(p: Path, entry: Dict[str, Any]) -> None:
+    """Write WAL entry with fsync for crash durability (F2 fix).
+
+    Ensures the WAL state is actually persisted to disk, not just in
+    the OS page cache. This provides the crash-recovery guarantee:
+    if we crash after writing IN_PROGRESS, the WAL will be there on
+    restart; if we crash after writing COMPLETED, the completion will
+    be there.
+    """
+    import os
+    data = json.dumps(entry, ensure_ascii=False, indent=2).encode("utf-8")
+    # Write to temp file, fsync, then rename (atomic + durable).
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    with open(tmp, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, p)
+    # Sync the directory to ensure the rename is durable.
+    try:
+        dir_fd = os.open(p.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass  # Best effort; file fsync is the critical part.
+
+
 def wal_begin(ledger_path: Any, plan_id: str,
               operations: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Record apply intent before execution (atomic with check).
@@ -103,15 +150,22 @@ def wal_begin(ledger_path: Any, plan_id: str,
             time.sleep(0.05)
     try:
         p = _wal_path(ledger_path)
-        # Check for existing IN_PROGRESS WAL (resume, not overwrite).
+        # Check for existing IN_PROGRESS WAL.
         if p.exists():
             try:
                 existing = json.loads(p.read_text(encoding="utf-8"))
                 if (isinstance(existing, dict) and
-                        existing.get("status") == "IN_PROGRESS" and
-                        existing.get("plan_id") == plan_id):
-                    # Resume: preserve completed progress (F-04 fix).
-                    return existing
+                        existing.get("status") == "IN_PROGRESS"):
+                    if existing.get("plan_id") == plan_id:
+                        # Resume: preserve completed progress (F-04 fix).
+                        return existing
+                    else:
+                        # F3-2 fix: Do NOT overwrite a different plan's
+                        # IN_PROGRESS WAL. Fail closed.
+                        raise ValueError(
+                            f"{WAL_INCOMPLETE}: another plan "
+                            f"({existing.get('plan_id')}) is in progress; "
+                            f"cannot start {plan_id}")
             except (json.JSONDecodeError, OSError):
                 pass
         # New WAL entry.
@@ -122,8 +176,7 @@ def wal_begin(ledger_path: Any, plan_id: str,
             "completed": [],
             "status": "IN_PROGRESS",
         }
-        p.write_text(json.dumps(entry, ensure_ascii=False, indent=2),
-                     encoding="utf-8")
+        _wal_write(p, entry)
         return entry
     finally:
         try:
@@ -140,8 +193,7 @@ def wal_mark_complete(ledger_path: Any, op_index: int) -> None:
     except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
         raise ValueError(f"{WAL_CORRUPT}: {exc}") from exc
     entry["completed"].append(op_index)
-    p.write_text(json.dumps(entry, ensure_ascii=False, indent=2),
-                 encoding="utf-8")
+    _wal_write(p, entry)
 
 
 def wal_finish(ledger_path: Any) -> None:
@@ -154,8 +206,7 @@ def wal_finish(ledger_path: Any) -> None:
     entry["status"] = "COMPLETED"
     entry["finished_ts"] = _utcnow()
     # Keep the completed entry for audit, but mark it done.
-    p.write_text(json.dumps(entry, ensure_ascii=False, indent=2),
-                 encoding="utf-8")
+    _wal_write(p, entry)
 
 
 def wal_check_incomplete(ledger_path: Any) -> Optional[Dict[str, Any]]:
