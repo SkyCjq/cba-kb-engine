@@ -115,3 +115,60 @@ def test_wire_emits_ledger_events(paths):
     actions = [json.loads(ln)["action"] for ln in lines]
     assert "drive_identity_revision_linked" in actions
     assert "drive_identity_duplicate" in actions
+
+
+# ---------------- Q2-R1 FAIL regressions (F-01, F-02)
+
+def test_f01_semantically_corrupt_dedup_entry_rejected(paths):
+    """F-01: a valid-JSON dedup index with a structurally broken entry must
+    fail closed, not be treated as a duplicate."""
+    paths["dedup"].write_text(json.dumps({
+        "version": 1, "kind": "dedup_index",
+        "entries": {"native_doc_json:abc": {}},
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="IDENTITY_STORE_CORRUPT"):
+        di.load_dedup_index(paths["dedup"])
+
+
+def test_f01_kind_mismatch_rejected(paths):
+    paths["dedup"].write_text(json.dumps({
+        "version": 1, "kind": "revision_history", "entries": {},
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="IDENTITY_STORE_CORRUPT"):
+        di.load_dedup_index(paths["dedup"])
+
+
+def test_f01_malformed_revision_chain_rejected(paths):
+    paths["history"].write_text(json.dumps({
+        "version": 1, "kind": "revision_history",
+        "entries": {"s1": [{"revision": 1}]},  # missing doc_id
+        "sealed": {},
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="IDENTITY_STORE_CORRUPT"):
+        di.load_revision_history(paths["history"])
+
+
+def test_f02_evicted_revision_still_conflict_checked(paths):
+    """F-02: after capacity eviction, a conflicting remap of an evicted
+    revision must still raise REVISION_IDENTITY_CONFLICT."""
+    history = di.load_revision_history(paths["history"])
+    for i in range(di.MAX_HISTORY_PER_SOURCE + 1):
+        di.append_revision(history, "s1", i, f"d{i}", "t")
+    # Revision 0 was evicted from the active chain but sealed.
+    assert len(history["entries"]["s1"]) == di.MAX_HISTORY_PER_SOURCE
+    assert "s1" in history["sealed"]
+    # Same doc_id for the evicted revision is idempotent (no raise).
+    di.append_revision(history, "s1", 0, "d0", "t")
+    # A conflicting doc_id for the evicted revision must raise.
+    with pytest.raises(ValueError, match="REVISION_IDENTITY_CONFLICT"):
+        di.append_revision(history, "s1", 0, "conflicting_doc", "t")
+
+
+def test_f02_sealed_survives_save_reload(paths):
+    history = di.load_revision_history(paths["history"])
+    for i in range(di.MAX_HISTORY_PER_SOURCE + 1):
+        di.append_revision(history, "s1", i, f"d{i}", "t")
+    di.save_revision_history(paths["history"], history)
+    history2 = di.load_revision_history(paths["history"])
+    with pytest.raises(ValueError, match="REVISION_IDENTITY_CONFLICT"):
+        di.append_revision(history2, "s1", 0, "conflicting_doc", "t")

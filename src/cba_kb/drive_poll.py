@@ -361,8 +361,11 @@ def poll_once(
                             new_record[key] = prev[key]
                 # Slice 4: wire content identity (dedup + revision chain).
                 # A revision conflict raises here -> the file is counted as
-                # failed (no silent remap), and the change is NOT marked
-                # processed so the operator can intervene.
+                # failed (no silent remap). The change IS marked processed
+                # (it will not retry); the POLL_FILE_FAILED ledger event
+                # carries the conflict for operator review. The registry
+                # keeps the last good mapping; the conflicting remap is
+                # never applied.
                 identity = wire_identity(
                     dedup_index=dedup_index,
                     revision_history=revision_history,

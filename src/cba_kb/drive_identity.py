@@ -13,11 +13,15 @@ poll paths:
   Appends are idempotent for the same (revision, doc_id); a conflicting
   doc_id for the same (source_id, revision) raises
   ``REVISION_IDENTITY_CONFLICT`` (fail-closed) instead of silently keeping
-  the old mapping.
+  the old mapping. The active chain is capped; evicted revisions move to a
+  ``sealed`` map that keeps enforcing conflict detection — eviction never
+  drops the identity binding.
 
 Both stores are JSON files persisted atomically. Corrupt files fail closed
-(refuse to load) instead of guessing. Ledger events record dedup decisions
-and revision links for audit.
+(refuse to load) instead of guessing; this includes structurally invalid
+records (missing fields, kind mismatch, malformed chains), not just
+unparseable JSON. Ledger events record dedup decisions and revision links
+for audit.
 
 Digest trust: dedup only applies to verified digests (metadata-claimed md5
 for byte files without --verify-bytes, SHA-256 over canonical Doc JSON for
@@ -47,18 +51,94 @@ MAX_HISTORY_PER_SOURCE = 1000
 # ---------------------------------------------------------------- stores
 
 def _load_store(path: Path, kind: str) -> Dict[str, Any]:
-    """Load a JSON identity store, fail-closed on corruption."""
+    """Load a JSON identity store, fail-closed on corruption.
+
+    Validates not just the envelope (version, entries-is-dict) but the
+    structure of every record. A semantically corrupt entry (e.g. a dedup
+    record missing ``canonical_file_id``) is rejected — it must never be
+    silently interpreted as a duplicate or a clean history.
+    """
     if not path.exists():
-        return {"version": STORE_VERSION, "kind": kind, "entries": {}}
+        data: Dict[str, Any] = {"version": STORE_VERSION, "kind": kind,
+                                "entries": {}}
+        if kind == "revision_history":
+            data["sealed"] = {}
+        return data
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
         raise ValueError(f"{IDENTITY_CORRUPT}: {path}: {exc}") from exc
     if not isinstance(data, dict) or data.get("version") != STORE_VERSION:
         raise ValueError(f"{IDENTITY_CORRUPT}: {path}: bad version/shape")
-    if not isinstance(data.get("entries"), dict):
+    if data.get("kind") != kind:
+        raise ValueError(f"{IDENTITY_CORRUPT}: {path}: kind mismatch "
+                         f"(expected {kind!r}, got {data.get('kind')!r})")
+    entries = data.get("entries")
+    if not isinstance(entries, dict):
         raise ValueError(f"{IDENTITY_CORRUPT}: {path}: entries not a dict")
+    if kind == "dedup_index":
+        _validate_dedup_entries(path, entries)
+    elif kind == "revision_history":
+        sealed = data.get("sealed", {})
+        _validate_revision_entries(path, entries, sealed)
+        data["sealed"] = sealed
     return data
+
+
+def _validate_dedup_entries(path: Path, entries: Dict[str, Any]) -> None:
+    for key, entry in entries.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"{IDENTITY_CORRUPT}: {path}: dedup entry "
+                             f"{key!r} not a dict")
+        for field in ("canonical_file_id", "digest_kind", "digest",
+                      "first_seen_ts"):
+            if not isinstance(entry.get(field), str) or not entry[field]:
+                raise ValueError(f"{IDENTITY_CORRUPT}: {path}: dedup entry "
+                                 f"{key!r} missing/invalid {field!r}")
+        file_ids = entry.get("file_ids")
+        if (not isinstance(file_ids, list) or not file_ids
+                or not all(isinstance(f, str) for f in file_ids)):
+            raise ValueError(f"{IDENTITY_CORRUPT}: {path}: dedup entry "
+                             f"{key!r} has invalid file_ids")
+        if entry["canonical_file_id"] not in file_ids:
+            raise ValueError(f"{IDENTITY_CORRUPT}: {path}: dedup entry "
+                             f"{key!r} canonical not in file_ids")
+
+
+def _revision_key(revision: Any) -> str:
+    """Canonical key distinguishing 1 from '1' for sealed conflict lookup."""
+    return json.dumps(revision, sort_keys=True, ensure_ascii=False)
+
+
+def _validate_revision_entries(path: Path, entries: Dict[str, Any],
+                               sealed: Any) -> None:
+    if not isinstance(sealed, dict):
+        raise ValueError(f"{IDENTITY_CORRUPT}: {path}: sealed not a dict")
+    for source_id, chain in entries.items():
+        if not isinstance(chain, list):
+            raise ValueError(f"{IDENTITY_CORRUPT}: {path}: revision chain "
+                             f"for {source_id!r} not a list")
+        for item in chain:
+            if not isinstance(item, dict):
+                raise ValueError(f"{IDENTITY_CORRUPT}: {path}: revision "
+                                 f"item for {source_id!r} not a dict")
+            if "revision" not in item:
+                raise ValueError(f"{IDENTITY_CORRUPT}: {path}: revision "
+                                 f"item for {source_id!r} missing revision")
+            if not isinstance(item.get("doc_id"), str) or not item["doc_id"]:
+                raise ValueError(f"{IDENTITY_CORRUPT}: {path}: revision "
+                                 f"item for {source_id!r} has invalid doc_id")
+            if not isinstance(item.get("ts"), str):
+                raise ValueError(f"{IDENTITY_CORRUPT}: {path}: revision "
+                                 f"item for {source_id!r} has invalid ts")
+    for source_id, mapping in sealed.items():
+        if not isinstance(mapping, dict):
+            raise ValueError(f"{IDENTITY_CORRUPT}: {path}: sealed mapping "
+                             f"for {source_id!r} not a dict")
+        for rev_key, doc_id in mapping.items():
+            if not isinstance(rev_key, str) or not isinstance(doc_id, str):
+                raise ValueError(f"{IDENTITY_CORRUPT}: {path}: sealed entry "
+                                 f"for {source_id!r} malformed")
 
 
 def _save_store(path: Path, data: Dict[str, Any]) -> None:
@@ -171,8 +251,14 @@ def append_revision(
     ``ValueError(REVISION_IDENTITY_CONFLICT)`` if the same (source_id,
     revision) already maps to a different doc_id — fail-closed, never
     silently keeps the old mapping.
+
+    The active chain is capped at ``MAX_HISTORY_PER_SOURCE``; evicted
+    revisions move to a ``sealed`` map (revision -> doc_id) that keeps
+    enforcing conflict detection. Eviction never silently drops the
+    identity binding.
     """
     entries = history["entries"]
+    sealed = history.setdefault("sealed", {})
     chain = entries.setdefault(source_id, [])
     for item in chain:
         if item.get("revision") == revision:
@@ -182,8 +268,22 @@ def append_revision(
                     f"revision {revision!r} already maps to "
                     f"{item.get('doc_id')!r}, cannot remap to {doc_id!r}")
             return chain
+    # Also check evicted (sealed) revisions: the binding survives eviction.
+    sealed_map = sealed.setdefault(source_id, {})
+    rev_key = _revision_key(revision)
+    if rev_key in sealed_map:
+        if sealed_map[rev_key] != doc_id:
+            raise ValueError(
+                f"{REVISION_IDENTITY_CONFLICT}: source {source_id!r} "
+                f"revision {revision!r} (sealed) already maps to "
+                f"{sealed_map[rev_key]!r}, cannot remap to {doc_id!r}")
+        return chain
     chain.append({"revision": revision, "doc_id": doc_id, "ts": ts})
     if len(chain) > MAX_HISTORY_PER_SOURCE:
+        # Evict oldest into sealed (never delete the binding).
+        for evicted in chain[:-MAX_HISTORY_PER_SOURCE]:
+            sealed_map.setdefault(_revision_key(evicted["revision"]),
+                                  evicted["doc_id"])
         del chain[:-MAX_HISTORY_PER_SOURCE]
     return chain
 
