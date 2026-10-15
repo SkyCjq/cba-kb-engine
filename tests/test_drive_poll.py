@@ -449,3 +449,126 @@ def test_tombstone_clears_rights_grant(env):
     assert registry["a"]["verify_status"] == "FILE_REMOVED"
     assert "rights_grant" not in registry["a"]
     assert registry["a"]["rights_status"] == "review"
+
+
+# --------------------------------------- init vs recovery ledger matrix
+
+class CountingSource(FakeSource):
+    """FakeSource that counts remote calls."""
+
+    def __init__(self):
+        super().__init__()
+        self.get_start_token_calls = 0
+        self.list_changes_calls = 0
+
+    def get_start_token(self):
+        self.get_start_token_calls += 1
+        return super().get_start_token()
+
+    def list_changes(self, since_token):
+        self.list_changes_calls += 1
+        return super().list_changes(since_token)
+
+
+def _valid_ledger_line(action="drive_poll_started"):
+    return json.dumps({
+        "ts": "2026-10-15T00:00:00+00:00", "actor": "muse", "action": action,
+        "prev_state": "IDLE", "new_state": "WATCHING",
+        "evidence_ref": "x", "policy_version": "test",
+        "operator": "muse", "approval_ref": "", "retry_count": 0,
+        "note": "n",
+    }, ensure_ascii=False) + "\n"
+
+
+def test_init_no_state_no_ledger(env):
+    source, drive = CountingSource(), FakeDrive({})
+    out = dp.poll_once(source, drive, registry_path=env["registry"],
+                       ledger_path=env["ledger"], state_path=env["state"])
+    assert out["initialized"] is True
+    assert source.get_start_token_calls == 1
+
+
+def test_init_no_state_empty_ledger(env):
+    env["ledger"].write_text("", encoding="utf-8")
+    source, drive = CountingSource(), FakeDrive({})
+    out = dp.poll_once(source, drive, registry_path=env["registry"],
+                       ledger_path=env["ledger"], state_path=env["state"])
+    assert out["initialized"] is True
+
+
+def test_init_no_state_valid_ledger(env):
+    env["ledger"].write_text(_valid_ledger_line(), encoding="utf-8")
+    source, drive = CountingSource(), FakeDrive({})
+    out = dp.poll_once(source, drive, registry_path=env["registry"],
+                       ledger_path=env["ledger"], state_path=env["state"])
+    assert out["initialized"] is True
+    # The valid prior content is preserved; init appends after it.
+    lines = env["ledger"].read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+
+
+def test_init_no_state_corrupt_ledger_zero_side_effects(env):
+    """Q2-R3 Blocker: corrupt ledger + no state must refuse with ZERO side
+    effects — no remote calls, no state file, ledger bytes unchanged."""
+    corrupt = b"{incomplete"
+    env["ledger"].write_bytes(corrupt)
+    source, drive = CountingSource(), FakeDrive({})
+    with pytest.raises(DriveDiscoveryError, match="POLL_LEDGER_CORRUPT"):
+        dp.poll_once(source, drive, registry_path=env["registry"],
+                     ledger_path=env["ledger"], state_path=env["state"])
+    assert source.get_start_token_calls == 0
+    assert source.list_changes_calls == 0
+    assert not env["state"].exists()
+    assert env["ledger"].read_bytes() == corrupt
+    assert not env["registry"].exists()
+
+
+def test_init_no_state_json_damaged_ledger_zero_side_effects(env):
+    """Ledger with newline but broken JSON: same zero-side-effect refusal."""
+    corrupt = b'{"ts": "x"}\n{broken\n'
+    env["ledger"].write_bytes(corrupt)
+    source, drive = CountingSource(), FakeDrive({})
+    with pytest.raises(DriveDiscoveryError, match="POLL_LEDGER_CORRUPT"):
+        dp.poll_once(source, drive, registry_path=env["registry"],
+                     ledger_path=env["ledger"], state_path=env["state"])
+    assert source.get_start_token_calls == 0
+    assert source.list_changes_calls == 0
+    assert not env["state"].exists()
+    assert env["ledger"].read_bytes() == corrupt
+
+
+def test_recovery_corrupt_ledger_still_fails_closed(env):
+    source, drive = CountingSource(), FakeDrive({})
+    dp.poll_once(source, drive, registry_path=env["registry"],
+                 ledger_path=env["ledger"], state_path=env["state"])
+    token_before = json.loads(env["state"].read_text(encoding="utf-8"))["page_token"]
+    env["ledger"].write_bytes(b"{incomplete")
+    with pytest.raises(DriveDiscoveryError, match="POLL_LEDGER_CORRUPT"):
+        dp.poll_once(source, drive, registry_path=env["registry"],
+                     ledger_path=env["ledger"], state_path=env["state"])
+    assert source.list_changes_calls == 0
+    token_after = json.loads(env["state"].read_text(encoding="utf-8"))["page_token"]
+    assert token_after == token_before
+    assert env["ledger"].read_bytes() == b"{incomplete"
+
+
+def test_recovery_valid_ledger_polls_normally(env):
+    source = CountingSource()
+    drive = FakeDrive({"f1": _file_meta("f1")})
+    dp.poll_once(source, drive, registry_path=env["registry"],
+                 ledger_path=env["ledger"], state_path=env["state"])
+    source.add_change("f1")
+    out = dp.poll_once(source, drive, registry_path=env["registry"],
+                       ledger_path=env["ledger"], state_path=env["state"])
+    assert out["counts"]["processed"] == 1
+    assert source.list_changes_calls == 1
+
+
+def test_corrupt_state_never_polls(env):
+    env["state"].write_text("{bad", encoding="utf-8")
+    source, drive = CountingSource(), FakeDrive({})
+    with pytest.raises(ValueError, match="POLL_STATE_CORRUPT"):
+        dp.poll_once(source, drive, registry_path=env["registry"],
+                     ledger_path=env["ledger"], state_path=env["state"])
+    assert source.get_start_token_calls == 0
+    assert source.list_changes_calls == 0

@@ -229,6 +229,19 @@ def poll_once(
     state_file = Path(state_path)
     started_ts = _utcnow()
 
+    # Q2-R3 Blocker: the ledger check is a COMMON pre-check for EVERY
+    # poll_once path — init and recovery alike. It runs before any remote
+    # call (get_start_token/list_changes) and before any state/ledger/
+    # registry write. A missing ledger is fine (first poll); a corrupt one
+    # refuses the poll with zero side effects.
+    if ledger.exists():
+        try:
+            read_ledger_events(ledger, strict=True)
+        except ValueError as exc:
+            raise DriveDiscoveryError(
+                "POLL_LEDGER_CORRUPT", file_id=None,
+                detail=f"refusing to poll: {exc}") from exc
+
     state = _load_state(state_file)
     if state is None:
         token = source.get_start_token()
@@ -246,16 +259,6 @@ def poll_once(
         })
         return {"initialized": True, "page_token": token,
                 "started_ts": started_ts}
-
-    # Q2-R2 Blocker 3: never append to a corrupt ledger. Validate the tail
-    # before the poll touches it; a missing ledger is fine (first poll).
-    if ledger.exists():
-        try:
-            read_ledger_events(ledger, strict=True)
-        except ValueError as exc:
-            raise DriveDiscoveryError(
-                "POLL_LEDGER_CORRUPT", file_id=None,
-                detail=f"refusing to poll: {exc}") from exc
 
     append_ledger(ledger, {
         "ts": started_ts, "actor": actor, "action": POLL_STARTED,
