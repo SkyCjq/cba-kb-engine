@@ -204,6 +204,17 @@ E2E requires an authorized isolated test Drive and has not run yet;
 Production Activation and whole-version completion are separate Human
 decisions tracked in the 65-item delivery matrix.
 
+In development (2.0.4-2 slice 2 — pending independent Q2 and Human merge;
+not released): guarded Drive search
+(`cba-kb drive-search --registry … --query …`) — results contain only
+access-verified + explicitly rights-approved objects; everything else is
+excluded with an exact reason. Rights are granted per file by an explicit,
+ledger-recorded operator action
+(`cba-kb drive-grant --registry … --ledger … --file-id … --approver …`);
+there is no automatic approval path. Companion hardening: cross-file
+content-dedup identity and per-source revision chains
+(`src/cba_kb/drive_search.py`).
+
 ## 7. Semantic Principles
 
 - **Separation of Concerns**: Statements represent what was said; Claims represent asserted hypotheses; Facts represent canonical audited league records.
