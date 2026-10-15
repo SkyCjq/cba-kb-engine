@@ -180,6 +180,12 @@ Source/Document 身份、写持久 JSONL ledger。永不写入 Drive。
 任何调用者都不可见。索引只存词项和标题（不存正文）；损坏的索引拒绝加
 载。注意：索引关键词来自文档文本，词项存在性在索引文件中天然可见。
 
+**Drive 计划**（`cba-kb drive-plan-create` / `drive-plan-approve` /
+`cba-kb drive-plan-apply` / `drive-plan-verify`）——本地维护操作的受控
+工作流（索引重建、tombstone 清理、索引授权撤销）。计划用 SHA 寻址且不
+可变；执行需明确的人工批准（ledger 留痕）；独立回读验证结果。所有操作
+均为本地操作，不写入 Drive。
+
 **Drive 轮询**（`cba-kb drive-poll --registry … --ledger … --state …`）——
 持续监听 Drive 变化，增量更新发现 registry。崩溃安全：整批处理完成后
 才推进检查点；重启后恢复不丢失已处理工作。重复内容通过持久化摘要

@@ -204,6 +204,13 @@ stores terms and titles only (no body text); a corrupt index refuses to
 load. Note: indexed keywords are derived from document text, so term
 presence is inherently visible in the index file.
 
+**Drive plan** (`cba-kb drive-plan-create` / `drive-plan-approve` /
+`drive-plan-apply` / `drive-plan-verify`) — guarded workflow for local
+maintenance operations (index rebuild, tombstone purge, index grant
+revoke). Plans are SHA-addressed and immutable; apply requires explicit
+human approval (ledger-recorded); independent readback verifies the
+result. All operations are local; no Drive writes.
+
 **Drive poll** (`cba-kb drive-poll --registry … --ledger … --state …`) —
 watches for Drive changes and incrementally updates the discovery registry.
 Crash-safe: the checkpoint advances only after a batch is fully processed;
