@@ -204,6 +204,13 @@ E2E requires an authorized isolated test Drive and has not run yet;
 Production Activation and whole-version completion are separate Human
 decisions tracked in the 65-item delivery matrix.
 
+In development (pending independent Q2 and Human merge): **Drive search**
+— `cba-kb drive-search --registry … --query …` finds files by name; only
+access-verified + explicitly approved files appear as results, everything
+else is excluded with an exact reason. Approve a file with
+`cba-kb drive-grant --registry … --ledger … --file-id … --approver …`
+(ledger-recorded, no automatic approvals).
+
 ## 7. Semantic Principles
 
 - **Separation of Concerns**: Statements represent what was said; Claims represent asserted hypotheses; Facts represent canonical audited league records.

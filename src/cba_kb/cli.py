@@ -69,6 +69,18 @@ def main():
     q.add_argument('--registry',type=Path,default=None)
     q.add_argument('--verify-bytes',action='store_true')
     q.add_argument('--max-bytes-mb',type=float,default=64.0)
+    q=sub.add_parser('drive-search')
+    q.add_argument('--registry',type=Path,required=True)
+    q.add_argument('--query',required=True)
+    q.add_argument('--include-review',action='store_true')
+    q.add_argument('--mime-prefix',default=None)
+    q.add_argument('--limit',type=int,default=50)
+    q=sub.add_parser('drive-grant')
+    q.add_argument('--registry',type=Path,required=True)
+    q.add_argument('--ledger',type=Path,required=True)
+    q.add_argument('--file-id',required=True)
+    q.add_argument('--approver',required=True)
+    q.add_argument('--note',default='')
     q=sub.add_parser('document-ingest')
     q.add_argument('--capture-channel',choices=(
         'wechat_browser_clip','ima_file_export','local_file','google_drive_doc'))
@@ -426,6 +438,20 @@ def main():
                 drive, a.folder_id.strip(), ledger_path=a.ledger,
                 registry_path=a.registry, verify_bytes=a.verify_bytes,
                 max_bytes=int(a.max_bytes_mb*1024*1024))
+        elif a.command=='drive-search':
+            from .drive_search import load_registry, search_drive_registry
+            result=search_drive_registry(
+                load_registry(a.registry), a.query,
+                include_review=a.include_review, mime_prefix=a.mime_prefix,
+                limit=a.limit)
+        elif a.command=='drive-grant':
+            # Guarded rights grant: explicit approver, ledger-recorded.
+            if not (a.approver or '').strip():
+                raise ValueError('APPROVER_REQUIRED')
+            from .drive_search import grant_rights
+            result=grant_rights(
+                a.registry, a.ledger, a.file_id.strip(),
+                approver=a.approver.strip(), note=a.note)
         elif a.command in {'document-ingest','document-batch'}:
             from .document_lane import DocumentLane
             if a.command=='document-ingest' and not a.capture_channel:
