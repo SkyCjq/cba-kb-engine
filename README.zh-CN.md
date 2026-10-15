@@ -165,8 +165,11 @@ cba-kb --instance-root /tmp/cbakb-demo archive-query --title "Synthetic CBA Bull
 - SCOPED：公开搜索已延期。处理失败不会解链来源（保留链接以供恢复/审计）。
   残余风险：任何真实暴露前仍需人工权利审查。
 
-PR-1 不包含（仍属 v2.0.4 后续工作）：Drive 侧发现与适配器、受控归档
-移动/保留、完整跨后端恢复、Production 发布。
+PR-1 之后已交付（2.0.4-2 slice 1）：Drive 只读发现
+（`cba-kb drive-discover --folder-id ... --ledger ...`）——文件夹枚举、
+访问/内容/版本核验、带去重与修订处理的 Source/Document 身份、持久 JSONL
+ledger。该命令永不写入 Drive。仍属 v2.0.4 后续工作：受控归档移动/保留、
+完整跨后端恢复、Production 发布。
 
 ## 7. 语义原则
 

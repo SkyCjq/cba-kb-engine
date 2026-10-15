@@ -185,9 +185,12 @@ Security constraints (fail-closed by default):
   Residual risk: human rights clearance is still required before any
   real-world exposure.
 
-Not in PR-1 (remains v2.0.4 follow-up work): Drive-backed discovery and
-adapters, guarded archive move/retain, full cross-backend recovery,
-Production release.
+Delivered after PR-1 (2.0.4-2 slice 1): read-only Drive discovery
+(`cba-kb drive-discover --folder-id ... --ledger ...`) — folder listing,
+access/content/version verification, Source/Document identity with
+duplicate/revision handling, and a durable JSONL ledger. It never writes to
+Drive. Remains v2.0.4 follow-up work: guarded archive move/retain, full
+cross-backend recovery, Production release.
 
 ## 7. Semantic Principles
 
