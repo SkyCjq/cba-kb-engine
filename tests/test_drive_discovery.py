@@ -790,6 +790,13 @@ def test_run_discovery_finished_event_failure_leaves_registry_untouched(
 
 # ================================================== Q2-R2 Finding 2: scope exactness
 
+def test_rights_scope_missing_is_denied():
+    grant = _grant()
+    del grant["scope"]
+    status, reason = decide_drive_rights({"file_id": "f1"}, grants={"f1": grant})
+    assert (status, reason) == ("review", "DRIVE_RIGHTS_UNVERIFIED")
+
+
 def test_rights_scope_substring_lookalikes_are_denied():
     for scope in ("not-drive:read", "drive:read:no", "drive:readwrite",
                   "xdrive:read", "DRIVE:READ"):

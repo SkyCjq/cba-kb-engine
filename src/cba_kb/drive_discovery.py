@@ -427,15 +427,13 @@ def _grant_not_expired(grant: Dict[str, Any]) -> bool:
 def _scope_covers(scope: Any) -> bool:
     """Exact scope matching — never substring.
 
-    ``scope`` may be absent (None: no constraint expressed), one exact scope
-    string, or a collection of exact scope strings. A grant covers the
-    discovery read path only when an exact ``"drive:read"`` (or the wildcard
-    ``"*"``) is present. Anything else — including non-string scalars such as
-    ``42``, dicts, or substring lookalikes like ``"not-drive:read"`` — fails
-    closed to False (never raises, never approves).
+    ``scope`` is required: it must be one exact scope string or a collection
+    of exact scope strings. A grant covers the discovery read path only when
+    an exact ``"drive:read"`` (or the wildcard ``"*"``) is present. Anything
+    else — absent (None), non-string scalars such as ``42``, dicts, or
+    substring lookalikes like ``"not-drive:read"`` — fails closed to False
+    (never raises, never approves).
     """
-    if scope is None:
-        return True
     if isinstance(scope, str):
         return scope in ("drive:read", "*")
     if isinstance(scope, (list, tuple, set, frozenset)):
@@ -455,7 +453,7 @@ def _valid_grant_record(obj: Dict[str, Any], grant: Any) -> bool:
     and NONE of:
     - ``revoked``: True;
     - ``expires_at``: present and not in the future;
-    - ``scope``: present and without an exact ``"drive:read"`` (or ``"*"``)
+    - ``scope``: missing, or without an exact ``"drive:read"`` (or ``"*"``)
       entry — substring lookalikes and non-string values never match.
     ``ACCESS_VERIFIED`` (a content-verification outcome) and a rights grant
     (an authorization decision) are never derived from each other.
