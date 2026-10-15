@@ -186,6 +186,10 @@ Source/Document 身份、写持久 JSONL ledger。永不写入 Drive。
 可变；执行需明确的人工批准（ledger 留痕）；独立回读验证结果。所有操作
 均为本地操作，不写入 Drive。
 
+**Drive 弹性**——本地状态的并发控制与崩溃恢复。文件锁防止并发修改；
+预写日志（WAL）检测崩溃的执行；操作带超时（fail-closed）；所有计划
+操作幂等，可安全重试。
+
 **Drive 轮询**（`cba-kb drive-poll --registry … --ledger … --state …`）——
 持续监听 Drive 变化，增量更新发现 registry。崩溃安全：整批处理完成后
 才推进检查点；重启后恢复不丢失已处理工作。重复内容通过持久化摘要

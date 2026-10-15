@@ -45,6 +45,7 @@ PLAN_CORRUPT = "PLAN_CORRUPT"
 PLAN_NOT_APPROVED = "PLAN_NOT_APPROVED"
 PLAN_ALREADY_APPROVED = "PLAN_ALREADY_APPROVED"
 PLAN_PRECONDITION_FAILED = "PLAN_PRECONDITION_FAILED"
+WAL_INCOMPLETE = "WAL_INCOMPLETE"
 
 
 def _utcnow() -> str:
@@ -270,12 +271,20 @@ def _approval_verified(plan: Dict[str, Any], ledger_path: Any) -> bool:
 
 def apply_plan(plan_path: Any, ledger_path: Any,
                ctx: Optional[Dict[str, Any]] = None,
-               actor: str = "muse") -> Dict[str, Any]:
+               actor: str = "muse",
+               resilient: bool = False,
+               timeout_s: float = 30.0) -> Dict[str, Any]:
     """Execute an approved plan, op by op. Fail-closed if not approved.
 
     Approval is verified via the ledger: the plan must have a matching
     ``drive_plan_approved`` event. A hand-written ``approval`` dict in the
     plan JSON (forged, not via ``approve_plan``) is rejected.
+
+    If ``resilient`` is True, uses WAL + file locking + timeout:
+    - WAL records intent before execution; crash recovery via
+      ``wal_check_incomplete``.
+    - File locks prevent concurrent modification.
+    - Each op runs with a timeout (fail-closed).
 
     Returns {"plan_id": ..., "completed": [...], "failed": None | {...}}.
     Each operation is ledger-recorded. On failure, aborts and records
@@ -289,6 +298,22 @@ def apply_plan(plan_path: Any, ledger_path: Any,
                          f"ledger (forged approval rejected)")
     ctx = ctx or {}
     completed = []
+
+    # Resilient mode: WAL + locking.
+    wal_entry = None
+    if resilient:
+        from .drive_resilience import (file_lock, run_with_timeout,
+                                       wal_begin, wal_finish,
+                                       wal_mark_complete)
+        # Check for incomplete previous apply (crash recovery).
+        from .drive_resilience import wal_check_incomplete
+        incomplete = wal_check_incomplete(ledger_path)
+        if incomplete and incomplete.get("plan_id") != plan["plan_id"]:
+            raise ValueError(f"{WAL_INCOMPLETE}: previous apply of "
+                             f"{incomplete.get('plan_id')} did not finish")
+        wal_entry = wal_begin(ledger_path, plan["plan_id"],
+                              plan["operations"])
+
     for i, op in enumerate(plan["operations"]):
         op_name = op["op"]
         handler = _OP_HANDLERS.get(op_name)
@@ -296,7 +321,24 @@ def apply_plan(plan_path: Any, ledger_path: Any,
             raise ValueError(f"PLAN_UNKNOWN_OP: {op_name}")
         ts = _utcnow()
         try:
-            result = handler(op.get("params", {}), ctx)
+            if resilient:
+                # Lock + timeout for each operation.
+                lock_targets = []
+                params = op.get("params", {})
+                for key in ("registry", "index"):
+                    if params.get(key):
+                        lock_targets.append(params[key])
+                result = None
+                # Acquire all locks (in sorted order to avoid deadlock).
+                from contextlib import ExitStack
+                with ExitStack() as stack:
+                    for target in sorted(set(lock_targets)):
+                        stack.enter_context(file_lock(target))
+                    result = run_with_timeout(
+                        lambda: handler(params, ctx), timeout_s)
+                wal_mark_complete(ledger_path, i)
+            else:
+                result = handler(op.get("params", {}), ctx)
             completed.append({"op": op_name, "index": i, "result": result})
             append_ledger(ledger_path, {
                 "ts": ts, "actor": actor, "action": "drive_plan_op_applied",
@@ -324,6 +366,9 @@ def apply_plan(plan_path: Any, ledger_path: Any,
                     "failed": {"op": op_name, "index": i,
                                "error": str(exc)}}
     # All ops completed.
+    if resilient and wal_entry is not None:
+        from .drive_resilience import wal_finish
+        wal_finish(ledger_path)
     append_ledger(ledger_path, {
         "ts": _utcnow(), "actor": actor, "action": "drive_plan_applied",
         "prev_state": "APPLYING", "new_state": "APPLIED",
