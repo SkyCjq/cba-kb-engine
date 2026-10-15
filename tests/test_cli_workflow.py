@@ -23,10 +23,12 @@ def run_cli(*args, cwd=None, env=None):
     full_env = {**os.environ}
     if env:
         full_env.update(env)
+    # Portable: repo root derived from this test file, not hardcoded.
+    repo_root = str(Path(__file__).resolve().parent.parent)
     proc = subprocess.run(
         CLI + list(args),
         capture_output=True, text=True, timeout=30,
-        cwd=cwd or "/home/hatch/workspace/cba-kb-engine-2042",
+        cwd=cwd or repo_root,
         env={**full_env, "PYTHONPATH": "src"},
     )
     return proc.returncode, proc.stdout, proc.stderr
