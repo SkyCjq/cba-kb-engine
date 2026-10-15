@@ -196,6 +196,14 @@ everything else is excluded with an exact reason. Approve a file with
 `cba-kb drive-grant --registry … --ledger … --file-id … --approver …`
 (ledger-recorded, no automatic approvals).
 
+**Drive search index** (`cba-kb drive-build-index` /
+`cba-kb drive-search-index --principal …`) — persistent keyword index.
+Only documents with a valid `approved` grant are searchable; `private` /
+`review` / unapproved documents never appear, for any caller. The index
+stores terms and titles only (no body text); a corrupt index refuses to
+load. Note: indexed keywords are derived from document text, so term
+presence is inherently visible in the index file.
+
 **Drive poll** (`cba-kb drive-poll --registry … --ledger … --state …`) —
 watches for Drive changes and incrementally updates the discovery registry.
 Crash-safe: the checkpoint advances only after a batch is fully processed;

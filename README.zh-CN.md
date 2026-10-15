@@ -174,6 +174,12 @@ Source/Document 身份、写持久 JSONL ledger。永不写入 Drive。
 排除。用 `cba-kb drive-grant --registry … --ledger … --file-id … --approver …`
 批准文件（ledger 留痕，无自动批准）。
 
+**Drive 搜索索引**（`cba-kb drive-build-index` /
+`cba-kb drive-search-index --principal …`）——持久化关键词索引。只有持有
+有效 `approved` 授权的文档可被检索；`private` / `review` / 未授权文档对
+任何调用者都不可见。索引只存词项和标题（不存正文）；损坏的索引拒绝加
+载。注意：索引关键词来自文档文本，词项存在性在索引文件中天然可见。
+
 **Drive 轮询**（`cba-kb drive-poll --registry … --ledger … --state …`）——
 持续监听 Drive 变化，增量更新发现 registry。崩溃安全：整批处理完成后
 才推进检查点；重启后恢复不丢失已处理工作。重复内容通过持久化摘要
