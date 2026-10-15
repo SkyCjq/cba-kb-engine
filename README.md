@@ -211,6 +211,11 @@ revoke). Plans are SHA-addressed and immutable; apply requires explicit
 human approval (ledger-recorded); independent readback verifies the
 result. All operations are local; no Drive writes.
 
+**Drive resilience** — concurrency and crash recovery for local state.
+File locks prevent concurrent modification; a write-ahead log (WAL)
+detects crashed applies; operations run with timeouts (fail-closed);
+all plan operations are idempotent and safe to retry.
+
 **Drive poll** (`cba-kb drive-poll --registry … --ledger … --state …`) —
 watches for Drive changes and incrementally updates the discovery registry.
 Crash-safe: the checkpoint advances only after a batch is fully processed;

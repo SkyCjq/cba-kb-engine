@@ -45,6 +45,7 @@ PLAN_CORRUPT = "PLAN_CORRUPT"
 PLAN_NOT_APPROVED = "PLAN_NOT_APPROVED"
 PLAN_ALREADY_APPROVED = "PLAN_ALREADY_APPROVED"
 PLAN_PRECONDITION_FAILED = "PLAN_PRECONDITION_FAILED"
+WAL_INCOMPLETE = "WAL_INCOMPLETE"
 
 
 def _utcnow() -> str:
@@ -270,12 +271,20 @@ def _approval_verified(plan: Dict[str, Any], ledger_path: Any) -> bool:
 
 def apply_plan(plan_path: Any, ledger_path: Any,
                ctx: Optional[Dict[str, Any]] = None,
-               actor: str = "muse") -> Dict[str, Any]:
+               actor: str = "muse",
+               resilient: bool = False,
+               timeout_s: float = 30.0) -> Dict[str, Any]:
     """Execute an approved plan, op by op. Fail-closed if not approved.
 
     Approval is verified via the ledger: the plan must have a matching
     ``drive_plan_approved`` event. A hand-written ``approval`` dict in the
     plan JSON (forged, not via ``approve_plan``) is rejected.
+
+    If ``resilient`` is True, uses WAL + file locking + timeout:
+    - WAL records intent before execution; crash recovery via
+      ``wal_check_incomplete``.
+    - File locks prevent concurrent modification.
+    - Each op runs with a timeout (fail-closed).
 
     Returns {"plan_id": ..., "completed": [...], "failed": None | {...}}.
     Each operation is ledger-recorded. On failure, aborts and records
@@ -289,6 +298,14 @@ def apply_plan(plan_path: Any, ledger_path: Any,
                          f"ledger (forged approval rejected)")
     ctx = ctx or {}
     completed = []
+
+    # Resilient mode: delegate to _apply_plan_resilient which holds the
+    # execution lock for the entire duration (F3-1 fix).
+    if resilient:
+        return _apply_plan_resilient(plan_path, ledger_path, plan, ctx,
+                                     actor, timeout_s)
+
+    # Non-resilient mode: original logic.
     for i, op in enumerate(plan["operations"]):
         op_name = op["op"]
         handler = _OP_HANDLERS.get(op_name)
@@ -336,6 +353,112 @@ def apply_plan(plan_path: Any, ledger_path: Any,
     })
     plan["apply_log"] = completed
     save_plan(plan_path, plan)
+    return {"plan_id": plan["plan_id"], "completed": completed,
+            "failed": None}
+
+
+def _apply_plan_resilient(plan_path: Any, ledger_path: Any,
+                          plan: Dict[str, Any], ctx: Dict[str, Any],
+                          actor: str, timeout_s: float) -> Dict[str, Any]:
+    """Resilient apply with execution lock held for entire duration.
+
+    F3-1 fix: The execution lock ensures only one process can execute
+    a plan at a time. The WAL lock in wal_begin only protects check+begin;
+    without this execution lock, two processes could both pass wal_begin
+    and run concurrently.
+
+    F4 fix: Skips operations already marked complete in the WAL (resume).
+    """
+    from .drive_resilience import (file_lock, run_with_timeout,
+                                   wal_begin, wal_check_incomplete,
+                                   wal_finish, wal_mark_complete)
+    from contextlib import ExitStack
+
+    completed = []
+
+    # Execution lock: held for the ENTIRE apply duration.
+    with file_lock(str(ledger_path) + ".exec", timeout_s=10.0):
+        # Check for incomplete previous apply from a DIFFERENT plan.
+        incomplete = wal_check_incomplete(ledger_path)
+        if incomplete and incomplete.get("plan_id") != plan["plan_id"]:
+            raise ValueError(f"{WAL_INCOMPLETE}: previous apply of "
+                             f"{incomplete.get('plan_id')} did not finish")
+        wal_entry = wal_begin(ledger_path, plan["plan_id"],
+                              plan["operations"])
+        # F4: Get already-completed indices from WAL (resume).
+        already_done = set(wal_entry.get("completed", []))
+
+        for i, op in enumerate(plan["operations"]):
+            # F4 fix: Skip already-completed ops.
+            if i in already_done:
+                completed.append({"op": op["op"], "index": i,
+                                  "result": {"resumed": True}})
+                continue
+
+            op_name = op["op"]
+            handler = _OP_HANDLERS.get(op_name)
+            if handler is None:
+                raise ValueError(f"PLAN_UNKNOWN_OP: {op_name}")
+            ts = _utcnow()
+            try:
+                # Per-op file locks + timeout.
+                lock_targets = []
+                params = op.get("params", {})
+                for key in ("registry", "index"):
+                    if params.get(key):
+                        lock_targets.append(params[key])
+                with ExitStack() as stack:
+                    for target in sorted(set(lock_targets)):
+                        stack.enter_context(file_lock(target))
+                    result = run_with_timeout(
+                        lambda p=params: handler(p, ctx), timeout_s)
+                wal_mark_complete(ledger_path, i)
+                completed.append({"op": op_name, "index": i,
+                                  "result": result})
+                append_ledger(ledger_path, {
+                    "ts": ts, "actor": actor,
+                    "action": "drive_plan_op_applied",
+                    "prev_state": "APPROVED", "new_state": "APPLYING",
+                    "evidence_ref": str(plan_path),
+                    "policy_version": "2.0.4-2-slice6",
+                    "operator": plan["approval"]["approver"],
+                    "approval_ref": plan["plan_id"], "retry_count": 0,
+                    "note": f"op {i} ({op_name}) applied",
+                    "plan_id": plan["plan_id"], "op_index": i,
+                })
+            except Exception as exc:
+                append_ledger(ledger_path, {
+                    "ts": _utcnow(), "actor": actor,
+                    "action": "drive_plan_op_failed",
+                    "prev_state": "APPLYING", "new_state": "APPLY_FAILED",
+                    "evidence_ref": str(plan_path),
+                    "policy_version": "2.0.4-2-slice6",
+                    "operator": plan["approval"]["approver"],
+                    "approval_ref": plan["plan_id"], "retry_count": 0,
+                    "note": f"op {i} ({op_name}) failed: {exc}",
+                    "plan_id": plan["plan_id"], "op_index": i,
+                })
+                return {"plan_id": plan["plan_id"], "completed": completed,
+                        "failed": {"op": op_name, "index": i,
+                                   "error": str(exc)}}
+
+        # All ops completed. Final persistence BEFORE wal_finish (F2).
+        append_ledger(ledger_path, {
+            "ts": _utcnow(), "actor": actor, "action": "drive_plan_applied",
+            "prev_state": "APPLYING", "new_state": "APPLIED",
+            "evidence_ref": str(plan_path),
+            "policy_version": "2.0.4-2-slice6",
+            "operator": plan["approval"]["approver"],
+            "approval_ref": plan["plan_id"], "retry_count": 0,
+            "note": f"plan {plan['plan_id'][:12]} fully applied "
+                    f"({len(completed)} ops)",
+            "plan_id": plan["plan_id"],
+        })
+        plan["apply_log"] = completed
+        save_plan(plan_path, plan)
+        # WAL finish LAST, after all persistence is durable.
+        wal_finish(ledger_path)
+
     return {"plan_id": plan["plan_id"], "completed": completed,
             "failed": None}
 
