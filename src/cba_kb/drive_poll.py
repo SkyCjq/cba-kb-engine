@@ -1,23 +1,30 @@
 """Drive incremental poll: changes -> per-file discovery -> crash-safe checkpoint
 (2.0.4-2 slice 3, T2).
 
-Continuously watches a Drive scope for changes and incrementally updates the
-discovery registry. Crash-safe by construction:
+Watches a Drive scope for changes and incrementally updates the discovery
+registry. Crash recovery guarantees and their limits:
 
 - The change-source page token advances ONLY after the whole batch is
   processed. A crash mid-batch restarts from the old token; re-delivered
-  changes are idempotent (registry upsert by file_id; per-file ledger events
-  carry the change_id so duplicates are identifiable).
+  changes are safe: the registry upsert preserves local operator decisions
+  (rights grants survive re-discovery), and per-file ledger events carry the
+  change_id so any duplicates are identifiable.
 - Per-file durability ordering: the registry is atomically persisted BEFORE
   the per-file ledger event is appended, and both happen OUTSIDE the
   per-file error handler. A change_id is therefore treated as "processed"
   only after its registry update is durable. An infrastructure failure
   (disk/ledger) aborts the poll without advancing the token, so a retry
-  re-delivers the change — a crash can never silently lose it.
-- Per-file fail-closed: a PROCESSING error (bad data, unexpected verify
-  failure) is recorded in the ledger and counted; the poll continues
-  (partial success). Infrastructure errors abort instead of being
-  mislabeled as file failures.
+  re-delivers the change — a crash cannot silently lose it.
+- Per-file fail-closed: a PROCESSING error (bad data, unexpected failure) is
+  recorded in the ledger (POLL_FILE_FAILED) and counted; the poll continues
+  (partial success). The failure is NOT silent, but it is TERMINAL for that
+  change: it is not automatically retried. A later real change to the same
+  file re-triggers processing; otherwise operator intervention is needed.
+  Infrastructure errors abort instead of being mislabeled as file failures.
+- Residual risks: the processed-change-ID window is bounded (5000, oldest
+  evicted); re-delivery after eviction re-processes safely but may emit a
+  duplicate ledger event. A corrupt ledger or state file refuses the poll
+  (fail-closed) rather than guessing.
 
 The poller core is transport-agnostic: it works against a change source
 implementing ``get_start_token()`` / ``list_changes(since_token)``.
@@ -141,12 +148,23 @@ def _load_state(state_path: Path) -> Optional[Dict[str, Any]]:
         raise ValueError(f"{STATE_CORRUPT}: {state_path}: bad version/shape")
     if not state.get("page_token"):
         raise ValueError(f"{STATE_CORRUPT}: {state_path}: missing page_token")
+    # Q2-R2 Blocker 2: a dict's keys would silently become "processed" IDs.
+    # Reject any non-list-of-strings instead of guessing.
+    ids = state.get("processed_change_ids")
+    if ids is None:
+        state["processed_change_ids"] = []
+    elif not isinstance(ids, list) or \
+            not all(isinstance(i, str) for i in ids):
+        raise ValueError(
+            f"{STATE_CORRUPT}: {state_path}: processed_change_ids must be "
+            f"a list of strings")
     return state
 
 
 def _save_state(state_path: Path, state: Dict[str, Any]) -> None:
     state = dict(state, version=STATE_VERSION)
     ids = state.get("processed_change_ids") or []
+    # Insertion order = processing order; evict the OLDEST first.
     if len(ids) > MAX_PROCESSED_IDS:
         state["processed_change_ids"] = ids[-MAX_PROCESSED_IDS:]
     atomic(state_path,
@@ -158,7 +176,11 @@ def _save_state(state_path: Path, state: Dict[str, Any]) -> None:
 
 def _tombstone(known: Dict[str, Dict[str, Any]], file_id: str,
                change_id: str, ts: str) -> bool:
-    """Mark a removed file in the registry. Returns True if the entry existed."""
+    """Mark a removed file in the registry. Returns True if the entry existed.
+
+    The local rights grant is cleared: the file is gone, and a later
+    re-addition starts fresh (fail-closed; re-grant required).
+    """
     record = known.get(file_id)
     if record is None:
         return False
@@ -166,6 +188,9 @@ def _tombstone(known: Dict[str, Dict[str, Any]], file_id: str,
     record["verify_reason"] = "REMOVED_FROM_DRIVE"
     record["tombstoned_ts"] = ts
     record["tombstone_change_id"] = change_id
+    record.pop("rights_grant", None)
+    record["rights_status"] = "review"
+    record["rights_reason"] = "DRIVE_RIGHTS_UNVERIFIED"
     return True
 
 
@@ -222,6 +247,16 @@ def poll_once(
         return {"initialized": True, "page_token": token,
                 "started_ts": started_ts}
 
+    # Q2-R2 Blocker 3: never append to a corrupt ledger. Validate the tail
+    # before the poll touches it; a missing ledger is fine (first poll).
+    if ledger.exists():
+        try:
+            read_ledger_events(ledger, strict=True)
+        except ValueError as exc:
+            raise DriveDiscoveryError(
+                "POLL_LEDGER_CORRUPT", file_id=None,
+                detail=f"refusing to poll: {exc}") from exc
+
     append_ledger(ledger, {
         "ts": started_ts, "actor": actor, "action": POLL_STARTED,
         "prev_state": "WATCHING", "new_state": "POLLING",
@@ -232,7 +267,10 @@ def poll_once(
 
     from .drive_search import load_registry
     known = load_registry(registry_file) if registry_file.exists() else {}
-    processed_ids = set(state.get("processed_change_ids") or [])
+    # Insertion-ordered set of processed change IDs (dict keys). Eviction
+    # drops the oldest first; see _save_state.
+    processed_ids: Dict[str, None] = dict.fromkeys(
+        state.get("processed_change_ids") or [])
 
     try:
         changes, new_token = source.list_changes(state["page_token"])
@@ -257,7 +295,8 @@ def poll_once(
                 "note": "malformed change: missing change_id/file_id",
                 "change_id": change_id,
             })
-            processed_ids.add(change_id)
+            if change_id:
+                processed_ids[change_id] = None
             continue
         if change_id in processed_ids:
             counts["duplicate_skipped"] += 1
@@ -278,7 +317,12 @@ def poll_once(
                                          max_bytes=max_bytes)
                 classification, record = classify_identity(known, obj)
                 rights_status, rights_reason = decide_drive_rights(obj)
-                known[file_id] = {
+                # Q2-R2 Blocker 1: re-discovery must not wipe local operator
+                # decisions. The rights grant (file_id-bound, ledger-recorded)
+                # survives re-verification; only the discovery-owned fields
+                # are refreshed.
+                prev = known.get(file_id)
+                new_record = {
                     "revision": record["revision"],
                     "source_id": record["source_id"],
                     "doc_id": record["doc_id"],
@@ -291,6 +335,12 @@ def poll_once(
                     "rights_reason": rights_reason,
                     "discovered_ts": obj.get("discovered_ts"),
                 }
+                if prev is not None:
+                    for key in ("rights_status", "rights_reason",
+                                "rights_grant"):
+                        if key in prev:
+                            new_record[key] = prev[key]
+                known[file_id] = new_record
                 note = (f"classification={classification} "
                         f"rights={rights_status}/{rights_reason}")
                 event_extra = {"classification": classification,
@@ -309,7 +359,7 @@ def poll_once(
                 "note": f"{type(exc).__name__}: {exc}",
                 "change_id": change_id,
             })
-            processed_ids.add(change_id)
+            processed_ids[change_id] = None
             continue
         # Infrastructure (outside the try): registry persist THEN ledger mark.
         # A failure here aborts the poll WITHOUT advancing the token, so a
@@ -328,7 +378,7 @@ def poll_once(
             "change_id": change_id,
             **event_extra,
         })
-        processed_ids.add(change_id)
+        processed_ids[change_id] = None
         if action == POLL_FILE_REMOVED:
             counts["removed"] += 1
         else:
@@ -340,14 +390,14 @@ def poll_once(
                 % checkpoint_every == 0:
             _save_state(state_file, {
                 **state,
-                "processed_change_ids": sorted(processed_ids),
+                "processed_change_ids": list(processed_ids),
                 "last_poll_ts": _utcnow(),
             })
 
     finished_ts = _utcnow()
     _save_state(state_file, {
         "page_token": new_token,
-        "processed_change_ids": sorted(processed_ids),
+        "processed_change_ids": list(processed_ids),
         "polls_completed": int(state.get("polls_completed") or 0) + 1,
         "files_processed": int(state.get("files_processed") or 0)
         + counts["processed"],

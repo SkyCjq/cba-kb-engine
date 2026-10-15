@@ -347,3 +347,105 @@ def test_normalize_change_shapes():
     c = dp.normalize_change(raw)
     assert c["file_id"] == "f9" and not c["removed"]
     assert "f9@" in c["change_id"]
+
+
+# ------------------------------------------------- Q2-R2 blocker fixes
+
+def test_rediscovery_preserves_rights_grant(env):
+    """Q2-R2 Blocker 1: re-delivery after eviction must not wipe the local
+    rights grant. The grant survives re-discovery."""
+    from cba_kb.drive_search import grant_rights, search_drive_registry
+    source = FakeSource()
+    drive = FakeDrive({"a": _file_meta("a", version="1")})
+    _poll(source, drive, env)
+    source.add_change("a", version="1")
+    _poll(source, drive, env)
+    # Operator grants rights via the real grant path.
+    grant_rights(env["registry"], env["ledger"], "a", approver="op")
+    registry = json.loads(env["registry"].read_text(encoding="utf-8"))
+    assert registry["a"]["rights_status"] == "approved"
+    assert search_drive_registry(registry, "report")["results"]
+    # File modified on Drive -> re-discovery.
+    drive.files["a"] = _file_meta("a", version="2")
+    source.add_change("a", version="2")
+    _poll(source, drive, env)
+    registry = json.loads(env["registry"].read_text(encoding="utf-8"))
+    assert registry["a"]["rights_status"] == "approved"
+    assert registry["a"]["rights_grant"]["approver"] == "op"
+    out = search_drive_registry(registry, "report")
+    assert [r["file_id"] for r in out["results"]] == ["a"]
+
+
+def test_processed_ids_evict_oldest_first(env):
+    """Q2-R2 Blocker 1b: eviction drops the oldest IDs, not lexicographic."""
+    source = FakeSource()
+    drive = FakeDrive({})
+    _poll(source, drive, env)
+    # Seed the state with 3 IDs in processing order.
+    state = json.loads(env["state"].read_text(encoding="utf-8"))
+    state["processed_change_ids"] = ["c@3", "a@1", "b@2"]
+    env["state"].write_text(json.dumps(state), encoding="utf-8")
+    # Shrink the cap temporarily and trigger a save.
+    old_max = dp.MAX_PROCESSED_IDS
+    dp.MAX_PROCESSED_IDS = 2
+    try:
+        drive.files["z"] = _file_meta("z")
+        source.add_change("z")
+        _poll(source, drive, env)
+    finally:
+        dp.MAX_PROCESSED_IDS = old_max
+    state = json.loads(env["state"].read_text(encoding="utf-8"))
+    ids = state["processed_change_ids"]
+    # Oldest ("c@3") evicted; newest kept in processing order.
+    assert "c@3" not in ids
+    assert ids[-2:] == ["b@2", ids[-1]]  # order preserved, b@2 before z's id
+    assert len(ids) == 2
+
+
+def test_corrupt_processed_ids_type_fails_closed(env):
+    """Q2-R2 Blocker 2: a dict in processed_change_ids must be rejected,
+    not silently treated as processed."""
+    source = FakeSource()
+    drive = FakeDrive({"a": _file_meta("a")})
+    _poll(source, drive, env)
+    state = json.loads(env["state"].read_text(encoding="utf-8"))
+    state["processed_change_ids"] = {"a@1": False}
+    env["state"].write_text(json.dumps(state), encoding="utf-8")
+    source.add_change("a", version="1")
+    with pytest.raises(ValueError, match="POLL_STATE_CORRUPT"):
+        _poll(source, drive, env)
+    # Token must not advance on fail-closed.
+    state2 = json.loads(env["state"].read_text(encoding="utf-8"))
+    assert state2["page_token"] == state["page_token"]
+
+
+def test_corrupt_ledger_fails_closed_on_recovery(env):
+    """Q2-R2 Blocker 3: an incomplete/corrupt ledger refuses the poll."""
+    source = FakeSource()
+    drive = FakeDrive({})
+    _poll(source, drive, env)
+    env["ledger"].write_text("{incomplete", encoding="utf-8")
+    source.add_change("x", version="1")
+    with pytest.raises(DriveDiscoveryError, match="POLL_LEDGER_CORRUPT"):
+        _poll(source, drive, env)
+    state = json.loads(env["state"].read_text(encoding="utf-8"))
+    assert state["polls_completed"] == 0  # no poll completed
+
+
+def test_tombstone_clears_rights_grant(env):
+    """Tombstoning clears the local grant; re-add starts fresh."""
+    from cba_kb.drive_search import grant_rights
+    source = FakeSource()
+    drive = FakeDrive({"a": _file_meta("a", version="1")})
+    _poll(source, drive, env)
+    source.add_change("a", version="1")
+    _poll(source, drive, env)
+    grant_rights(env["registry"], env["ledger"], "a", approver="op")
+    # File removed.
+    del drive.files["a"]
+    source.add_change("a", removed=True)
+    _poll(source, drive, env)
+    registry = json.loads(env["registry"].read_text(encoding="utf-8"))
+    assert registry["a"]["verify_status"] == "FILE_REMOVED"
+    assert "rights_grant" not in registry["a"]
+    assert registry["a"]["rights_status"] == "review"

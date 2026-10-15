@@ -176,7 +176,9 @@ Source/Document 身份、写持久 JSONL ledger。永不写入 Drive。
 
 **Drive 轮询**（`cba-kb drive-poll --registry … --ledger … --state …`）——
 持续监听 Drive 变化，增量更新发现 registry。崩溃安全：整批处理完成后
-才推进检查点；重启后恢复不丢不重。只读，永不写入 Drive。
+才推进检查点；重启后恢复不丢失已处理工作。只读，永不写入 Drive。
+默认执行一次；加 `--interval <秒数>` 进入持续轮询。注意：首次运行仅
+初始化监听 token。
 
 状态：v2.0.4-2 开发中（非生产发布）。Drive 部署与生产激活是独立的、
 需 Human 批准的步骤。

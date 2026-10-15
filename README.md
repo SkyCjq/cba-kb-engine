@@ -199,8 +199,9 @@ everything else is excluded with an exact reason. Approve a file with
 **Drive poll** (`cba-kb drive-poll --registry … --ledger … --state …`) —
 watches for Drive changes and incrementally updates the discovery registry.
 Crash-safe: the checkpoint advances only after a batch is fully processed;
-a restart resumes without losing or duplicating work. Read-only; never
-writes to Drive.
+a restart resumes without losing work. Read-only; never writes to Drive.
+Runs once by default; pass `--interval <seconds>` for continuous polling.
+Note: the first run only initializes the watch token.
 
 Status: v2.0.4-2 is in development (not a production release). Drive-backed
 deployment and production activation are separate, Human-approved steps.
