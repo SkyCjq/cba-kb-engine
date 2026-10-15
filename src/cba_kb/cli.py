@@ -88,6 +88,7 @@ def main():
     q.add_argument('--index',type=Path,required=True)
     q=sub.add_parser('drive-search-index')
     q.add_argument('--index',type=Path,required=True)
+    q.add_argument('--registry',type=Path,required=True)
     q.add_argument('--query',required=True)
     q.add_argument('--principal',required=True)
     q.add_argument('--limit',type=int,default=50)
@@ -488,10 +489,15 @@ def main():
                     "terms": len(index["terms"]),
                     "index": str(a.index)}
         elif a.command=='drive-search-index':
-            # Rights-filtered keyword search over the persistent index.
+            # Rights-filtered keyword search: index + CURRENT registry.
+            # The registry is authoritative; a missing/corrupt registry
+            # fails closed (never falls back to index-only).
+            from .drive_search import load_registry
             from .drive_search_index import load_index, search_index
             result=search_index(load_index(a.index), a.query,
-                                a.principal, limit=a.limit)
+                                a.principal,
+                                registry=load_registry(a.registry),
+                                limit=a.limit)
         elif a.command=='drive-grant':
             # Guarded rights grant: explicit approver, ledger-recorded.
             if not (a.approver or '').strip():
