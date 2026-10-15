@@ -83,6 +83,14 @@ def main():
     q.add_argument('--include-review',action='store_true')
     q.add_argument('--mime-prefix',default=None)
     q.add_argument('--limit',type=int,default=50)
+    q=sub.add_parser('drive-build-index')
+    q.add_argument('--registry',type=Path,required=True)
+    q.add_argument('--index',type=Path,required=True)
+    q=sub.add_parser('drive-search-index')
+    q.add_argument('--index',type=Path,required=True)
+    q.add_argument('--query',required=True)
+    q.add_argument('--principal',required=True)
+    q.add_argument('--limit',type=int,default=50)
     q=sub.add_parser('drive-grant')
     q.add_argument('--registry',type=Path,required=True)
     q.add_argument('--ledger',type=Path,required=True)
@@ -470,6 +478,20 @@ def main():
                 load_registry(a.registry), a.query,
                 include_review=a.include_review, mime_prefix=a.mime_prefix,
                 limit=a.limit)
+        elif a.command=='drive-build-index':
+            # Build the persistent keyword index from the registry (titles).
+            from .drive_search import load_registry
+            from .drive_search_index import build_index, save_index
+            index=build_index(load_registry(a.registry))
+            save_index(a.index, index)
+            result={"indexed_docs": len(index["docs"]),
+                    "terms": len(index["terms"]),
+                    "index": str(a.index)}
+        elif a.command=='drive-search-index':
+            # Rights-filtered keyword search over the persistent index.
+            from .drive_search_index import load_index, search_index
+            result=search_index(load_index(a.index), a.query,
+                                a.principal, limit=a.limit)
         elif a.command=='drive-grant':
             # Guarded rights grant: explicit approver, ledger-recorded.
             if not (a.approver or '').strip():
