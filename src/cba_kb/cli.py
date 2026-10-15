@@ -98,6 +98,19 @@ def main():
     q.add_argument('--file-id',required=True)
     q.add_argument('--approver',required=True)
     q.add_argument('--note',default='')
+    q=sub.add_parser('drive-plan-create')
+    q.add_argument('--plan',type=Path,required=True)
+    q.add_argument('--ops',required=True)
+    q=sub.add_parser('drive-plan-approve')
+    q.add_argument('--plan',type=Path,required=True)
+    q.add_argument('--ledger',type=Path,required=True)
+    q.add_argument('--approver',required=True)
+    q=sub.add_parser('drive-plan-apply')
+    q.add_argument('--plan',type=Path,required=True)
+    q.add_argument('--ledger',type=Path,required=True)
+    q.add_argument('--registry',type=Path,required=True)
+    q=sub.add_parser('drive-plan-verify')
+    q.add_argument('--plan',type=Path,required=True)
     q=sub.add_parser('document-ingest')
     q.add_argument('--capture-channel',choices=(
         'wechat_browser_clip','ima_file_export','local_file','google_drive_doc'))
@@ -506,6 +519,28 @@ def main():
             result=grant_rights(
                 a.registry, a.ledger, a.file_id.strip(),
                 approver=a.approver.strip(), note=a.note)
+        elif a.command=='drive-plan-create':
+            import json as _json
+            from .drive_plan import create_plan, save_plan
+            ops=_json.loads(a.ops)
+            plan=create_plan(ops)
+            save_plan(a.plan, plan)
+            result={"plan_id": plan["plan_id"], "ops": len(ops),
+                    "plan": str(a.plan)}
+        elif a.command=='drive-plan-approve':
+            from .drive_plan import approve_plan
+            result=approve_plan(a.plan, a.approver, a.ledger)
+        elif a.command=='drive-plan-apply':
+            from .drive_plan import apply_plan
+            from .drive_search import load_registry
+            ctx={"registry": load_registry(a.registry)}
+            result=apply_plan(a.plan, a.ledger, ctx)
+        elif a.command=='drive-plan-verify':
+            from .drive_plan import verify_plan
+            ok, errors=verify_plan(a.plan)
+            if not ok:
+                raise ValueError(f"PLAN_VERIFY_FAILED: {errors}")
+            result={"verified": ok, "errors": errors}
         elif a.command in {'document-ingest','document-batch'}:
             from .document_lane import DocumentLane
             if a.command=='document-ingest' and not a.capture_channel:
