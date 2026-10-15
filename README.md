@@ -185,31 +185,26 @@ Security constraints (fail-closed by default):
   Residual risk: human rights clearance is still required before any
   real-world exposure.
 
-In development after PR-1 (2.0.4-2 slice 1, PR #159 — pending independent
-Q2 and Human merge; not released): read-only Drive discovery
-(`cba-kb drive-discover --folder-id ... --ledger ...`) — folder listing,
-access/content/version verification, Source/Document identity with
-duplicate/revision handling, and a durable JSONL ledger. It never writes to
-Drive. `--verify-bytes` is off by default. For binary files, off means bytes
-are NOT downloaded or compared and the digest is the metadata-claimed value
-only. Native Google Docs are a separate branch: they are always read via the
-Docs API (`document_json`) and digested as SHA-256 over canonical Doc JSON
-— never as raw bytes — regardless of `--verify-bytes`.
-Remains v2.0.4 follow-up work: guarded archive move/retain, full
-cross-backend recovery, Production release.
+**Drive discovery** (`cba-kb drive-discover --folder-id … --ledger …`) —
+read-only: lists a Drive folder, verifies access/content/version, records
+Source/Document identity with duplicate and revision handling, and keeps a
+durable JSONL ledger. It never writes to Drive.
 
-Evidence tiers (do not conflate): isolated unit tests run against scripted
-fakes — they prove contract behavior, never real API behavior; a real Drive
-E2E requires an authorized isolated test Drive and has not run yet;
-Production Activation and whole-version completion are separate Human
-decisions tracked in the 65-item delivery matrix.
-
-In development (pending independent Q2 and Human merge): **Drive search**
-— `cba-kb drive-search --registry … --query …` finds files by name; only
-access-verified + explicitly approved files appear as results, everything
-else is excluded with an exact reason. Approve a file with
+**Drive search** (`cba-kb drive-search --registry … --query …`) — finds files
+by name; only access-verified + explicitly approved files appear as results,
+everything else is excluded with an exact reason. Approve a file with
 `cba-kb drive-grant --registry … --ledger … --file-id … --approver …`
 (ledger-recorded, no automatic approvals).
+
+**Drive poll** (`cba-kb drive-poll --registry … --ledger … --state …`) —
+watches for Drive changes and incrementally updates the discovery registry.
+Crash-safe: the checkpoint advances only after a batch is fully processed;
+a restart resumes without losing work. Read-only; never writes to Drive.
+Runs once by default; pass `--interval <seconds>` for continuous polling.
+Note: the first run only initializes the watch token.
+
+Status: v2.0.4-2 is in development (not a production release). Drive-backed
+deployment and production activation are separate, Human-approved steps.
 
 ## 7. Semantic Principles
 

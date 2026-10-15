@@ -165,26 +165,23 @@ cba-kb --instance-root /tmp/cbakb-demo archive-query --title "Synthetic CBA Bull
 - SCOPED：公开搜索已延期。处理失败不会解链来源（保留链接以供恢复/审计）。
   残余风险：任何真实暴露前仍需人工权利审查。
 
-PR-1 之后开发中（2.0.4-2 slice 1，PR #159——待独立 Q2 与 Human 合并，
-未发布）：Drive 只读发现
-（`cba-kb drive-discover --folder-id ... --ledger ...`）——文件夹枚举、
-访问/内容/版本核验、带去重与修订处理的 Source/Document 身份、持久 JSONL
-ledger。该命令永不写入 Drive。`--verify-bytes` 默认关闭：对二进制文件，
-关闭时字节不会被下载或比对，digest 仅为元数据声称值。原生 Google 文档
-走独立分支：始终经 Docs API（`document_json`）读取，digest 为规范化 Doc
-JSON 的 SHA-256（绝非原始字节），不受 `--verify-bytes` 影响。仍属 v2.0.4
-后续工作：受控归档移动/保留、完整跨后端恢复、Production 发布。
+**Drive 发现**（`cba-kb drive-discover --folder-id … --ledger …`）——只读：
+枚举 Drive 文件夹、核验访问/内容/版本、记录带去重与修订处理的
+Source/Document 身份、写持久 JSONL ledger。永不写入 Drive。
 
-证据层级（不得混淆）：隔离单元测试跑在脚本化 fake 上，只证明合同行为，
-不证明真实 API 行为；真实 Drive E2E 需要经授权的隔离测试 Drive，尚未
-执行；Production Activation 与整版完成是独立的 Human 决策，在 65 项交付
-矩阵中跟踪。
-
-开发中（待独立 Q2 与人工合并）：**Drive 搜索**——
-`cba-kb drive-search --registry … --query …` 按文件名查找；只有"访问已核验
-＋已明确批准"的文件才会出现在结果里，其余按精确原因排除。用
-`cba-kb drive-grant --registry … --ledger … --file-id … --approver …`
+**Drive 搜索**（`cba-kb drive-search --registry … --query …`）——按文件名
+查找；只有"访问已核验＋已明确批准"的文件出现在结果里，其余按精确原因
+排除。用 `cba-kb drive-grant --registry … --ledger … --file-id … --approver …`
 批准文件（ledger 留痕，无自动批准）。
+
+**Drive 轮询**（`cba-kb drive-poll --registry … --ledger … --state …`）——
+持续监听 Drive 变化，增量更新发现 registry。崩溃安全：整批处理完成后
+才推进检查点；重启后恢复不丢失已处理工作。只读，永不写入 Drive。
+默认执行一次；加 `--interval <秒数>` 进入持续轮询。注意：首次运行仅
+初始化监听 token。
+
+状态：v2.0.4-2 开发中（非生产发布）。Drive 部署与生产激活是独立的、
+需 Human 批准的步骤。
 
 ## 7. 语义原则
 

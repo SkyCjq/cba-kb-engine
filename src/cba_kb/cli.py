@@ -69,6 +69,14 @@ def main():
     q.add_argument('--registry',type=Path,default=None)
     q.add_argument('--verify-bytes',action='store_true')
     q.add_argument('--max-bytes-mb',type=float,default=64.0)
+    q=sub.add_parser('drive-poll')
+    q.add_argument('--ledger',type=Path,required=True)
+    q.add_argument('--registry',type=Path,required=True)
+    q.add_argument('--state',type=Path,required=True)
+    q.add_argument('--verify-bytes',action='store_true')
+    q.add_argument('--max-bytes-mb',type=float,default=64.0)
+    q.add_argument('--interval',type=float,default=0.0)
+    q.add_argument('--max-polls',type=int,default=None)
     q=sub.add_parser('drive-search')
     q.add_argument('--registry',type=Path,required=True)
     q.add_argument('--query',required=True)
@@ -438,6 +446,24 @@ def main():
                 drive, a.folder_id.strip(), ledger_path=a.ledger,
                 registry_path=a.registry, verify_bytes=a.verify_bytes,
                 max_bytes=int(a.max_bytes_mb*1024*1024))
+        elif a.command=='drive-poll':
+            # Incremental poll: Changes API -> per-file discovery -> checkpoint.
+            # Read-only; never writes to Drive.
+            if not a.max_bytes_mb or a.max_bytes_mb <= 0:
+                raise ValueError('MAX_BYTES_MUST_BE_POSITIVE')
+            if a.interval < 0:
+                raise ValueError('INTERVAL_MUST_BE_NON_NEGATIVE')
+            from .drive_poll import DriveChangesSource, poll_once, run_poll_loop
+            instance=private_instance();drive=Drive(root,instance)
+            source=DriveChangesSource(drive)
+            kwargs=dict(registry_path=a.registry, ledger_path=a.ledger,
+                        state_path=a.state, verify_bytes=a.verify_bytes,
+                        max_bytes=int(a.max_bytes_mb*1024*1024))
+            if a.interval > 0:
+                result=run_poll_loop(source, drive, interval_seconds=a.interval,
+                                     max_polls=a.max_polls, **kwargs)
+            else:
+                result=poll_once(source, drive, **kwargs)
         elif a.command=='drive-search':
             from .drive_search import load_registry, search_drive_registry
             result=search_drive_registry(
