@@ -1,0 +1,349 @@
+"""Tests for cba_kb.drive_poll (2.0.4-2 slice 3, T2).
+
+Contract under test (scripted fakes prove contract behavior, not real API):
+- First poll initializes the watch; later polls process changes incrementally.
+- New/modified/removed files update the registry; per-file ledger events.
+- Crash mid-batch: token not advanced; restart re-delivers; no silent loss,
+  registry stays correct via idempotent upsert.
+- Per-file failure does not abort the poll (partial success).
+- Corrupt state fails closed.
+"""
+import json
+
+import pytest
+
+from cba_kb import drive_poll as dp
+from cba_kb.drive_discovery import DriveDiscoveryError
+
+
+class FakeDrive:
+    """Minimal drive stub: meta() only (verify_bytes=False path)."""
+
+    def __init__(self, files):
+        self.files = dict(files)
+
+    def meta(self, file_id):
+        if file_id not in self.files:
+            raise PermissionError(f"denied: {file_id}")
+        return self.files[file_id]
+
+
+def _file_meta(file_id, name="report", version="1", md5="abc123"):
+    return {"id": file_id, "name": name, "mimeType": "text/plain",
+            "version": version, "headRevisionId": f"hr{version}",
+            "md5Checksum": md5, "parents": ["folder1"],
+            "modifiedTime": f"2026-10-15T00:00:{version}Z"}
+
+
+class FakeSource:
+    """Scripted change source."""
+
+    def __init__(self):
+        self.token = "tok0"
+        self.pending = []
+        self.fail_list = False
+
+    def get_start_token(self):
+        return self.token
+
+    def _next_token(self):
+        n = int(self.token[3:]) + 1
+        self.token = f"tok{n}"
+        return self.token
+
+    def list_changes(self, since_token):
+        if self.fail_list:
+            raise RuntimeError("transport boom")
+        # Note: no strict token assertion — after a crash the poller retries
+        # with the old token, which the real Changes API accepts.
+        out = self.pending
+        self.pending = []
+        return out, self._next_token()
+
+    def add_change(self, file_id, version="1", removed=False):
+        if removed:
+            self.pending.append({"change_id": f"{file_id}@removed",
+                                 "file_id": file_id, "removed": True,
+                                 "file": {}})
+        else:
+            meta = _file_meta(file_id, version=version)
+            self.pending.append({
+                "change_id": f"{file_id}@{meta['modifiedTime']}",
+                "file_id": file_id, "removed": False, "file": meta})
+
+
+@pytest.fixture
+def env(tmp_path):
+    return {
+        "registry": tmp_path / "registry.json",
+        "ledger": tmp_path / "ledger.jsonl",
+        "state": tmp_path / "poll_state.json",
+    }
+
+
+def _poll(source, drive, env, **kw):
+    return dp.poll_once(source, drive, registry_path=env["registry"],
+                        ledger_path=env["ledger"], state_path=env["state"],
+                        **kw)
+
+
+def _ledger_actions(env):
+    return [json.loads(line)["action"]
+            for line in env["ledger"].read_text(encoding="utf-8").splitlines()]
+
+
+# ------------------------------------------------------------------ core
+
+def test_poll_initializes_watch(env):
+    source, drive = FakeSource(), FakeDrive({})
+    out = _poll(source, drive, env)
+    assert out["initialized"] is True
+    state = json.loads(env["state"].read_text(encoding="utf-8"))
+    assert state["page_token"] == "tok0"
+    assert state["polls_completed"] == 0
+    assert POLL_STARTED in _ledger_actions(env) if False else True
+    assert dp.POLL_STARTED in _ledger_actions(env)
+
+
+def test_poll_discovers_new_file(env):
+    source, drive = FakeSource(), FakeDrive({})
+    _poll(source, drive, env)
+    drive.files["f1"] = _file_meta("f1")
+    source.add_change("f1", version="1")
+    out = _poll(source, drive, env)
+    assert out["counts"]["processed"] == 1
+    registry = json.loads(env["registry"].read_text(encoding="utf-8"))
+    assert registry["f1"]["verify_status"] == "ACCESS_VERIFIED"
+    assert registry["f1"]["name"] == "report"
+    assert dp.POLL_FILE_PROCESSED in _ledger_actions(env)
+    assert dp.POLL_COMPLETED in _ledger_actions(env)
+    state = json.loads(env["state"].read_text(encoding="utf-8"))
+    assert state["polls_completed"] == 1
+    assert state["files_processed"] == 1
+
+
+def test_poll_handles_modified_file(env):
+    source = FakeSource()
+    drive = FakeDrive({"f1": _file_meta("f1", version="1")})
+    _poll(source, drive, env)
+    source.add_change("f1", version="1")
+    _poll(source, drive, env)
+    # File modified: new version delivered.
+    drive.files["f1"] = _file_meta("f1", version="2")
+    source.add_change("f1", version="2")
+    out = _poll(source, drive, env)
+    assert out["counts"]["processed"] == 1
+    registry = json.loads(env["registry"].read_text(encoding="utf-8"))
+    assert registry["f1"]["revision"] == "hr2"  # head_revision_id wins
+
+
+def test_poll_tombstones_removed_file(env):
+    source = FakeSource()
+    drive = FakeDrive({"f1": _file_meta("f1", version="1")})
+    _poll(source, drive, env)
+    source.add_change("f1", version="1")
+    _poll(source, drive, env)
+    # File deleted on Drive.
+    del drive.files["f1"]
+    source.add_change("f1", removed=True)
+    out = _poll(source, drive, env)
+    assert out["counts"]["removed"] == 1
+    registry = json.loads(env["registry"].read_text(encoding="utf-8"))
+    assert registry["f1"]["verify_status"] == "FILE_REMOVED"
+    # Tombstoned files are excluded from search results.
+    from cba_kb.drive_search import search_drive_registry
+    res = search_drive_registry(registry, "report")
+    assert res["results"] == []
+
+
+def test_poll_empty_changes_is_noop(env):
+    source, drive = FakeSource(), FakeDrive({})
+    _poll(source, drive, env)
+    out = _poll(source, drive, env)
+    assert out["counts"]["changes_seen"] == 0
+    assert out["counts"]["processed"] == 0
+    state = json.loads(env["state"].read_text(encoding="utf-8"))
+    assert state["polls_completed"] == 1  # init watch does not count as a poll
+
+
+def test_poll_partial_failure_continues(env):
+    class Http403(Exception):
+        def __init__(self):
+            super().__init__("forbidden")
+            self.status_code = 403
+
+    class DenyDrive(FakeDrive):
+        def meta(self, file_id):
+            if file_id == "f2":
+                raise Http403()
+            return super().meta(file_id)
+
+    source = FakeSource()
+    drive = DenyDrive({"f1": _file_meta("f1"), "f3": _file_meta("f3")})
+    _poll(source, drive, env)
+    # f2's meta raises 403 -> REVIEW_REQUIRED (fail-closed, still recorded);
+    # a malformed change (no file_id) -> failed.
+    source.add_change("f1")
+    source.add_change("f2")
+    source.add_change("f3")
+    source.pending.append({"change_id": "bad1", "file_id": None,
+                           "removed": False, "file": {}})
+    out = _poll(source, drive, env)
+    assert out["counts"]["processed"] == 3
+    assert out["counts"]["failed"] == 1
+    registry = json.loads(env["registry"].read_text(encoding="utf-8"))
+    assert set(registry) == {"f1", "f2", "f3"}
+    assert registry["f2"]["verify_status"] == "REVIEW_REQUIRED"
+    actions = _ledger_actions(env)
+    assert dp.POLL_FILE_FAILED in actions
+    assert dp.POLL_COMPLETED in actions  # poll still completes
+    state = json.loads(env["state"].read_text(encoding="utf-8"))
+    assert state["files_failed"] == 1
+
+
+def test_poll_corrupt_state_fails_closed(env):
+    env["state"].write_text("{not json", encoding="utf-8")
+    with pytest.raises(ValueError, match="POLL_STATE_CORRUPT"):
+        _poll(FakeSource(), FakeDrive({}), env)
+
+
+def test_poll_list_failure_raises_and_keeps_token(env):
+    source = FakeSource()
+    drive = FakeDrive({})
+    _poll(source, drive, env)
+    token_before = json.loads(env["state"].read_text(encoding="utf-8"))["page_token"]
+    source.fail_list = True
+    with pytest.raises(DriveDiscoveryError, match="POLL_LIST_FAILED"):
+        _poll(source, drive, env)
+    token_after = json.loads(env["state"].read_text(encoding="utf-8"))["page_token"]
+    assert token_before == token_after
+
+
+def test_poll_crash_mid_batch_recovers_without_loss(env, monkeypatch):
+    """Simulate a crash during the batch (registry persist fails). The token
+    must not advance; a retry re-delivers and completes with no loss."""
+    source = FakeSource()
+    drive = FakeDrive({"f1": _file_meta("f1"), "f2": _file_meta("f2")})
+    _poll(source, drive, env)
+    source.add_change("f1")
+    source.add_change("f2")
+    token_before = json.loads(env["state"].read_text(encoding="utf-8"))["page_token"]
+
+    real_atomic = dp.atomic
+    calls = {"n": 0}
+
+    def flaky_atomic(path, data):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("simulated disk failure")
+        return real_atomic(path, data)
+
+    monkeypatch.setattr(dp, "atomic", flaky_atomic)
+    with pytest.raises(OSError, match="simulated disk failure"):
+        _poll(source, drive, env)
+    # Token NOT advanced: the batch was not checkpointed.
+    token_after = json.loads(env["state"].read_text(encoding="utf-8"))["page_token"]
+    assert token_after == token_before
+
+    # Retry: re-delivery completes; registry correct; no silent loss.
+    monkeypatch.setattr(dp, "atomic", real_atomic)
+    source.pending = [  # re-deliver (as the Changes API would)
+        {"change_id": f"f1@{_file_meta('f1')['modifiedTime']}",
+         "file_id": "f1", "removed": False, "file": _file_meta("f1")},
+        {"change_id": f"f2@{_file_meta('f2')['modifiedTime']}",
+         "file_id": "f2", "removed": False, "file": _file_meta("f2")},
+    ]
+    out = _poll(source, drive, env)
+    assert out["counts"]["processed"] == 2
+    registry = json.loads(env["registry"].read_text(encoding="utf-8"))
+    assert set(registry) == {"f1", "f2"}
+    assert all(r["verify_status"] == "ACCESS_VERIFIED"
+               for r in registry.values())
+
+
+def test_poll_duplicate_delivery_is_idempotent(env):
+    """Same change delivered twice: second delivery is skipped, no duplicate
+    per-file ledger events."""
+    source = FakeSource()
+    drive = FakeDrive({"f1": _file_meta("f1")})
+    _poll(source, drive, env)
+    source.add_change("f1")
+    _poll(source, drive, env)
+    processed_before = _ledger_actions(env).count(dp.POLL_FILE_PROCESSED)
+    # Force re-delivery of the same change (old token replay).
+    meta = _file_meta("f1")
+    source.pending.append({"change_id": f"f1@{meta['modifiedTime']}",
+                           "file_id": "f1", "removed": False, "file": meta})
+    out = _poll(source, drive, env)
+    assert out["counts"]["duplicate_skipped"] == 1
+    assert out["counts"]["processed"] == 0
+    assert _ledger_actions(env).count(dp.POLL_FILE_PROCESSED) == processed_before
+
+
+def test_run_poll_loop_respects_max_polls(env):
+    source, drive = FakeSource(), FakeDrive({})
+    out = dp.run_poll_loop(source, drive, registry_path=env["registry"],
+                           ledger_path=env["ledger"], state_path=env["state"],
+                           interval_seconds=0, max_polls=3)
+    assert out["polls_completed"] == 3
+
+
+# ------------------------------------------------------- adapter contract
+
+def test_drive_changes_source_contract():
+    """Contract test against the documented changes() shape (scripted fake
+    transport, not the real API)."""
+
+    class FakeChanges:
+        def __init__(self):
+            self.calls = []
+
+        def getStartPageToken(self):
+            outer = self
+
+            class Call:
+                def execute(self):
+                    outer.calls.append("getStartPageToken")
+                    return {"startPageToken": "tokStart"}
+            return Call()
+
+        def list(self, **kw):
+            outer = self
+            assert kw["pageToken"] == "tokStart"
+
+            class Call:
+                def execute(self):
+                    outer.calls.append("list")
+                    return {
+                        "changes": [
+                            {"fileId": "f1", "removed": False,
+                             "file": _file_meta("f1")},
+                            {"fileId": "f2", "removed": True, "file": {}},
+                        ],
+                        "newStartPageToken": "tokNext",
+                    }
+            return Call()
+
+    class FakeApi:
+        def changes(self):
+            return FakeChanges()
+
+    class FakeDriveWithApi:
+        def __init__(self):
+            self.api = FakeApi()
+
+    src = dp.DriveChangesSource(FakeDriveWithApi())
+    assert src.get_start_token() == "tokStart"
+    changes, new_token = src.list_changes("tokStart")
+    assert new_token == "tokNext"
+    assert changes[0]["file_id"] == "f1" and not changes[0]["removed"]
+    assert changes[1]["file_id"] == "f2" and changes[1]["removed"]
+    assert changes[1]["change_id"] == "f2@removed"
+
+
+def test_normalize_change_shapes():
+    raw = {"fileId": "f9", "removed": False,
+           "file": _file_meta("f9", version="3")}
+    c = dp.normalize_change(raw)
+    assert c["file_id"] == "f9" and not c["removed"]
+    assert "f9@" in c["change_id"]
