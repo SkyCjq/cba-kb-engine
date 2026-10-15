@@ -89,10 +89,6 @@ def _wal_path(ledger_path: Any) -> Path:
     return Path(str(ledger_path) + ".wal")
 
 
-def _wal_lock_path(ledger_path: Any) -> Path:
-    return Path(str(ledger_path) + ".wal.lock")
-
-
 def _wal_write(p: Path, entry: Dict[str, Any]) -> None:
     """Write WAL entry with fsync for crash durability (F2 fix).
 
@@ -126,29 +122,21 @@ def wal_begin(ledger_path: Any, plan_id: str,
               operations: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Record apply intent before execution (atomic with check).
 
-    Uses a dedicated WAL lock to make check-and-begin atomic, preventing
-    two concurrent executors from overwriting each other's WAL.
+    Uses POSIX flock via file_lock() for the WAL critical section.
+    The OS automatically releases flock when the process dies, even on
+    SIGKILL or os._exit() — unlike O_CREAT|O_EXCL + unlink(), which can
+    leave a stale lock file permanently blocking recovery.
+
+    The lock file itself may persist on disk; that is fine. Only the
+    flock state matters, and the OS cleans it up on process death.
+    Do NOT delete the lock file, and do NOT guess expiry via mtime/PID.
 
     If an IN_PROGRESS WAL already exists for the same plan_id, preserves
     the existing `completed` progress (resume, not overwrite).
     """
-    # Use a simple file-based mutex for the WAL itself.
-    import time
-    lock_p = _wal_lock_path(ledger_path)
-    lock_p.parent.mkdir(parents=True, exist_ok=True)
-    # Acquire WAL lock (simple spin with timeout).
-    deadline = time.time() + 10.0
-    while True:
-        try:
-            fd = lock_p.open("x")  # O_CREAT|O_EXCL
-            fd.write(str(time.time()))
-            fd.close()
-            break
-        except FileExistsError:
-            if time.time() >= deadline:
-                raise TimeoutError(f"{LOCK_TIMEOUT}: {lock_p}")
-            time.sleep(0.05)
-    try:
+    # Use flock (not O_EXCL) so a crashed process doesn't leave a
+    # permanent block. The lock file path stays constant.
+    with file_lock(_wal_path(ledger_path), timeout_s=10.0):
         p = _wal_path(ledger_path)
         # Check for existing IN_PROGRESS WAL.
         if p.exists():
@@ -178,11 +166,8 @@ def wal_begin(ledger_path: Any, plan_id: str,
         }
         _wal_write(p, entry)
         return entry
-    finally:
-        try:
-            lock_p.unlink()
-        except FileNotFoundError:
-            pass
+    # Note: file_lock context manager releases the flock automatically.
+    # The .lock file itself persists on disk; that is expected and fine.
 
 
 def wal_mark_complete(ledger_path: Any, op_index: int) -> None:
