@@ -216,6 +216,12 @@ File locks prevent concurrent modification; a write-ahead log (WAL)
 detects crashed applies; operations run with timeouts (fail-closed);
 all plan operations are idempotent and safe to retry.
 
+**Unified workflow** (`cba-kb workflow-status --ledger … --registry …`) —
+shows your position in the business flow:
+`discover → plan → approve → apply → verify`.
+Each step uses the CLI commands above; human approval is required
+between plan and apply.
+
 **Drive poll** (`cba-kb drive-poll --registry … --ledger … --state …`) —
 watches for Drive changes and incrementally updates the discovery registry.
 Crash-safe: the checkpoint advances only after a batch is fully processed;

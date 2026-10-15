@@ -1,8 +1,8 @@
-"""Drive move exact plan schema (FINAL INTEGRATION M2, design only).
+"""Drive move exact plan schema (FINAL INTEGRATION M2).
 
 This module defines the EXACT plan schema for Google Drive file moves
-(reparent). It does NOT execute moves — it only validates that a proposed
-move plan is complete, authorized, and safe.
+(reparent). It validates that a proposed move plan is complete, authorized,
+and safe BEFORE any Drive API call.
 
 Exact plan schema:
 {
@@ -28,8 +28,10 @@ Safety invariants (fail-closed):
 - disposition must be explicit (no default move).
 - For RETAIN_IN_PLACE, destination must equal source_parent.
 
-This is DESIGN ONLY. Actual Drive API calls will be in a separate module
-requiring Human Production GO.
+This module does NOT execute moves. Execution requires:
+1. A validated plan from this module.
+2. Integration with drive_plan.py's guarded apply workflow.
+3. Human Production GO for real Drive writes (separate authorization).
 """
 from __future__ import annotations
 

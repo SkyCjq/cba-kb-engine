@@ -74,7 +74,7 @@ def create_plan(operations: List[Dict[str, Any]],
         if not isinstance(op, dict) or not op.get("op"):
             raise ValueError("PLAN_OPERATION_MALFORMED")
         if op["op"] not in ("rebuild_index", "purge_tombstones",
-                            "revoke_index_grant"):
+                            "revoke_index_grant", "drive_move"):
             raise ValueError(f"PLAN_UNKNOWN_OP: {op['op']}")
     return {
         "version": PLAN_VERSION,
@@ -231,10 +231,68 @@ def _apply_revoke_index_grant(params: Dict[str, Any],
     return {"revoked": changed}
 
 
+def _apply_drive_move(params: Dict[str, Any],
+                      ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a validated Drive move plan.
+
+    This is the guarded Drive move operation (F6). It:
+    1. Validates the move plan via drive_move_plan.validate_drive_move_plan().
+    2. Reads current metadata via the adapter (from ctx).
+    3. Verifies source_parent matches actual current parent.
+    4. Executes the move via adapter.reparent().
+    5. Reads back and verifies expected_parent_set matches.
+
+    The adapter is provided via ctx["drive_adapter"]. In production, this
+    is the real Drive adapter; in tests, a fake. Real Drive writes require
+    separate Human Production GO (not granted by plan approval alone).
+
+    Fail-closed: any mismatch → error, no move.
+    """
+    from .drive_move_plan import validate_drive_move_plan
+
+    # Validate the plan (fail-closed).
+    move_plan = validate_drive_move_plan(params.get("move_plan", {}))
+
+    adapter = ctx.get("drive_adapter")
+    if adapter is None:
+        raise ValueError("DRIVE_ADAPTER_REQUIRED: ctx must provide "
+                         "'drive_adapter'")
+
+    file_id = move_plan["file_id"]
+    # 1. Read current metadata.
+    meta = adapter.meta(file_id)
+    current_parents = meta.get("parents", [])
+    # 2. Verify source_parent matches.
+    if move_plan["source_parent"] not in current_parents:
+        raise ValueError(
+            f"DRIVE_MOVE_PARENT_MISMATCH: expected source_parent "
+            f"{move_plan['source_parent']} not in current parents "
+            f"{current_parents}")
+    # 3. Execute the move (skip if RETAIN_IN_PLACE and already there).
+    if move_plan["disposition"] == "RETAIN_IN_PLACE":
+        # No move needed; verify already in place.
+        result = {"moved": False, "reason": "RETAIN_IN_PLACE"}
+    else:
+        adapter.reparent(file_id, move_plan["destination"],
+                         old_parent=move_plan["source_parent"])
+        result = {"moved": True}
+    # 4. Read back and verify.
+    new_meta = adapter.meta(file_id)
+    new_parents = set(new_meta.get("parents", []))
+    expected = set(move_plan["expected_parent_set"])
+    if new_parents != expected:
+        raise ValueError(
+            f"DRIVE_MOVE_READBACK_MISMATCH: expected parents {expected}, "
+            f"got {new_parents}")
+    result["verified_parents"] = sorted(new_parents)
+    return result
+
+
 _OP_HANDLERS = {
     "rebuild_index": _apply_rebuild_index,
     "purge_tombstones": _apply_purge_tombstones,
     "revoke_index_grant": _apply_revoke_index_grant,
+    "drive_move": _apply_drive_move,
 }
 
 

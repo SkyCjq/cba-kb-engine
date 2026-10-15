@@ -19,6 +19,9 @@ def main():
     p.add_argument('--instance-root',type=Path)
     sub=p.add_subparsers(dest='command',required=True)
     sub.add_parser('auth'); sub.add_parser('doctor')
+    q=sub.add_parser('workflow-status')
+    q.add_argument('--ledger',type=Path,required=True)
+    q.add_argument('--registry',type=Path,required=True)
     for cmd in ('validate','build'):
         q=sub.add_parser(cmd); q.add_argument('--master',type=Path,required=True)
         if cmd=='build':
@@ -387,6 +390,37 @@ def main():
             instance=private_instance()
             credentials(root,interactive=True,credentials_store=instance.credentials_store)
             result={'authorization':'complete'}
+        elif a.command=='workflow-status':
+            # Unified business flow status (M3).
+            # Shows where you are in: discover → plan → approve → apply → verify.
+            from .drive_search import load_registry
+            import json as _json
+            registry = load_registry(a.registry)
+            # Count ledger events by type.
+            events = {}
+            try:
+                with open(a.ledger, encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            e = _json.loads(line)
+                            action = e.get("action", "unknown")
+                            events[action] = events.get(action, 0) + 1
+                        except (ValueError, KeyError):
+                            pass
+            except FileNotFoundError:
+                pass
+            result = {
+                "flow": "discover → plan → approve → apply → verify",
+                "registry_docs": len(registry),
+                "ledger_events": events,
+                "next_steps": [
+                    "1. drive-discover or drive-poll (discover)",
+                    "2. drive-plan-create (plan)",
+                    "3. drive-plan-approve (human approval)",
+                    "4. drive-plan-apply (apply)",
+                    "5. drive-plan-verify (verify)",
+                ],
+            }
         elif a.command=='doctor':
             from . import __version__
             configured=a.instance_root is not None or bool(os.environ.get('CBA_KB_INSTANCE_ROOT'))

@@ -190,6 +190,11 @@ Source/Document 身份、写持久 JSONL ledger。永不写入 Drive。
 预写日志（WAL）检测崩溃的执行；操作带超时（fail-closed）；所有计划
 操作幂等，可安全重试。
 
+**统一工作流**（`cba-kb workflow-status --ledger … --registry …`）——
+显示你在业务流中的位置：
+`discover → plan → approve → apply → verify`。
+每步使用上述 CLI 命令；plan 与 apply 之间需要人工批准。
+
 **Drive 轮询**（`cba-kb drive-poll --registry … --ledger … --state …`）——
 持续监听 Drive 变化，增量更新发现 registry。崩溃安全：整批处理完成后
 才推进检查点；重启后恢复不丢失已处理工作。重复内容通过持久化摘要
