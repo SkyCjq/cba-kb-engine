@@ -418,6 +418,8 @@ def main():
             # READ-ONLY slice: refuses empty folder-id; never writes to Drive.
             if not (a.folder_id or '').strip():
                 raise ValueError('FOLDER_ID_REQUIRED')
+            if not a.max_bytes_mb or a.max_bytes_mb <= 0:
+                raise ValueError('MAX_BYTES_MUST_BE_POSITIVE')
             from .drive_discovery import run_discovery
             instance=private_instance();drive=Drive(root,instance)
             result=run_discovery(

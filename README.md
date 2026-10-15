@@ -185,12 +185,21 @@ Security constraints (fail-closed by default):
   Residual risk: human rights clearance is still required before any
   real-world exposure.
 
-Delivered after PR-1 (2.0.4-2 slice 1): read-only Drive discovery
+In development after PR-1 (2.0.4-2 slice 1, PR #159 — pending independent
+Q2 and Human merge; not released): read-only Drive discovery
 (`cba-kb drive-discover --folder-id ... --ledger ...`) — folder listing,
 access/content/version verification, Source/Document identity with
 duplicate/revision handling, and a durable JSONL ledger. It never writes to
-Drive. Remains v2.0.4 follow-up work: guarded archive move/retain, full
+Drive. `--verify-bytes` is off by default: without it, bytes are NOT
+downloaded or compared and the digest is the metadata-claimed value only.
+Remains v2.0.4 follow-up work: guarded archive move/retain, full
 cross-backend recovery, Production release.
+
+Evidence tiers (do not conflate): isolated unit tests run against scripted
+fakes — they prove contract behavior, never real API behavior; a real Drive
+E2E requires an authorized isolated test Drive and has not run yet;
+Production Activation and whole-version completion are separate Human
+decisions tracked in the 65-item delivery matrix.
 
 ## 7. Semantic Principles
 
