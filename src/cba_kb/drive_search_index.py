@@ -1,17 +1,22 @@
 """Persistent rights-aware keyword search index (2.0.4-2 slice 5, T2).
 
 An inverted keyword index over (file_id, title, body-text) built from the
-discovery registry. Rights-aware at query time: a principal only sees
-documents they hold an explicit grant for. A revoked grant removes the
-document from that principal's view (isolation); the index itself is
-rights-agnostic storage, filtering happens per query.
+discovery registry. Rights-aware: only documents with a valid ``approved``
+grant are visible. This is document-level authorization (the current data
+model has no per-reader ACLs) — ``private``/``review``/unapproved documents
+are never returned, regardless of caller.
 
 Design notes:
 - The index stores terms -> file_ids and minimal per-doc metadata (title,
-  rights_status, grantees). It does NOT store document body text or
-  snippets — the leak surface of the index file is limited to terms and
-  titles. Full content is fetched from the registry/document store after
-  a rights-filtered match.
+  rights_status). It does NOT store document body text or snippets — the
+  leak surface of the index file is limited to terms and titles. Full
+  content is fetched from the registry/document store after a
+  rights-filtered match. Note: indexed keywords themselves are derived
+  from document text; a keyword index inherently reveals term presence.
+  This is a residual risk, not a leak of full content.
+- ``principal`` is a required query parameter for audit and forward
+  compatibility, but current enforcement is document-level approval.
+  Per-reader ACLs are future work when the data model supports them.
 - Persistence is atomic JSON, versioned. A corrupt index fails closed
   (refuses to load); rebuild from the registry is deterministic.
 - Tokenization is simple lowercase word splitting; sufficient for the
@@ -29,6 +34,9 @@ from .common import atomic
 INDEX_CORRUPT = "SEARCH_INDEX_CORRUPT"
 INDEX_VERSION = 1
 
+# Rights statuses that are NEVER visible in search, regardless of grants.
+NEVER_VISIBLE = {"private", "review"}
+
 _TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 
 
@@ -39,15 +47,38 @@ def tokenize(text: str) -> List[str]:
     return _TOKEN_RE.findall(text.lower())
 
 
+def _grant_valid(record: Dict[str, Any]) -> bool:
+    """Strict grant validation aligned with drive_search.grant_rights.
+
+    A grant is valid iff rights_status == "approved" and the stored
+    rights_grant has approved=True with the required fields.
+    """
+    if record.get("rights_status") != "approved":
+        return False
+    grant = record.get("rights_grant")
+    if not isinstance(grant, dict):
+        return False
+    if grant.get("approved") is not True:
+        return False
+    for field in ("approver", "file_id", "scope"):
+        if not grant.get(field):
+            return False
+    return True
+
+
 def build_index(
     registry: Dict[str, Dict[str, Any]],
     texts: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Build a deterministic rights-aware index from a registry.
 
-    ``registry``: file_id -> record (must have name/title, rights_status,
-    and optionally rights_grant with grantee).
+    ``registry``: file_id -> record (with name/title, rights_status,
+    rights_grant).
     ``texts``: file_id -> body text (optional; title is always indexed).
+
+    Only ``approved`` documents with a strictly valid grant are marked
+    visible. All others are indexed for term completeness but flagged
+    invisible — they can never be returned.
 
     Returns the index dict (not yet persisted).
     """
@@ -61,12 +92,10 @@ def build_index(
         tokens = set(tokenize(title)) | set(tokenize(body))
         for token in tokens:
             terms.setdefault(token, set()).add(file_id)
-        grant = record.get("rights_grant") or {}
-        grantee = grant.get("grantee")
         docs[file_id] = {
             "title": title,
             "rights_status": record.get("rights_status"),
-            "grantees": [grantee] if grantee else [],
+            "visible": _grant_valid(record),
             "term_count": len(tokens),
         }
     return {
@@ -88,9 +117,9 @@ def save_index(path: Any, index: Dict[str, Any]) -> None:
 def load_index(path: Any) -> Dict[str, Any]:
     """Load the index, fail-closed on corruption.
 
-    Validates version, kind, and the structure of terms/docs. A
-    semantically corrupt index (e.g. terms mapping to non-lists, docs
-    missing rights fields) is rejected, never silently searched.
+    Validates version, kind, and the structure of terms/docs, including
+    that every doc has a rights_status string and a boolean visible flag.
+    A semantically corrupt index is rejected, never silently searched.
     """
     p = Path(path)
     if not p.exists():
@@ -120,22 +149,28 @@ def load_index(path: Any) -> Dict[str, Any]:
         if not isinstance(meta.get("title"), str):
             raise ValueError(f"{INDEX_CORRUPT}: {p}: doc {fid!r} "
                              f"missing title")
-        if not isinstance(meta.get("grantees"), list):
+        if not isinstance(meta.get("rights_status"), str):
             raise ValueError(f"{INDEX_CORRUPT}: {p}: doc {fid!r} "
-                             f"missing grantees")
+                             f"missing/invalid rights_status")
+        if not isinstance(meta.get("visible"), bool):
+            raise ValueError(f"{INDEX_CORRUPT}: {p}: doc {fid!r} "
+                             f"missing/invalid visible flag")
     return data
 
 
 def _visible_to(doc_meta: Dict[str, Any], principal: str) -> bool:
-    """A principal sees a doc only with an explicit grant.
+    """Document-level visibility: only approved docs are visible.
 
-    `granted` status alone is not enough — the principal must be listed in
-    `grantees`. `private`/`review`/missing grants are invisible. (Public
-    documents are out of scope for 2.0.4-2 and never indexed as visible.)
+    ``principal`` is required for audit/forward-compatibility, but current
+    enforcement is document-level. Defense in depth: BOTH rights_status
+    == "approved" AND the visible flag must hold. A single tampered field
+    cannot make a private/review document visible.
     """
     if not principal:
         return False
-    return principal in (doc_meta.get("grantees") or [])
+    if doc_meta.get("rights_status") != "approved":
+        return False
+    return doc_meta.get("visible") is True
 
 
 def search_index(
@@ -147,9 +182,10 @@ def search_index(
 ) -> Dict[str, Any]:
     """Rights-filtered keyword search.
 
-    Returns {"results": [{file_id, title, matched_terms}], "excluded": n}.
-    Only documents visible to `principal` are returned; matches the
-    principal cannot see are counted in `excluded`, never listed.
+    Returns {"results": [{file_id, title, matched_terms}]}. Only approved
+    documents are returned. No exclusion counts are reported — the
+    response reveals nothing about non-visible matches (no keyword
+    existence side channel).
     """
     if not query or not query.strip():
         raise ValueError("SEARCH_QUERY_REQUIRED")
@@ -160,24 +196,20 @@ def search_index(
 
     query_terms = set(tokenize(query))
     if not query_terms:
-        return {"results": [], "excluded": 0}
+        return {"results": []}
 
     terms = index.get("terms", {})
     docs = index.get("docs", {})
-    # Union of file_ids matching any query term.
     matched: Set[str] = set()
     for qt in query_terms:
         matched.update(terms.get(qt, []))
 
     results = []
-    excluded = 0
     for fid in sorted(matched):
         meta = docs.get(fid)
         if meta is None:
-            excluded += 1
             continue
         if not _visible_to(meta, principal):
-            excluded += 1
             continue
         doc_terms = {t for t, fids in terms.items() if fid in fids}
         results.append({
@@ -187,22 +219,39 @@ def search_index(
         })
         if len(results) >= limit:
             break
-    return {"results": results, "excluded": excluded}
+    return {"results": results}
 
 
 def revoke_grant(index: Dict[str, Any], file_id: str,
                  principal: str) -> bool:
-    """Remove a principal from a doc's grantees (isolation).
+    """Revoke a document's visibility (isolation).
 
-    Returns True if the principal was removed. The doc stays in the index
-    for other grantees; the revoked principal immediately loses visibility.
-    Call `save_index` to persist.
+    Sets the doc's ``visible`` flag to False. Returns True if the doc was
+    found and visible. Memory-only — call ``save_index`` to persist, or
+    use ``revoke_grant_persistent`` for an atomic load-revoke-save.
+
+    Note: revocation is document-level (hides from all callers), matching
+    the document-level approval model. ``principal`` is accepted for API
+    compatibility and audit.
     """
     meta = (index.get("docs") or {}).get(file_id)
     if meta is None:
         return False
-    grantees = meta.get("grantees") or []
-    if principal in grantees:
-        meta["grantees"] = [g for g in grantees if g != principal]
+    if meta.get("visible") is True:
+        meta["visible"] = False
         return True
     return False
+
+
+def revoke_grant_persistent(index_path: Any, file_id: str,
+                            principal: str) -> bool:
+    """Atomically revoke a document's visibility in the persisted index.
+
+    Loads, revokes, and saves. There is no window where the on-disk index
+    still shows the revoked document.
+    """
+    index = load_index(index_path)
+    changed = revoke_grant(index, file_id, principal)
+    if changed:
+        save_index(index_path, index)
+    return changed
