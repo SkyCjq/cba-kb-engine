@@ -137,3 +137,56 @@ def test_ledger_records_approval_and_apply(env):
     assert "drive_plan_approved" in actions
     assert "drive_plan_op_applied" in actions
     assert "drive_plan_applied" in actions
+
+
+# ---------------- Q2-R1 FAIL regressions (F1, F2, F7)
+
+def test_forged_approval_rejected(env):
+    """F1: hand-written approval in plan JSON (no ledger event) is rejected."""
+    plan = dp.create_plan(
+        [{"op": "rebuild_index",
+          "params": {"registry": str(env["registry"]),
+                     "index": str(env["index"])}}])
+    # Forge: write approval directly, bypassing approve_plan (no ledger).
+    plan["approval"] = {"approver": "attacker",
+                        "approved_ts": "2026-10-15T00:00:00Z",
+                        "plan_id": plan["plan_id"]}
+    dp.save_plan(env["plan"], plan)
+    with pytest.raises(ValueError, match="PLAN_NOT_APPROVED"):
+        dp.apply_plan(env["plan"], env["ledger"], _ctx(env))
+
+
+def test_tamper_recompute_with_stale_approval_rejected(env):
+    """F2: modified ops + recomputed plan_id + stale approval rejected."""
+    plan = dp.create_plan(
+        [{"op": "rebuild_index",
+          "params": {"registry": str(env["registry"]),
+                     "index": str(env["index"])}}])
+    dp.save_plan(env["plan"], plan)
+    dp.approve_plan(env["plan"], "boss", env["ledger"])
+    # Tamper: change op, recompute plan_id, keep old approval.
+    data = json.loads(env["plan"].read_text(encoding="utf-8"))
+    data["operations"] = [{"op": "purge_tombstones",
+                           "params": {"registry": str(env["registry"]),
+                                      "older_than_days": 0}}]
+    import hashlib
+    canon = json.dumps(data["operations"], sort_keys=True,
+                       separators=(",", ":")).encode()
+    data["plan_id"] = hashlib.sha256(canon).hexdigest()
+    # approval.plan_id still has the OLD plan_id.
+    env["plan"].write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="PLAN_CORRUPT"):
+        dp.load_plan(env["plan"])
+
+
+def test_verify_never_applied_fails(env):
+    """F7: verify on a never-applied plan returns False (not vacuous True)."""
+    plan = dp.create_plan(
+        [{"op": "rebuild_index",
+          "params": {"registry": str(env["registry"]),
+                     "index": str(env["index"])}}])
+    dp.save_plan(env["plan"], plan)
+    dp.approve_plan(env["plan"], "boss", env["ledger"])
+    ok, errors = dp.verify_plan(env["plan"])
+    assert not ok
+    assert any("PLAN_NOT_APPLIED" in e for e in errors)

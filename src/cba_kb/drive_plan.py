@@ -111,6 +111,16 @@ def load_plan(path: Any) -> Dict[str, Any]:
     if data.get("plan_id") != _plan_id(data.get("operations", [])):
         raise ValueError(f"{PLAN_CORRUPT}: {p}: plan_id mismatch "
                          f"(operations tampered)")
+    # F-01 root cause: the approval is bound to the plan_id. If operations
+    # are modified and plan_id recomputed, a stale approval (with the old
+    # plan_id) must not be accepted.
+    approval = data.get("approval")
+    if approval is not None:
+        if not isinstance(approval, dict):
+            raise ValueError(f"{PLAN_CORRUPT}: {p}: approval not a dict")
+        if approval.get("plan_id") != data.get("plan_id"):
+            raise ValueError(f"{PLAN_CORRUPT}: {p}: approval plan_id "
+                             f"mismatch (stale/forged approval)")
     return data
 
 
@@ -227,10 +237,45 @@ _OP_HANDLERS = {
 }
 
 
+def _approval_verified(plan: Dict[str, Any], ledger_path: Any) -> bool:
+    """Verify the plan's approval via the ledger (anti-forgery).
+
+    A plan JSON with a hand-written ``approval`` dict (not via
+    ``approve_plan``) is FORGED. The only trusted approval record is the
+    ``drive_plan_approved`` ledger event with a matching plan_id.
+    Returns True iff such an event exists.
+    """
+    try:
+        lines = Path(ledger_path).read_text(encoding="utf-8").splitlines()
+    except (FileNotFoundError, OSError):
+        return False
+    plan_id = plan.get("plan_id")
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("action") != "drive_plan_approved":
+            continue
+        if event.get("approval_ref") == plan_id or \
+           event.get("plan_id") == plan_id:
+            # Also verify the approver matches the plan's approval record.
+            approver = (plan.get("approval") or {}).get("approver")
+            if approver and event.get("operator") == approver:
+                return True
+    return False
+
+
 def apply_plan(plan_path: Any, ledger_path: Any,
                ctx: Optional[Dict[str, Any]] = None,
                actor: str = "muse") -> Dict[str, Any]:
     """Execute an approved plan, op by op. Fail-closed if not approved.
+
+    Approval is verified via the ledger: the plan must have a matching
+    ``drive_plan_approved`` event. A hand-written ``approval`` dict in the
+    plan JSON (forged, not via ``approve_plan``) is rejected.
 
     Returns {"plan_id": ..., "completed": [...], "failed": None | {...}}.
     Each operation is ledger-recorded. On failure, aborts and records
@@ -239,6 +284,9 @@ def apply_plan(plan_path: Any, ledger_path: Any,
     plan = load_plan(plan_path)
     if plan.get("approval") is None:
         raise ValueError(PLAN_NOT_APPROVED)
+    if not _approval_verified(plan, ledger_path):
+        raise ValueError(f"{PLAN_NOT_APPROVED}: approval not found in "
+                         f"ledger (forged approval rejected)")
     ctx = ctx or {}
     completed = []
     for i, op in enumerate(plan["operations"]):
@@ -299,10 +347,15 @@ def verify_plan(plan_path: Any,
     """Independent readback: re-read from disk, verify each op's outcome.
 
     Returns (ok, errors). Uses fresh disk reads, not cached state.
+    A plan that was never applied (empty apply_log) returns
+    (False, ["PLAN_NOT_APPLIED"]) — vacuous success is not allowed.
     """
     plan = load_plan(plan_path)
+    apply_log = plan.get("apply_log", [])
+    if not apply_log:
+        return False, ["PLAN_NOT_APPLIED: plan has no apply_log"]
     errors = []
-    for entry in plan.get("apply_log", []):
+    for entry in apply_log:
         op_name = entry.get("op")
         params = plan["operations"][entry["index"]].get("params", {})
         if op_name == "rebuild_index":

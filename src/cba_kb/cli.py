@@ -538,6 +538,8 @@ def main():
         elif a.command=='drive-plan-verify':
             from .drive_plan import verify_plan
             ok, errors=verify_plan(a.plan)
+            if not ok:
+                raise ValueError(f"PLAN_VERIFY_FAILED: {errors}")
             result={"verified": ok, "errors": errors}
         elif a.command in {'document-ingest','document-batch'}:
             from .document_lane import DocumentLane
