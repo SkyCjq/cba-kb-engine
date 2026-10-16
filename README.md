@@ -4,7 +4,7 @@
 
 **A headline is not a verified fact.** CBA-KB is an open-source, evidence-first knowledge engine for research on the Chinese Basketball Association (CBA). It helps researchers and developers organize reports, rosters, official notices, and documents without losing their sources, identities, rights, or verification status. The question behind every result is simple: **“Where did this come from?”**
 
-> **Current production release: v2.0.2.** The `main` branch also contains parts of **v2.0.4-2 under development**. Full Google Drive archiving, real two-backend end-to-end acceptance, and production activation are **not complete**. This README is not a production-release announcement.
+> **Latest effective release: v2.0.2.** The `main` branch includes the integrated **v2.0.4-2 development code**, but it has not completed real Google Drive end-to-end acceptance or production activation. It is not a released production version.
 
 ## Why CBA-KB exists
 
@@ -28,19 +28,21 @@ CBA-KB is designed to keep the pieces separate:
 | Examine a report | Separate statements, claims, verified facts, and outstanding checks | AI-generated summaries never become facts automatically |
 | Try a local inbox | Discover `.txt` files, register Source/Document, deduplicate, inspect status, and search | v2.0.4 development capability; requires a rights sidecar |
 | Discover Google Drive material | Read-only discovery, change polling, revision tracking, gated search and index | Development capability, not activated production Drive |
-| Plan archiving | Intended workflow: exact plan, approval, guarded operation, independent readback | Real Drive file moves are still undergoing integration review and E2E work |
+| Plan archiving | Prepare exact plans, require approval, run guarded operations and verify results | Integrated development code; real Drive E2E and production activation remain unverified |
 | Serve people and AI | Produce research data with identities, evidence, and rights context | Users remain responsible for validation and copyright compliance |
 
 **CBA-KB is not a chatbot or a service that automatically crawls the whole web and declares basketball facts.** It is a reusable engine; you choose appropriate data sources, run it in your environment, and define human-review processes.
 
-## Understand the release status first
+## Major versions and current status
 
-- **v2.0.2: released baseline.** Public Engine, data contracts, synthetic fixtures, research and verification tooling.
-- **v2.0.4-2: in development.** The `main` branch contains code for a local inbox, read-only Drive discovery/polling, permission gates, indexes, some plan approval, and WAL recovery. **Module presence is not proof that the complete workflow has passed acceptance.**
-- **Integration [PR #176](https://github.com/SkyOneBranch/cba-kb-engine/pull/176): under review.** Guarded Drive move and unified workflow changes require independent Q2 against the final commit and a human merge before they reach `main`.
-- **Not yet complete:** real isolated Google Drive E2E, full-scope acceptance, Production GO, deployment to an actual host, production Inbox activation, and user acceptance.
+| Version | Main changes | Status |
+| --- | --- | --- |
+| **v1.5.x** | Registration data model, reproducible Excel output and early Drive publication tools | Historical milestone |
+| **v1.8.x** | Document evidence, stable player identities and consumer checks | Historical milestone |
+| **v1.9.0** | Source intake, Statements, Claims, verification queues and research views | Historical milestone |
+| **v2.0.2** | Public open-source Engine, licensing, sanitized repository, synthetic fixtures and reproducible tooling | **Latest effective release** |
 
-**You can experiment locally with synthetic data. Do not treat this as permission to move production Google Drive files.**
+**Next version — v2.0.4-2:** Development code is integrated into `main`, including local Inbox processing, Drive discovery and polling, rights-aware indexing, guarded plans and recovery. **Real isolated Drive E2E, final product acceptance and production activation are still pending.** It is not a new effective release.
 
 ## 5-minute quick start
 
@@ -117,15 +119,11 @@ cba-kb --instance-root /tmp/cbakb-demo archive-query --keyword "Harbor Falcons"
 
 This demo does not move, delete, or publish originals. Actual results depend on the command output; invalid rights metadata, an unstable file, or a review requirement may prevent ingestion. See the [operations and safety details](docs/operations/OPERATIONS.md) before running with real content.
 
-## Google Drive: why not just move everything in one click?
+## Google Drive: organize files with approval
 
-With personal Drive files, the priority is not speed. It is **moving the right file, with the right permissions, and being able to verify what happened afterward**.
+CBA-KB can discover and track Drive files, then prepare an explicit plan for archiving or retaining them. **A file move requires authorization and a check of the actual result.** If required file or revision evidence is missing, the operation must stop.
 
-CBA-KB's intended path is: read exact file ID, original parents, intended destination, revision and rights evidence → prepare an exact plan → obtain human authorization → recheck before a write → execute a guarded operation → independently read the result from Drive. Missing required evidence should stop the action rather than be treated as approval.
-
-The development branch includes read-only Drive discovery, change polling, search, indexing, and some guarded local planning. **Production Drive reparent/move has not passed full-version independent acceptance.** Real production moves, deletions, sharing, publishing, or pointer updates require separate Human Production GO and any confirmation required by the connected Google Drive tools.
-
-Real OAuth credentials, private folder IDs, raw corpora, and user logs belong in a separate **Private Instance**, not this public GitHub repository.
+The guarded move implementation is in development code, but **real Drive E2E acceptance and production activation are not complete**. Production writes require separate human authorization. Keep OAuth credentials and private folder information outside this public repository.
 
 ## Who is it for?
 
@@ -134,19 +132,6 @@ Real OAuth credentials, private folder IDs, raw corpora, and user logs belong in
 - **AI application builders** who want to keep rumors, source statements, and verified facts separate.
 
 The repository provides a **Public Engine**. Real private material is operated separately in a user's **Private Instance** under applicable permissions and law. Code uses [Apache-2.0](LICENSE), docs use [CC BY 4.0](DATA_LICENSE.md), and synthetic fixtures use [CC0-1.0](DATA_LICENSE.md). Third-party reporting and photographs retain their owners' rights; see [third-party data](THIRD_PARTY_DATA.md).
-
-## AI can write code. How do we know it is correct?
-
-AI agents also help develop this project. Think of the human as a **product manager**, Muse or another capable agent as the **developer**, and CI plus independent review as **testing and acceptance**. The human still makes the final decision.
-
-**New Requirement → Independent Q1 / Freeze → Agent implementation → GitHub PR → CI + independent Q2 → Human Approval → Merge**
-
-- State what should be built and what counts as done. For complex work, review the specification independently (Q1) and freeze the agreed scope before coding.
-- Muse, Grok, or another agent with suitable repository access can develop, test, and submit a PR; the primary coding agent can change between tasks.
-- GitHub CI supplies repeatable checks. A separate web AI reviewer, such as ChatGPT when it can access the code and evidence, can inspect the **exact PR HEAD**, reproduce issues, and request repairs.
-- A failed review means fix and re-review, not blindly merge. Human approval controls merging; **merging is not production deployment**.
-
-This is a budget-conscious collaboration approach inspired by [LACD](https://github.com/SkyOneBranch/LACD), **not a claim that CBA-KB itself is an AI coding service**. AI providers may offer free usage tiers, but availability, quotas, prices, permissions, and review quality vary. Testing and independent review reduce risk; they do not guarantee zero defects.
 
 ## Documentation and contributing
 
