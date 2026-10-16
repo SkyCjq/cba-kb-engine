@@ -64,7 +64,7 @@
   每次创建前校验目标在白名单内。`production_folders` 黑名单仅为纵深防御，
   不是主要控制手段。
 - **禁止**：测试文件夹之外的任何 Drive 内容；特别是生产归档文件夹。
-- `production-boundary` 模式要求非空的真实 `--production-folders`；
+- `production-boundary` 模式要求非空的真实 `--production-folders`，并在首次写入前向上回溯测试文件夹的完整祖先链，严格断言测试文件夹及其任何父级祖先均不在 `production_folders` 中；
   `dedicated-account` 模式要求身份/所有权/My Drive 根目录/精确名称/空目录，
   并完整分页枚举确认账号除本次允许对象外无其他可访问的未删除 Drive 对象；
   Drive 返回 `incompleteSearch` 时一律拒绝执行。

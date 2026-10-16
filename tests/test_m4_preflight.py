@@ -163,14 +163,18 @@ def test_authenticated_account_mismatch_fails_closed():
 
 
 class _Files:
-    def __init__(self, inventory=None, incomplete=False):
+    def __init__(self, inventory=None, incomplete=False, metadata=None):
         self.inventory = inventory or []
         self.incomplete = incomplete
         self.deleted = []
+        self.metadata = metadata or {}
 
     def get(self, fileId, **_kwargs):
-        assert fileId == "root"
-        return _Execute({"id": "root-id"})
+        if fileId == "root":
+            return _Execute({"id": "root-id"})
+        if fileId in self.metadata:
+            return _Execute(self.metadata[fileId])
+        return _Execute({"id": fileId, "parents": []})
 
     def list(self, **_kwargs):
         return _Execute({"files": list(self.inventory),
@@ -252,7 +256,9 @@ def test_reparent_revalidates_immediately_before_move():
     assert events == ["gate", "reparent"]
 
 
-def test_authorization_nonce_is_consumed_once(tmp_path):
+def test_authorization_nonce_is_consumed_once(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "CBA_KB_INDEPENDENT_CONSUMED_ROOT", str(tmp_path / "independent"))
     instance = SimpleNamespace(data_root=tmp_path / "data")
     record = {
         "authorization_id": "11111111-1111-4111-8111-111111111111",
@@ -300,3 +306,101 @@ def test_receipt_write_failure_is_not_best_effort(tmp_path, monkeypatch):
     monkeypatch.setattr(m4.os, "replace", denied)
     with pytest.raises(m4._ReceiptWriteFailure, match="disk denied"):
         m4._write_receipt(str(tmp_path / "receipt.json"), {"status": "PASSED"})
+
+
+def test_production_boundary_validates_production_folders_exist_and_not_trashed():
+    metadata = {
+        "prod-1": {"id": "prod-1", "mimeType": "text/plain", "trashed": False},
+        "folder-1": {"id": "folder-1", "mimeType": "application/vnd.google-apps.folder", "parents": ["root"]},
+    }
+    files = _Files([], metadata=metadata)
+    drive = SimpleNamespace(api=_FilesApi(files))
+    with pytest.raises(ValueError, match="production boundary prod-1 is not a folder"):
+        m4._verify_production_boundary(drive, "folder-1", ["prod-1"])
+
+    metadata["prod-1"] = {"id": "prod-1", "mimeType": "application/vnd.google-apps.folder", "trashed": True}
+    with pytest.raises(ValueError, match="production boundary prod-1 is trashed"):
+        m4._verify_production_boundary(drive, "folder-1", ["prod-1"])
+
+
+def test_production_boundary_rejects_test_folder_coinciding_with_production_folder():
+    metadata = {
+        "prod-1": {"id": "prod-1", "mimeType": "application/vnd.google-apps.folder", "trashed": False},
+    }
+    files = _Files([], metadata=metadata)
+    drive = SimpleNamespace(api=_FilesApi(files))
+    with pytest.raises(ValueError, match="coincides with a production folder ID"):
+        m4._verify_production_boundary(drive, "prod-1", ["prod-1"])
+
+
+def test_production_boundary_rejects_test_folder_inside_production_folder_ancestor():
+    metadata = {
+        "prod-root": {"id": "prod-root", "mimeType": "application/vnd.google-apps.folder", "trashed": False, "parents": ["root"]},
+        "sub-folder": {"id": "sub-folder", "mimeType": "application/vnd.google-apps.folder", "trashed": False, "parents": ["prod-root"]},
+        "test-folder": {"id": "test-folder", "mimeType": "application/vnd.google-apps.folder", "trashed": False, "parents": ["sub-folder"]},
+    }
+    files = _Files([], metadata=metadata)
+    drive = SimpleNamespace(api=_FilesApi(files))
+    with pytest.raises(ValueError, match="or its ancestor prod-root is inside production folders"):
+        m4._verify_production_boundary(drive, "test-folder", ["prod-root"])
+
+
+def test_production_boundary_accepts_clean_isolated_hierarchy():
+    metadata = {
+        "prod-1": {"id": "prod-1", "mimeType": "application/vnd.google-apps.folder", "trashed": False, "parents": ["root"]},
+        "other-parent": {"id": "other-parent", "mimeType": "application/vnd.google-apps.folder", "trashed": False, "parents": ["root"]},
+        "test-folder": {"id": "test-folder", "mimeType": "application/vnd.google-apps.folder", "trashed": False, "parents": ["other-parent"]},
+    }
+    files = _Files([], metadata=metadata)
+    drive = SimpleNamespace(api=_FilesApi(files))
+    # Should complete without error
+    m4._verify_production_boundary(drive, "test-folder", ["prod-1"])
+
+
+def test_authorization_nonce_rejects_replay_even_if_instance_ledger_deleted(tmp_path, monkeypatch):
+    instance = SimpleNamespace(data_root=str(tmp_path / "data"))
+    independent = tmp_path / "independent"
+    monkeypatch.setenv("CBA_KB_INDEPENDENT_CONSUMED_ROOT", str(independent))
+    record = {
+        "authorization_id": "22222222-2222-4222-8222-222222222222",
+        "_record_sha256": "b" * 64,
+    }
+    first = m4._consume_authorization(instance, record)
+    assert first.is_file()
+    assert (independent / f"{record['authorization_id']}.json").is_file()
+
+    # Simulate execution user deleting instance data_root ledger to attempt replay
+    (Path(instance.data_root) / "m4_consumed_authorizations" / f"{record['authorization_id']}.json").unlink()
+
+    # Must still be rejected due to independent ledger
+    with pytest.raises(ValueError, match="already consumed"):
+        m4._consume_authorization(instance, record)
+
+
+def test_bind_and_sanitize_python_path_rejects_untrusted_cba_kb(tmp_path, monkeypatch):
+    fake_engine = tmp_path / "fake_engine"
+    (fake_engine / "src" / "cba_kb").mkdir(parents=True)
+    untrusted_module = SimpleNamespace(__file__=str(tmp_path / "evil" / "cba_kb" / "__init__.py"), __name__="cba_kb")
+    monkeypatch.setitem(m4.sys.modules, "cba_kb", untrusted_module)
+
+    with pytest.raises(ValueError, match="cba_kb module already loaded from untrusted location"):
+        m4._bind_and_sanitize_python_path(fake_engine)
+
+
+def test_mutation_gate_rejects_post_startup_worktree_change(tmp_path, monkeypatch):
+    sha = "a" * 40
+    new_sha = "b" * 40
+    outputs = iter([
+        sha + "\n", "main\n", sha + "\n", "",
+        new_sha + "\n", "main\n", new_sha + "\n", "",
+    ])
+    monkeypatch.setattr(m4, "_trusted_git", lambda: "/usr/bin/git")
+    monkeypatch.setattr(
+        m4.subprocess, "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout=next(outputs)))
+
+    initial = m4._current_git_sha(tmp_path, verify_fetch=False)
+    assert initial == sha
+
+    current = m4._current_git_sha(tmp_path, verify_fetch=False)
+    assert current == new_sha

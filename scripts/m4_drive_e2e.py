@@ -81,6 +81,8 @@ from typing import Any, Dict, List, Optional
 SYSTEM_GIT = Path("/usr/bin/git")
 SYSTEM_APPROVAL_PUBLIC_KEY = Path(
     "/etc/cba-kb/m4_approval_ed25519_public.pem")
+SYSTEM_CONSUMED_DIR = Path(
+    "/etc/cba-kb/consumed_authorizations")
 
 
 def fail(msg: str, code: int = 1) -> "NoReturn":
@@ -158,11 +160,12 @@ def _trusted_git() -> str:
     return str(_assert_root_owned_file(SYSTEM_GIT, "system Git executable"))
 
 
-def _current_git_sha(engine_root: Path) -> str:
+def _current_git_sha(engine_root: Path, verify_fetch: bool = True) -> str:
     git = _trusted_git()
-    subprocess.run(
-        [git, "fetch", "origin", "--prune", "--tags"], cwd=engine_root,
-        check=True, capture_output=True, text=True, timeout=120)
+    if verify_fetch:
+        subprocess.run(
+            [git, "fetch", "origin", "--prune", "--tags"], cwd=engine_root,
+            check=True, capture_output=True, text=True, timeout=120)
     sha = subprocess.run(
         [git, "rev-parse", "HEAD"], cwd=engine_root, check=True,
         capture_output=True, text=True).stdout.strip()
@@ -179,6 +182,51 @@ def _current_git_sha(engine_root: Path) -> str:
         raise ValueError(
             "Engine must be clean main at exact origin/main before real Drive writes")
     return sha
+
+
+def _bind_and_sanitize_python_path(engine_root: Path) -> None:
+    """Bind Python module resolution strictly to the reviewed engine root."""
+    resolved_engine = engine_root.resolve()
+    trusted_src = (resolved_engine / "src").resolve()
+    trusted_legacy = (resolved_engine / "legacy").resolve()
+
+    # Check already-loaded modules for untrusted cba_kb injection
+    if "cba_kb" in sys.modules and (trusted_src / "cba_kb").exists():
+        mod = sys.modules["cba_kb"]
+        mod_file = getattr(mod, "__file__", None)
+        if not mod_file or not Path(mod_file).resolve().is_relative_to(trusted_src):
+            raise ValueError(
+                f"cba_kb module already loaded from untrusted location: {mod_file}")
+
+    # Sanitize sys.path: remove any entries hosting external cba_kb
+    cleaned_path: List[str] = []
+    for entry in sys.path:
+        entry_path = Path(entry).resolve()
+        if (entry_path / "cba_kb").exists() and not entry_path.is_relative_to(resolved_engine):
+            continue
+        cleaned_path.append(entry)
+    sys.path = cleaned_path
+
+    # Ensure trusted src and legacy directories take precedence at the front
+    src_str = str(trusted_src)
+    legacy_str = str(trusted_legacy)
+    if legacy_str in sys.path:
+        sys.path.remove(legacy_str)
+    sys.path.insert(0, legacy_str)
+    if src_str in sys.path:
+        sys.path.remove(src_str)
+    sys.path.insert(0, src_str)
+
+
+def _assert_trusted_cba_kb_import(module: Any, engine_root: Path) -> None:
+    trusted_dir = (engine_root / "src").resolve()
+    if not (trusted_dir / "cba_kb").exists():
+        return
+    mod_file = getattr(module, "__file__", None)
+    if not mod_file or not Path(mod_file).resolve().is_relative_to(trusted_dir):
+        raise ValueError(
+            f"untrusted module {getattr(module, '__name__', 'unknown')} "
+            f"loaded from: {mod_file}")
 
 
 def _read_root_trust_anchor(path: Path = SYSTEM_APPROVAL_PUBLIC_KEY) -> bytes:
@@ -267,36 +315,70 @@ def _validate_authorization(path: str, *, test_go: str, engine_sha: str,
     return record
 
 
-def _consume_authorization(instance: Any, record: Dict[str, Any]) -> Path:
+def _consume_authorization(instance: Any, record: Dict[str, Any],
+                           independent_consumed_root: Optional[Path] = None) -> Path:
     authorization_id = record.get("authorization_id")
     if not isinstance(authorization_id, str) or not authorization_id:
         raise ValueError("authorization_id is required")
     if (authorization_id != authorization_id.lower()
             or any(ch not in "0123456789abcdef-" for ch in authorization_id)):
         raise ValueError("authorization_id must be lowercase hex/UUID form")
-    consumed_root = Path(instance.data_root) / "m4_consumed_authorizations"
-    consumed_root.mkdir(parents=True, exist_ok=True)
-    os.chmod(consumed_root, 0o700)
-    target = consumed_root / f"{authorization_id}.json"
+
+    # Determine independent persistent root (Cat-2 #2 fix: cannot be rolled back by deleting instance data_root)
+    if independent_consumed_root is None:
+        env_root = os.environ.get("CBA_KB_INDEPENDENT_CONSUMED_ROOT")
+        if env_root:
+            independent_consumed_root = Path(env_root).resolve()
+        else:
+            try:
+                SYSTEM_CONSUMED_DIR.mkdir(parents=True, exist_ok=True)
+                independent_consumed_root = SYSTEM_CONSUMED_DIR
+            except (OSError, PermissionError):
+                independent_consumed_root = Path.home() / ".cba-kb" / "consumed_authorizations"
+
+    consumed_roots = [
+        Path(instance.data_root) / "m4_consumed_authorizations",
+        independent_consumed_root,
+    ]
+
+    # Pre-check across all ledger roots (Cat-2 #2: detect replay even if instance ledger was deleted)
+    for root in consumed_roots:
+        if (root / f"{authorization_id}.json").exists():
+            raise ValueError("TEST authorization was already consumed")
+
     payload = json.dumps({
         "authorization_id": authorization_id,
         "record_sha256": record["_record_sha256"],
         "consumed_at": datetime.now(timezone.utc).isoformat(),
     }, sort_keys=True).encode("utf-8") + b"\n"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(target, flags, 0o600)
-    except FileExistsError as exc:
-        raise ValueError("TEST authorization was already consumed") from exc
-    with os.fdopen(descriptor, "wb") as handle:
-        handle.write(payload)
-        handle.flush()
-        os.fsync(handle.fileno())
-    return target
+
+    primary_target: Optional[Path] = None
+    for root in consumed_roots:
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(root, 0o700)
+        except OSError:
+            pass
+        target = root / f"{authorization_id}.json"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(target, flags, 0o600)
+        except FileExistsError as exc:
+            raise ValueError("TEST authorization was already consumed") from exc
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if primary_target is None:
+            primary_target = target
+
+    return primary_target or target
 
 
 def _load_private_instance(instance_root: str, *, engine_root: Path):
+    _bind_and_sanitize_python_path(engine_root)
     from cba_kb.instance import load_instance
+    _assert_trusted_cba_kb_import(sys.modules["cba_kb.instance"], engine_root)
     return load_instance(engine_root, instance_root)
 
 
@@ -355,6 +437,56 @@ def _verify_dedicated_account(drive: Any, folder_meta: Dict[str, Any],
         raise ValueError(
             "dedicated-account inventory differs from the exact approved "
             "test-run object set")
+
+
+def _verify_production_boundary(drive: Any, test_folder: str,
+                                prod_folders: List[str]) -> None:
+    """Verify test folder and its ancestors are separate from production folders,
+    and verify all production folders are valid accessible non-trashed folders."""
+    if not prod_folders:
+        raise ValueError(
+            "production-boundary mode requires at least one production folder")
+    prod_set = set(prod_folders)
+
+    # Cat-2 #1: Validate production folders exist, are folders, and not trashed
+    for prod_id in prod_folders:
+        try:
+            prod_meta = drive.api.files().get(
+                fileId=prod_id, fields="id,mimeType,trashed",
+                supportsAllDrives=True).execute(num_retries=0)
+        except Exception as exc:
+            raise ValueError(f"cannot verify production boundary {prod_id}: {exc}") from exc
+        if prod_meta.get("mimeType") != "application/vnd.google-apps.folder":
+            raise ValueError(f"production boundary {prod_id} is not a folder")
+        if prod_meta.get("trashed"):
+            raise ValueError(f"production boundary {prod_id} is trashed")
+
+    # Cat-2 #1: Verify test_folder does not coincide with production folders
+    if test_folder in prod_set:
+        raise ValueError(
+            f"test folder {test_folder} coincides with a production folder ID")
+
+    # Cat-2 #1: Traverse ancestor chain to verify test_folder is not inside any production folder
+    queue = [test_folder]
+    visited = set()
+    while queue:
+        curr = queue.pop(0)
+        if curr in visited or curr == "root":
+            continue
+        visited.add(curr)
+        if curr in prod_set:
+            raise ValueError(
+                f"test folder {test_folder} or its ancestor {curr} is inside "
+                f"production folders {prod_folders}")
+        try:
+            meta = drive.api.files().get(
+                fileId=curr, fields="id,parents",
+                supportsAllDrives=True).execute(num_retries=0)
+        except Exception as exc:
+            raise ValueError(f"cannot trace parent hierarchy of {curr}: {exc}") from exc
+        for p in meta.get("parents", []):
+            if p not in visited:
+                queue.append(p)
 
 
 def _is_not_found(exc: Exception) -> bool:
@@ -470,6 +602,7 @@ def main() -> int:
         fail("explicit --test-go required (isolated TEST authorization)")
 
     engine_root = Path(__file__).resolve().parents[1]
+    _bind_and_sanitize_python_path(engine_root)
     expected_account = args.expected_account.strip().lower()
     if not expected_account or "@" not in expected_account:
         fail("--expected-account must be a valid explicit email address")
@@ -494,8 +627,8 @@ def main() -> int:
 
     # --- Gate 1c: Private Instance + signed, time-bounded Human approval ---
     try:
+        engine_sha = _current_git_sha(engine_root, verify_fetch=True)
         inst = _load_private_instance(args.instance_root, engine_root=engine_root)
-        engine_sha = _current_git_sha(engine_root)
     except Exception as exc:  # noqa: BLE001
         fail(f"cannot establish clean Engine/Private Instance boundary: {exc}")
     try:
@@ -545,7 +678,8 @@ def main() -> int:
     # --- Gate 2: OAuth must exist (fail-closed, no interactive auth) ---
     try:
         from cba_kb.drive import Drive, SCOPES
-    except ImportError as exc:
+        _assert_trusted_cba_kb_import(sys.modules["cba_kb.drive"], engine_root)
+    except Exception as exc:
         fail(f"cannot import drive modules: {exc}")
 
     token = Path(inst.credentials_store) / "token.json"
@@ -588,6 +722,11 @@ def main() -> int:
                 [test_folder])
         except ValueError as exc:
             fail(str(exc))
+    elif args.isolation_mode == "production-boundary":
+        try:
+            _verify_production_boundary(drive, test_folder, prod_folders)
+        except ValueError as exc:
+            fail(str(exc))
     existing = drive.list(test_folder)
     if existing:
         fail(f"--test-folder must be empty before the run; found "
@@ -597,11 +736,14 @@ def main() -> int:
 
     # --- Build evidence adapter ---
     from cba_kb.drive_adapter import DriveEvidenceAdapter
+    _assert_trusted_cba_kb_import(sys.modules["cba_kb.drive_adapter"], engine_root)
     adapter = DriveEvidenceAdapter(drive)
 
     # --- Create synthetic test files inside the test folder ---
     from cba_kb import drive_plan as dp
     from cba_kb.drive_move_plan import create_drive_move_plan
+    _assert_trusted_cba_kb_import(dp, engine_root)
+    _assert_trusted_cba_kb_import(sys.modules["cba_kb.drive_move_plan"], engine_root)
 
     content = b"M4_E2E_SYNTHETIC content 2026-10-16"
     sha256 = hashlib.sha256(content).hexdigest()
@@ -617,6 +759,12 @@ def main() -> int:
     e2e_error_msg: str = ""
 
     def require_mutation_gate() -> Dict[str, Any]:
+        # Cat-2 #3: Worktree must remain clean and unmodified post-startup
+        current_sha = _current_git_sha(engine_root, verify_fetch=False)
+        if current_sha != engine_sha:
+            raise ValueError(
+                f"Engine Git SHA or worktree status changed during run: "
+                f"{current_sha} != {engine_sha}")
         current_approval = require_current_authorization()
         if args.isolation_mode == "dedicated-account":
             current_folder = drive.api.files().get(
@@ -628,6 +776,8 @@ def main() -> int:
             _verify_dedicated_account(
                 drive, current_folder, test_folder, expected_account,
                 live_run_ids)
+        elif args.isolation_mode == "production-boundary":
+            _verify_production_boundary(drive, test_folder, prod_folders)
         return current_approval
 
     try:

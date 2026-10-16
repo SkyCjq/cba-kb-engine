@@ -81,12 +81,12 @@ python scripts/m4_drive_e2e.py \
 ## 安全保证
 
 - 所有操作限制在 `--test-folder` 内；文件创建经显式白名单校验。
-- `production-boundary` 模式触碰 `production_folders` → 拒绝。
+- `production-boundary` 模式触碰 `production_folders` 或祖先链包含 `production_folders` → 拒绝。
 - `dedicated-account` 模式不要求虚构生产 ID；它要求账号精确匹配、文件夹由该账号单独拥有、位于 My Drive、名称精确且运行前为空。
 - `dedicated-account` 还要求完整分页枚举 Drive 空间；`incompleteSearch` 会拒绝执行，且除
   测试 folder 与本次已创建对象外不得存在其他可访问的未删除对象。
 - 授权在每个创建和实际 `reparent` mutation 紧前重新验签、解析同一字节流并检查有效期；
-  一次性 `authorization_id` 以原子 `O_EXCL` 账本消费，重放会被拒绝；过期后仅允许范围内清理。
+  一次性 `authorization_id` 以原子 `O_EXCL` 独立持久化账本（防回滚重放）消费，重放会被拒绝；过期后仅允许范围内清理。
 - 授权窗口最长两小时；信任锚必须 root-owned，防止执行进程替换公钥后自签。
 - `test_go` 永不能授权生产写入；与 `production_go` 互斥。
 - 清理失败 → exit 3 + 残留 ID，不报告完整 PASS。
