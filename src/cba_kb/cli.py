@@ -19,6 +19,9 @@ def main():
     p.add_argument('--instance-root',type=Path)
     sub=p.add_subparsers(dest='command',required=True)
     sub.add_parser('auth'); sub.add_parser('doctor')
+    q=sub.add_parser('workflow-status')
+    q.add_argument('--ledger',type=Path,required=True)
+    q.add_argument('--registry',type=Path,required=True)
     for cmd in ('validate','build'):
         q=sub.add_parser(cmd); q.add_argument('--master',type=Path,required=True)
         if cmd=='build':
@@ -109,8 +112,14 @@ def main():
     q.add_argument('--plan',type=Path,required=True)
     q.add_argument('--ledger',type=Path,required=True)
     q.add_argument('--registry',type=Path,required=True)
+    q.add_argument('--production-go',type=str,default=None,
+                   help='Human Production GO reference (required for drive_move ops)')
+    q.add_argument('--drive-adapter',type=str,default=None,
+                   help='Python import path for Drive adapter factory (e.g., mymod.get_adapter)')
     q=sub.add_parser('drive-plan-verify')
     q.add_argument('--plan',type=Path,required=True)
+    q.add_argument('--drive-adapter',type=str,default=None,
+                   help='Python import path for Drive adapter factory (for drive_move verify)')
     q=sub.add_parser('document-ingest')
     q.add_argument('--capture-channel',choices=(
         'wechat_browser_clip','ima_file_export','local_file','google_drive_doc'))
@@ -387,6 +396,52 @@ def main():
             instance=private_instance()
             credentials(root,interactive=True,credentials_store=instance.credentials_store)
             result={'authorization':'complete'}
+        elif a.command=='workflow-status':
+            # Unified business flow status (M3, F-06 fix).
+            # Infers current stage from ledger events, not just static list.
+            from .drive_search import load_registry
+            import json as _json
+            registry = load_registry(a.registry)
+            # Count ledger events by type.
+            events = {}
+            try:
+                with open(a.ledger, encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            e = _json.loads(line)
+                            action = e.get("action", "unknown")
+                            events[action] = events.get(action, 0) + 1
+                        except (ValueError, KeyError):
+                            pass
+            except FileNotFoundError:
+                pass
+            # F-06: Infer current stage from ledger.
+            # Stage order: discover → plan → approve → apply → verify
+            if events.get("plan_verified"):
+                current_stage = "verify"
+                next_action = "Complete. Review reports."
+            elif events.get("plan_applied") or events.get("apply_completed"):
+                current_stage = "apply"
+                next_action = "Run drive-plan-verify (verify)"
+            elif events.get("plan_approved"):
+                current_stage = "approve"
+                next_action = "Run drive-plan-apply (apply)"
+            elif events.get("plan_created"):
+                current_stage = "plan"
+                next_action = "Run drive-plan-approve (human approval)"
+            elif len(registry) > 0 or events.get("discovered"):
+                current_stage = "discover"
+                next_action = "Run drive-plan-create (plan)"
+            else:
+                current_stage = "start"
+                next_action = "Run drive-discover or drive-poll (discover)"
+            result = {
+                "flow": "discover → plan → approve → apply → verify",
+                "current_stage": current_stage,
+                "next_action": next_action,
+                "registry_docs": len(registry),
+                "ledger_events": events,
+            }
         elif a.command=='doctor':
             from . import __version__
             configured=a.instance_root is not None or bool(os.environ.get('CBA_KB_INSTANCE_ROOT'))
@@ -534,10 +589,35 @@ def main():
             from .drive_plan import apply_plan
             from .drive_search import load_registry
             ctx={"registry": load_registry(a.registry)}
+            # F-04 fix: Inject drive_adapter and production_go for drive_move.
+            if a.production_go:
+                ctx["production_go"] = a.production_go
+            if a.drive_adapter:
+                import importlib
+                mod_path, _, attr = a.drive_adapter.rpartition('.')
+                if not mod_path:
+                    # Try as module-level function
+                    mod = importlib.import_module(a.drive_adapter)
+                    ctx["drive_adapter"] = mod
+                else:
+                    mod = importlib.import_module(mod_path)
+                    factory = getattr(mod, attr)
+                    ctx["drive_adapter"] = factory() if callable(factory) else factory
             result=apply_plan(a.plan, a.ledger, ctx)
         elif a.command=='drive-plan-verify':
             from .drive_plan import verify_plan
-            ok, errors=verify_plan(a.plan)
+            ctx = {}
+            if a.drive_adapter:
+                import importlib
+                mod_path, _, attr = a.drive_adapter.rpartition('.')
+                if not mod_path:
+                    mod = importlib.import_module(a.drive_adapter)
+                    ctx["drive_adapter"] = mod
+                else:
+                    mod = importlib.import_module(mod_path)
+                    factory = getattr(mod, attr)
+                    ctx["drive_adapter"] = factory() if callable(factory) else factory
+            ok, errors=verify_plan(a.plan, ctx if ctx else None)
             if not ok:
                 raise ValueError(f"PLAN_VERIFY_FAILED: {errors}")
             result={"verified": ok, "errors": errors}

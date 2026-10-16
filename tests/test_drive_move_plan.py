@@ -1,4 +1,4 @@
-"""Tests for Drive move exact plan schema (M2 design)."""
+"""Tests for Drive move exact plan schema (M2)."""
 from __future__ import annotations
 
 import pytest

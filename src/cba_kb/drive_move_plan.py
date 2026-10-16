@@ -1,8 +1,8 @@
-"""Drive move exact plan schema (FINAL INTEGRATION M2, design only).
+"""Drive move exact plan schema (FINAL INTEGRATION M2).
 
 This module defines the EXACT plan schema for Google Drive file moves
-(reparent). It does NOT execute moves — it only validates that a proposed
-move plan is complete, authorized, and safe.
+(reparent). It validates that a proposed move plan is complete, authorized,
+and safe BEFORE any Drive API call.
 
 Exact plan schema:
 {
@@ -28,8 +28,10 @@ Safety invariants (fail-closed):
 - disposition must be explicit (no default move).
 - For RETAIN_IN_PLACE, destination must equal source_parent.
 
-This is DESIGN ONLY. Actual Drive API calls will be in a separate module
-requiring Human Production GO.
+This module does NOT execute moves. Execution requires:
+1. A validated plan from this module.
+2. Integration with drive_plan.py's guarded apply workflow.
+3. Human Production GO for real Drive writes (separate authorization).
 """
 from __future__ import annotations
 
@@ -97,6 +99,21 @@ def validate_drive_move_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
             raise DriveMovePlanError(
                 "PLAN_RETAIN_DESTINATION_MISMATCH: destination must equal "
                 "source_parent for RETAIN_IN_PLACE")
+        # For RETAIN, expected_parent_set must contain source_parent.
+        if plan["source_parent"] not in expected:
+            raise DriveMovePlanError(
+                "PLAN_RETAIN_EXPECTED_MISMATCH: expected_parent_set must "
+                "contain source_parent for RETAIN_IN_PLACE")
+
+    # F-02 fix: For ARCHIVE, destination must be in expected_parent_set.
+    # This catches logic errors (e.g., destination=B but expected=["C"])
+    # at validation time, BEFORE any Drive write occurs.
+    if disposition == "ARCHIVE":
+        if plan["destination"] not in expected:
+            raise DriveMovePlanError(
+                "PLAN_ARCHIVE_DESTINATION_MISMATCH: destination must be in "
+                "expected_parent_set for ARCHIVE. Got destination="
+                f"{plan['destination']}, expected_parent_set={expected}")
 
     # identity_and_revision_evidence must have sha256.
     evidence = plan["identity_and_revision_evidence"]
