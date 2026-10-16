@@ -1,6 +1,7 @@
 # M4 隔离测试交接包：Human 最小授权清单
 
-> `scripts/m4_drive_e2e.py` 已就绪。以下信息到位后可立即执行。
+> `scripts/m4_drive_e2e.py` 的 F-01/F-02 有界修复已就绪，但 F-03 的同 UID
+> anti-rollback 边界仍需 Human 裁定；在该裁定与独立 Q2 之前不得执行真实 M4。
 > **不得索取**：生产 OAuth token、生产 GO。生产文件夹 ID 仅用于隔离 guard
 > （禁止访问边界），不索取其访问权限。
 
@@ -84,7 +85,7 @@ python scripts/m4_drive_e2e.py \
 - `production-boundary` 模式触碰 `production_folders` 或祖先链包含 `production_folders` → 拒绝。
 - `dedicated-account` 模式不要求虚构生产 ID；它要求账号精确匹配、文件夹由该账号单独拥有、位于 My Drive、名称精确且运行前为空。
 - `dedicated-account` 还要求完整分页枚举 Drive 空间；`incompleteSearch` 会拒绝执行，且除测试 folder 与本次已创建对象外不得存在其他可访问的未删除对象。
-- 授权在每个创建和实际 `reparent` mutation 紧前重新验签、解析同一字节流并检查有效期；一次性 `authorization_id` 以原子 `O_EXCL` 独立持久化账本（防回滚重放）消费，重放会被拒绝；过期后仅允许范围内清理。
+- 授权在每个创建和实际 `reparent` mutation 紧前重新验签、解析同一字节流并检查有效期；一次性 `authorization_id` 以原子 `O_EXCL` 写入实例账本和 `/etc/cba-kb/consumed_authorizations`。只要任一记录仍存在，正常重复运行会被拒绝；这不等同于同 UID 防回滚保证。
 - 授权窗口最长两小时；信任锚必须 root-owned，防止普通执行进程替换公钥后自签。
 - `test_go` 永不能授权生产写入；与 `production_go` 互斥。
 - 清理失败 → exit 3 + 残留 ID，不报告完整 PASS。
@@ -93,16 +94,17 @@ python scripts/m4_drive_e2e.py \
 
 1. **威胁模型与信任假设**：
    - 防护假设操作系统内核、系统级只读目录及 root-owned 配置未被恶意接管。若攻击者具备 root 或内核级权限，本地所有文件标记及进程防御均可能被破坏。
-   - 依赖 `/etc/cba-kb` 的 root 归属与 wheel 组权限，以及 `/var/run/cba-kb` 独立消费账本目录的所有权审计与 macOS ACL 审计（无额外 allow 写入规则）。
+   - 依赖 `/etc/cba-kb` 的 root 归属与 wheel 组权限，以及 `/etc/cba-kb/consumed_authorizations` 独立消费账本目录的所有权审计、完整祖先链（含 `/`）与 macOS ACL 审计（无额外 allow 写入规则）。
 2. **Fail-Closed 故障停机原则**：
    - 依赖项缺失、Git 状态未完全同步干净、Python 运行环境受污染（如预先加载非源 loader 的模块）、缺少 `UF_IMMUTABLE` 特性或目录权限/ACL 不合规时，均立即中止，绝不发生 Drive 写入。
 3. **残余风险与局限性**：
    - **中断后的残余文件**：若进程在写入测试文件后因网络故障或断电异常退出，测试文件仍留存于测试文件夹中。需通过 `--receipt` 输出的残留列表或人工登录 Google Drive 进行清理。
    - **Google Drive API 延迟与最终一致性**：Drive API 存在微小的元数据同步延迟。readback 机制在 mutation 后立即查询，但在极少数极端网络重试场景下，可能受到服务端一致性窗口影响。
    - **非跨平台账本不可变性**：`UF_IMMUTABLE` 是 BSD/macOS 原生文件系统特性。在无特权容器或不支持该特性的 Linux 环境中，系统将主动 fail-closed 拒绝写入。
+   - **同 UID anti-rollback 未闭环**：账本文件由普通执行用户创建并拥有；该用户可以清除自己的 `UF_IMMUTABLE` 标志并删除两份记录。`O_CREAT | O_EXCL` 只防止记录仍存在时的重复消费。若维持“抵御同 UID 恶意回滚”的原安全承诺，需要一个由普通执行 UID 无法改写/删除的保护域（例如职责极窄的 root-owned 写入组件）；本 PR 未获授权引入此类组件。状态：`HUMAN_SECURITY_BOUNDARY_DECISION_REQUIRED`。
 
 ## 当前状态
 
-`SECURITY_HARDENING_PENDING_INDEPENDENT_REVIEW` —— 代码、测试、脚本、文档已完成定向安全加固与攻击自查演练；
-**等待独立 Q2 复审**：待通过独立 Q2 PASS 并经 Human 决策合并到 main 后，方可签发测试授权并执行。
+`HUMAN_SECURITY_BOUNDARY_DECISION_REQUIRED` —— F-01/F-02 已完成有界修复；F-03 在非 root 设计下不能兑现同 UID anti-rollback。
+Human 决定维持更强保证并授权系统组件，或明确调整威胁模型后，仍须对新的 exact HEAD 做独立 Q2；在此之前不得签发测试授权或执行真实 Drive 写入。
 

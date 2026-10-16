@@ -232,6 +232,37 @@ def test_attack_b2_replay_blocked_by_independent_ledger(tmp_path):
         m4._consume_authorization(instance, record, trusted_consumed_root=independent)
 
 
+def test_attack_b3_same_uid_can_clear_both_user_owned_ledgers_and_replay(tmp_path):
+    """F-03 R5 characterization: UF_IMMUTABLE is not same-UID anti-rollback.
+
+    This passing test is evidence of the unresolved security boundary, not a
+    claimed defense: the owner can clear the user flag, delete both records,
+    and make O_EXCL accept the authorization again.
+    """
+    instance = SimpleNamespace(data_root=tmp_path / "data")
+    independent = tmp_path / "independent"
+    record = {
+        "authorization_id": "b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3",
+        "_record_sha256": "3" * 64,
+    }
+
+    first = m4._consume_authorization(
+        instance, record, trusted_consumed_root=independent)
+    ledger_files = [
+        first,
+        independent / f"{record['authorization_id']}.json",
+    ]
+    assert all(path.exists() for path in ledger_files)
+
+    for path in ledger_files:
+        os.chflags(path, 0)
+        path.unlink()
+
+    replayed = m4._consume_authorization(
+        instance, record, trusted_consumed_root=independent)
+    assert replayed.exists()
+
+
 # ==============================================================================
 # Attack Exercise C: Immutable Flag Bypass
 # ==============================================================================

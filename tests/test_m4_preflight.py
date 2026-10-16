@@ -1,9 +1,11 @@
 """Fail-closed M4 real-Drive preflight regressions."""
 from datetime import datetime, timezone
 import hashlib
+import importlib.util
 import json
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -554,6 +556,8 @@ def test_verify_cba_kb_module_identity_validates_blob_hash(tmp_path, monkeypatch
         "fullname": "cba_kb.test_mod",
         "source_path": code_file.resolve(),
         "source_sha256": hashlib.sha256(code_content).hexdigest(),
+        "source_blob_sha1": correct_blob,
+        "expected_git_blob_sha1": None,
         "loader": loader,
     }
     m4._verify_cba_kb_module_identity(mod, engine)
@@ -563,6 +567,36 @@ def test_verify_cba_kb_module_identity_validates_blob_hash(tmp_path, monkeypatch
     code_file.write_bytes(tampered_content)
     with pytest.raises(ValueError, match="content does not match Git HEAD blob"):
         m4._verify_cba_kb_module_identity(mod, engine)
+
+
+def test_source_only_loader_uses_one_snapshot_for_hash_and_execution(tmp_path):
+    """F-01 R5: a second read cannot substitute executed source bytes."""
+    code_file = tmp_path / "victim.py"
+    code_file.write_text("RESULT = 'ON_DISK'\n", encoding="utf-8")
+    benign = b"RESULT = 'VERIFIED_SNAPSHOT'\n"
+    malicious = b"RESULT = 'SECOND_READ_ATTACK'\n"
+    reads = []
+
+    loader = m4._SourceOnlyLoader("cba_kb.victim", str(code_file))
+
+    def changing_source(_path):
+        reads.append(len(reads) + 1)
+        return benign if len(reads) == 1 else malicious
+
+    loader.get_data = changing_source
+    spec = importlib.util.spec_from_file_location(
+        "cba_kb.victim", str(code_file), loader=loader)
+    module = importlib.util.module_from_spec(spec)
+
+    loader.exec_module(module)
+
+    registry = m4._TRUSTED_SOURCE_EXECUTION_REGISTRY[id(module)]
+    assert reads == [1]
+    assert module.RESULT == "VERIFIED_SNAPSHOT"
+    assert registry["source_sha256"] == hashlib.sha256(benign).hexdigest()
+    assert registry["source_blob_sha1"] == hashlib.sha1(
+        f"blob {len(benign)}\0".encode("ascii") + benign
+    ).hexdigest()
 
 
 def test_verify_cba_kb_module_identity_rejects_non_python_source(tmp_path):
@@ -1033,6 +1067,102 @@ def test_assert_trusted_consumed_directory_rejects_unparseable_acl(tmp_path, mon
     monkeypatch.setattr(m4.subprocess, "run", mock_subprocess_run)
     with pytest.raises(ValueError, match="macOS ACL audit encountered unparseable entry"):
         m4._assert_trusted_consumed_directory(target)
+
+
+def test_assert_trusted_consumed_directory_audits_filesystem_root(tmp_path, monkeypatch):
+    """F-02 R5: the ancestor walk includes the filesystem root itself."""
+    target = tmp_path / "consumed"
+    target.mkdir()
+    orig_stat = Path.stat
+
+    def mock_stat(self, *args, **kwargs):
+        st = orig_stat(self, *args, **kwargs)
+        if self == target:
+            return SimpleNamespace(st_mode=0o1777 | stat.S_IFDIR, st_uid=0, st_gid=0)
+        if self in target.parents:
+            return SimpleNamespace(st_mode=0o755 | stat.S_IFDIR, st_uid=0, st_gid=0)
+        return st
+
+    inspected = []
+
+    def mock_subprocess_run(cmd, *args, **kwargs):
+        if cmd[0] == "/bin/ls":
+            inspected.append(cmd[-1])
+            return SimpleNamespace(
+                stdout=f"drwxr-xr-x 2 root wheel 64 Oct 16 20:00 {cmd[-1]}\n",
+                stderr="", returncode=0)
+        return subprocess.run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", mock_stat)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(m4.subprocess, "run", mock_subprocess_run)
+
+    assert m4._assert_trusted_consumed_directory(target) == target.resolve()
+    assert "/" in inspected
+
+
+def test_audit_macos_acl_rejects_marker_without_entries(tmp_path, monkeypatch):
+    """F-02 R5: an ACL marker without its ACE list is incomplete evidence."""
+    target = tmp_path / "consumed"
+    target.mkdir()
+    monkeypatch.setattr(
+        m4.subprocess, "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            stdout=f"drwxr-xr-x+ 2 root wheel 64 Oct 16 20:00 {target}\n",
+            stderr="", returncode=0),
+    )
+    with pytest.raises(ValueError, match="ACL marker without entries"):
+        m4._audit_macos_acls(target, is_target=True)
+
+
+def test_audit_macos_acl_rejects_unknown_action(tmp_path, monkeypatch):
+    """F-02 R5: unknown permission grammar fails closed."""
+    target = tmp_path / "consumed"
+    target.mkdir()
+    output = (
+        f"drwxr-xr-x+ 2 root wheel 64 Oct 16 20:00 {target}\n"
+        " 0: user:attacker allow future_write_capability\n"
+    )
+    monkeypatch.setattr(
+        m4.subprocess, "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            stdout=output, stderr="", returncode=0),
+    )
+    with pytest.raises(ValueError, match="unknown or missing actions"):
+        m4._audit_macos_acls(target, is_target=True)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires native macOS ACLs")
+def test_audit_macos_acl_accepts_native_deny_and_rejects_native_write_allow(tmp_path):
+    """F-02 R5: parse the host's real UUID-style /bin/ls ACL format."""
+    target = tmp_path / "native-acl"
+    target.mkdir()
+    try:
+        subprocess.run(
+            ["/bin/chmod", "+a", "everyone deny delete", str(target)], check=True)
+        m4._audit_macos_acls(target, is_target=True)
+
+        subprocess.run(["/bin/chmod", "-N", str(target)], check=True)
+        subprocess.run(
+            ["/bin/chmod", "+a", "everyone allow delete", str(target)], check=True)
+        with pytest.raises(ValueError, match="unsafe ACL granting write/delete"):
+            m4._audit_macos_acls(target, is_target=True)
+    finally:
+        subprocess.run(["/bin/chmod", "-N", str(target)], check=False)
+
+
+def test_trusted_wheel_gid_rejects_missing_or_nonzero_group(monkeypatch):
+    """F-02 R5: macOS cannot silently substitute root or numeric gid 0."""
+    monkeypatch.setattr(m4.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        m4.grp, "getgrnam", lambda _name: (_ for _ in ()).throw(KeyError("wheel")))
+    with pytest.raises(ValueError, match="wheel group is missing"):
+        m4._trusted_wheel_gid()
+
+    monkeypatch.setattr(
+        m4.grp, "getgrnam", lambda _name: SimpleNamespace(gr_gid=20))
+    with pytest.raises(ValueError, match="must have gid 0"):
+        m4._trusted_wheel_gid()
 
 
 def test_consume_authorization_fails_closed_when_chflags_missing(tmp_path, monkeypatch):

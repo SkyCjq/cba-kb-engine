@@ -55,9 +55,11 @@ SECURITY BOUNDARIES & THREAT MODEL:
     2. Fail-Closed Guarantees: Missing dependencies, dirty/unverified Git state,
        preloaded/unverified Python modules, missing UF_IMMUTABLE capability, or
        directory permission/ACL flaws halt execution immediately with zero mutations.
-    3. Replay Protection: Consumed authorizations are recorded in a dedicated root-owned,
-       wheel-grouped directory with strict POSIX mode 0755, audited macOS ACLs, and
-       UF_IMMUTABLE file flags. If filesystem capabilities are absent, execution fails closed.
+    3. Replay Recording: Consumed authorizations are created with O_EXCL in the instance
+       and a root-owned, wheel-grouped directory with audited macOS ACLs, then marked
+       UF_IMMUTABLE. Existing records reject normal repeats. Because the ordinary execution
+       UID owns newly created files, this is not a system-level same-UID anti-rollback
+       guarantee; that stronger boundary requires a Human decision and privileged component.
 
 PARTIAL EXECUTION:
     If the script fails AFTER creating test files (e.g., evidence
@@ -85,6 +87,8 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import platform
+import re
 import stat
 import subprocess
 import sys
@@ -218,20 +222,56 @@ class _SourceOnlyLoader(importlib.machinery.SourceFileLoader):
     strictly bypassing any on-disk __pycache__/*.pyc bytecode caches,
     and recording cryptographic execution evidence in _TRUSTED_SOURCE_EXECUTION_REGISTRY."""
 
-    def get_code(self, fullname: str) -> Any:
-        source_path = self.get_filename(fullname)
-        source_bytes = self.get_data(source_path)
-        return compile(source_bytes, source_path, "exec", dont_inherit=True)
+    def __init__(self, fullname: str, path: str,
+                 engine_root: Optional[Path] = None):
+        super().__init__(fullname, path)
+        self.engine_root = engine_root.resolve() if engine_root is not None else None
 
     def exec_module(self, module: Any) -> None:
+        """Read, verify, compile, execute, and register one immutable snapshot.
+
+        SourceFileLoader.exec_module() calls get_code(), which would otherwise
+        read the file a second time.  Performing the small equivalent operation
+        here makes the Git blob proof and the executed code derive from exactly
+        the same byte string.
+        """
         source_path = self.get_filename(module.__name__)
         source_bytes = self.get_data(source_path)
-        super().exec_module(module)
+        source_blob = hashlib.sha1(
+            f"blob {len(source_bytes)}\0".encode("ascii") + source_bytes
+        ).hexdigest()
+        expected_blob: Optional[str] = None
+        resolved_source_path = Path(source_path).resolve()
+        if self.engine_root is not None and (self.engine_root / ".git").exists():
+            try:
+                rel_path = resolved_source_path.relative_to(self.engine_root).as_posix()
+            except ValueError as exc:
+                raise ImportError(
+                    f"module {module.__name__} is outside the reviewed engine root"
+                ) from exc
+            try:
+                expected_blob = _run_git(
+                    ["rev-parse", f"HEAD:{rel_path}"], engine_root=self.engine_root
+                ).stdout.strip()
+            except Exception as exc:
+                raise ImportError(
+                    f"module {rel_path} cannot be resolved in Git HEAD: {exc}"
+                ) from exc
+            if source_blob != expected_blob:
+                raise ImportError(
+                    f"module {rel_path} source snapshot does not match Git HEAD blob: "
+                    f"expected {expected_blob}, got {source_blob}"
+                )
+
+        code = compile(source_bytes, source_path, "exec", dont_inherit=True)
+        exec(code, module.__dict__)
         module.__cached__ = None
         _TRUSTED_SOURCE_EXECUTION_REGISTRY[id(module)] = {
             "fullname": module.__name__,
-            "source_path": Path(source_path).resolve(),
+            "source_path": resolved_source_path,
             "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
+            "source_blob_sha1": source_blob,
+            "expected_git_blob_sha1": expected_blob,
             "loader": self,
         }
 
@@ -240,9 +280,11 @@ class _SourceOnlyFinder(importlib.abc.MetaPathFinder):
     """Meta-path finder strictly binding cba_kb module imports to reviewed engine source,
     enforcing compilation directly from source without loading pre-existing .pyc caches."""
 
-    def __init__(self, prefix: str, trusted_roots: List[Path]):
+    def __init__(self, prefix: str, trusted_roots: List[Path],
+                 engine_root: Optional[Path] = None):
         self.prefix = prefix
         self.trusted_roots = [r.resolve() for r in trusted_roots if r.exists()]
+        self.engine_root = engine_root.resolve() if engine_root is not None else None
 
     def find_spec(self, fullname: str, path: Optional[List[str]],
                   target: Optional[Any] = None) -> Optional[Any]:
@@ -253,13 +295,15 @@ class _SourceOnlyFinder(importlib.abc.MetaPathFinder):
             candidate_dir = root.joinpath(*rel_parts)
             pkg_init = candidate_dir / "__init__.py"
             if pkg_init.is_file():
-                loader = _SourceOnlyLoader(fullname, str(pkg_init))
+                loader = _SourceOnlyLoader(
+                    fullname, str(pkg_init), engine_root=self.engine_root)
                 return importlib.util.spec_from_file_location(
                     fullname, str(pkg_init), loader=loader,
                     submodule_search_locations=[str(candidate_dir)])
             mod_file = root.joinpath(*rel_parts[:-1], rel_parts[-1] + ".py")
             if mod_file.is_file():
-                loader = _SourceOnlyLoader(fullname, str(mod_file))
+                loader = _SourceOnlyLoader(
+                    fullname, str(mod_file), engine_root=self.engine_root)
                 return importlib.util.spec_from_file_location(
                     fullname, str(mod_file), loader=loader)
         return None
@@ -287,7 +331,8 @@ def _bind_and_sanitize_python_path(engine_root: Path) -> None:
         if isinstance(f, _SourceOnlyFinder) and f.prefix == "cba_kb"
     ]
     if not existing_finders:
-        sys.meta_path.insert(0, _SourceOnlyFinder("cba_kb", [trusted_src, trusted_legacy]))
+        sys.meta_path.insert(0, _SourceOnlyFinder(
+            "cba_kb", [trusted_src, trusted_legacy], engine_root=resolved_engine))
 
     # Cat-2 #3A: Check all existing cba_kb modules in sys.modules.
     # Any module pre-loaded before establishing the trusted source-only import boundary
@@ -362,6 +407,9 @@ def _verify_cba_kb_module_identity(module: Any, engine_root: Path) -> None:
     if getattr(module, "__loader__", None) is not reg.get("loader"):
         raise ValueError(
             f"cba_kb module {mod_name} __loader__ does not match registered loader")
+    if reg.get("source_path") != mod_path:
+        raise ValueError(
+            f"cba_kb module {mod_name} path does not match registered source snapshot")
 
     if (engine_root / ".git").exists():
         rel_path = mod_path.relative_to(engine_root.resolve()).as_posix()
@@ -378,6 +426,13 @@ def _verify_cba_kb_module_identity(module: Any, engine_root: Path) -> None:
             raise ValueError(
                 f"module {rel_path} content does not match Git HEAD blob: "
                 f"expected {expected_blob}, got {actual_blob}")
+        if reg.get("source_blob_sha1") != expected_blob:
+            raise ValueError(
+                f"module {rel_path} executed source snapshot does not match Git HEAD blob")
+        registered_expected_blob = reg.get("expected_git_blob_sha1")
+        if registered_expected_blob is not None and registered_expected_blob != expected_blob:
+            raise ValueError(
+                f"module {rel_path} Git identity changed since source execution")
         if reg.get("source_sha256") != hashlib.sha256(actual_content).hexdigest():
             raise ValueError(
                 f"module {rel_path} in-memory compiled bytecode does not match disk source bytes")
@@ -490,6 +545,29 @@ def _validate_authorization(path: str, *, test_go: str, engine_sha: str,
     return record
 
 
+_MACOS_ACL_ENTRY = re.compile(
+    r"^\s*(?P<index>\d+):\s+"
+    r"(?P<principal>\S+)\s+"
+    r"(?P<effect>allow|deny)\s+"
+    r"(?P<actions>\S(?:.*\S)?)\s*$",
+    re.IGNORECASE,
+)
+
+_MACOS_ACL_ACTIONS = {
+    "read", "write", "execute", "delete", "append",
+    "list", "search", "add_file", "add_subdirectory", "delete_child",
+    "readattr", "writeattr", "readextattr", "writeextattr",
+    "readsecurity", "writesecurity", "chown",
+    "file_inherit", "directory_inherit", "limit_inherit", "only_inherit",
+    "inherited",
+}
+
+_MACOS_ACL_UNSAFE_ALLOW_ACTIONS = {
+    "write", "delete", "append", "add_file", "add_subdirectory",
+    "delete_child", "writeattr", "writeextattr", "writesecurity", "chown",
+}
+
+
 def _audit_macos_acls(dir_path: Path, is_target: bool) -> None:
     """Audit macOS ACLs on directory to ensure no unsafe write/delete grants exist."""
     ls_bin = Path("/bin/ls")
@@ -512,26 +590,66 @@ def _audit_macos_acls(dir_path: Path, is_target: bool) -> None:
     if not lines:
         raise ValueError(f"macOS ACL audit received empty output for {dir_path}")
 
-    unsafe_tokens = (
-        "write", "writeattr", "writeextattr", "writesecurity", "chown",
-        "add_file", "add_subdirectory", "delete", "delete_child", "append",
-    )
-    for entry in lines[1:]:
+    header_fields = lines[0].split()
+    if not header_fields:
+        raise ValueError(f"macOS ACL audit received malformed header for {dir_path}")
+    mode_field = header_fields[0]
+    explicit_acl_marker = "+" in mode_field
+    # Current macOS/APFS can display '@' when extended attributes coexist
+    # with ACLs; actual ACE lines remain the authoritative parse input.
+    acl_capable_marker = explicit_acl_marker or "@" in mode_field
+    acl_entries = [entry for entry in lines[1:] if entry.strip()]
+    if explicit_acl_marker and not acl_entries:
+        raise ValueError(
+            f"macOS ACL audit reported an ACL marker without entries for {dir_path}")
+    if acl_entries and not acl_capable_marker:
+        raise ValueError(
+            f"macOS ACL audit returned entries without an ACL marker for {dir_path}")
+
+    expected_index = 0
+    for entry in acl_entries:
         clean = entry.strip().lower()
-        if not clean:
-            continue
-        parts = clean.split()
-        if len(parts) < 3 or not parts[0].endswith(":"):
+        match = _MACOS_ACL_ENTRY.fullmatch(clean)
+        if match is None:
             raise ValueError(
                 f"macOS ACL audit encountered unparseable entry on {dir_path}: {entry.strip()}")
-        if "allow" in parts:
-            allow_idx = parts.index("allow")
-            perms_str = " ".join(parts[allow_idx + 1:])
-            perms = [p.strip() for p in perms_str.replace(" ", ",").split(",") if p.strip()]
-            for p in perms:
-                if p in unsafe_tokens or any(u in p for u in unsafe_tokens):
-                    raise ValueError(
-                        f"system authorization ledger directory {dir_path} has unsafe ACL granting write/delete: {entry.strip()}")
+        if int(match.group("index")) != expected_index:
+            raise ValueError(
+                f"macOS ACL audit encountered non-contiguous entries on {dir_path}: "
+                f"expected {expected_index}, got {match.group('index')}")
+        expected_index += 1
+        actions = {
+            action.strip().lower()
+            for action in re.split(r"[\s,]+", match.group("actions"))
+            if action.strip()
+        }
+        if not actions or not actions.issubset(_MACOS_ACL_ACTIONS):
+            unknown = sorted(actions - _MACOS_ACL_ACTIONS)
+            raise ValueError(
+                f"macOS ACL audit encountered unknown or missing actions on {dir_path}: "
+                f"{unknown or entry.strip()}")
+        if (match.group("effect").lower() == "allow"
+                and actions & _MACOS_ACL_UNSAFE_ALLOW_ACTIONS):
+            raise ValueError(
+                f"system authorization ledger directory {dir_path} has unsafe ACL "
+                f"granting write/delete: {entry.strip()}")
+
+
+def _trusted_wheel_gid() -> int:
+    """Return macOS wheel gid only when its canonical gid-0 identity is proven."""
+    if platform.system() != "Darwin":
+        # Non-macOS execution cannot prove the macOS ACL contract.  GID 0 is
+        # used only so hermetic unit tests can exercise the surrounding logic;
+        # _consume_authorization separately fails closed without BSD chflags.
+        return 0
+    try:
+        wheel_gid = grp.getgrnam("wheel").gr_gid
+    except KeyError as exc:
+        raise ValueError("macOS wheel group is missing") from exc
+    if wheel_gid != 0:
+        raise ValueError(
+            f"macOS wheel group must have gid 0, got gid {wheel_gid}")
+    return wheel_gid
 
 
 def _assert_trusted_consumed_directory(dir_path: Path) -> Path:
@@ -548,13 +666,7 @@ def _assert_trusted_consumed_directory(dir_path: Path) -> Path:
         raise ValueError(
             f"system authorization ledger directory {dir_path} is missing, a symlink, or not a directory")
 
-    try:
-        wheel_gid = grp.getgrnam("wheel").gr_gid
-    except KeyError:
-        try:
-            wheel_gid = grp.getgrnam("root").gr_gid
-        except KeyError:
-            wheel_gid = 0
+    wheel_gid = _trusted_wheel_gid()
 
     target_stat = dir_path.stat()
     if hasattr(os, "geteuid"):
@@ -584,7 +696,7 @@ def _assert_trusted_consumed_directory(dir_path: Path) -> Path:
         _audit_macos_acls(resolved_target, is_target=True)
 
     curr: Optional[Path] = resolved_target.parent
-    while curr and curr != curr.parent:
+    while curr is not None:
         if curr.is_symlink():
             raise ValueError(
                 f"ancestor directory {curr} of authorization ledger is an unsafe symlink")
@@ -604,6 +716,8 @@ def _assert_trusted_consumed_directory(dir_path: Path) -> Path:
         if sys.platform == "darwin":
             _audit_macos_acls(curr, is_target=False)
 
+        if curr == curr.parent:
+            break
         curr = curr.parent
 
     return resolved_target
@@ -688,7 +802,11 @@ def _consume_authorization(instance: Any, record: Dict[str, Any],
         print("M4_E2E_SECURITY_CRITICAL: manual administrator intervention may be required "
               "to inspect or remove unverified ledger entries before retrying.",
               file=sys.stderr)
-        raise
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError(
+            f"authorization consumption failed closed after a ledger I/O error: {exc}"
+        ) from exc
 
 
 def _load_private_instance(instance_root: str, *, engine_root: Path):

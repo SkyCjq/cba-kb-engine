@@ -1,6 +1,6 @@
 # M4: 真实隔离 Drive E2E 准备清单
 
-> 状态：`SECURITY_HARDENING_PENDING_INDEPENDENT_REVIEW` —— 代码修复与攻击演练已完成，等待独立 Q2 终审及 Human 合并后执行。
+> 状态：`HUMAN_SECURITY_BOUNDARY_DECISION_REQUIRED` —— F-01/F-02 已完成有界修复；F-03 的同 UID anti-rollback 无法由当前非 root 设计兑现，等待 Human 裁定，禁止真实 Drive 写入。
 
 ## 1. 可执行脚本
 
@@ -29,7 +29,7 @@
 1. 使用受保护的 `/usr/bin/git` 成功 fetch 后，校验 Human 签名授权与当前时间、干净
    `main == origin/main`、账号及 folder 完全一致；验签与 JSON 解析使用同一份授权字节流。
 2. 读取认证身份（`about().get(user)`）并与获批账号精确比较；不一致时零写入。
-3. 原子消费一次性 `authorization_id`（重放拒绝），预生成唯一 Drive ID 与 run marker；
+3. 以 `O_CREAT | O_EXCL` 原子记录一次性 `authorization_id`（记录仍存在时重放拒绝），预生成唯一 Drive ID 与 run marker；
    在每个创建及真实 `reparent` mutation 紧前重新验签并检查有效期与隔离范围。
 4. 创建合成测试文件 `M4_E2E_SYNTHETIC_report.txt`（仅测试文件夹内，显式 allowlist）。
 5. 创建目标子文件夹 `M4_E2E_SYNTHETIC_dest`（仅测试文件夹内）。
@@ -105,14 +105,15 @@
 1. **操作系统与特权攻击者边界**：
    - 本安全设计基于非 root 普通用户执行模型。所有系统级信任锚（`/etc/cba-kb/m4_approval_ed25519_public.pem`）与独立账本（`/etc/cba-kb/consumed_authorizations`）依赖 `root:wheel` 属主、只读或 sticky bit 权限。
    - 系统不宣称能够抵御已取得本地 root/sudo 权限的攻击者（特权用户可通过 `sudo chflags nouchg` 或修改系统文件绕过防护）。
+   - 当前也不能宣称抵御**同一普通执行 UID** 对消费记录的恶意回滚：文件所有者可清除自己文件的 `UF_IMMUTABLE` 并删除实例与独立账本记录。`O_EXCL` 证明正常重复消费拒绝，不证明系统级不可回滚。维持更强承诺需要普通执行 UID 无法修改的 root-owned 写入边界及其部署维护；本 PR 未获授权增加 root helper、sudoers 或 daemon。
 2. **Drive 远程状态与 TOCTOU 风险**：
    - 远程 Google Drive 状态可能在检查与执行之间发生外部并发变化。本脚本通过在每次真实 mutation（创建/移动）紧邻前重新验签、重核有效期与父子边界来降低 TOCTOU 窗口，但分布式环境下的理论网络竞态无法无条件绝对消除。
 3. **Python 运行时代码来源**：
-   - 若 Python 进程在 sanitizer 启动前已被恶意代码预加载或注入，源码的 Git hash 无法证明已载入内存的对象可信。因此，本方案强制在业务代码载入前建立 `_SourceOnlyFinder` 边界，拒绝对预加载模块的事后 whitewash，并对在内存中动态编译的源码字节记录密码学 SHA-256 审计凭证。
+   - 若 Python 进程在 sanitizer 启动前已被恶意代码预加载或注入，源码的 Git hash 无法证明已载入内存的对象可信。因此，本方案强制在业务代码载入前建立 `_SourceOnlyFinder` 边界，拒绝对预加载模块的事后 whitewash；loader 只读取一次源码，并用同一字节快照完成 Git blob 校验、SHA-256 登记、编译与执行。
 4. **部分执行与未清理残留风险**：
    - 若在成功创建测试文件后发生网络中断、Google API 5xx、系统崩溃或收据磁盘写入失败，已创建的合成文件将残留在测试文件夹中。此时保证“零写入”是不符合事实的；脚本会尽力清理并输出包含残留 ID 的收据，操作者须根据收据进行手动核验与清理。
 5. **验证环境与测试替身边界**：
    - **Linux CI**：证明代码跨平台语法、逻辑分支与回归测试的正确性，但 Linux 内核原生缺少 macOS 特有的 `os.chflags(UF_IMMUTABLE)` 与 macOS ACL，不能作为 macOS 原生文件系统防御能力的实机证据。
    - **Fake/Mock Drive**：证明调用序列、参数过滤与契约边界，但不能代替真实 Google Drive API 权限与网络行为。
-   - **本地 macOS 攻击演练**：在真实 macOS 环境下验证了 ACL 审计与 `UF_IMMUTABLE` 的防删除防覆盖能力。
+   - **本地 macOS 证据边界**：本轮实机证明文件所有者可以清除自己的 `UF_IMMUTABLE`，因此不能据此宣称同 UID anti-rollback；ACL 解析与根目录覆盖由定向测试证明，尚未取得对实际 root-owned 账本目录的原生完整演练收据。
    - **真实隔离 Drive E2E**：只有在 Human 合并 PR 并在独立测试文件夹下实际运行后，才能证明真实端到端完整就绪。
