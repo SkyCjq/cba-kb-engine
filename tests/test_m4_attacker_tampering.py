@@ -23,7 +23,40 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
-def _make_signed_auth(tmp_path: Path, private_key: Ed25519PrivateKey, **updates) -> Path:
+@pytest.fixture(autouse=True)
+def _mock_chflags_on_non_bsd(monkeypatch):
+    """On platforms without native chflags/UF_IMMUTABLE (e.g. Linux CI),
+    provide mock implementations by default so cross-platform tests can test
+    ledger logic. Tests specifically verifying missing capability will
+    monkeypatch.delattr to simulate missing API."""
+    if not hasattr(os, "chflags") or not hasattr(stat, "UF_IMMUTABLE"):
+        flags_map = {}
+
+        def mock_chflags(path, flags):
+            flags_map[str(Path(path).resolve())] = flags
+
+        orig_stat = Path.stat
+
+        def mock_stat(self, *args, **kwargs):
+            st = orig_stat(self, *args, **kwargs)
+            res_flags = flags_map.get(str(self.resolve()), 0)
+
+            class StatWrapper:
+                def __init__(self, orig, fl):
+                    self._orig = orig
+                    self.st_flags = fl
+
+                def __getattr__(self, item):
+                    return getattr(self._orig, item)
+
+            return StatWrapper(st, res_flags)
+
+        monkeypatch.setattr(m4.os, "chflags", mock_chflags, raising=False)
+        monkeypatch.setattr(m4.stat, "UF_IMMUTABLE", 0x2, raising=False)
+        monkeypatch.setattr(Path, "stat", mock_stat)
+
+
+def _make_signed_auth(tmp_path: Path, signing_key: Ed25519PrivateKey, **updates) -> Path:
     now = datetime.now(timezone.utc)
     record = {
         "schema": "cba-kb-m4-test-authorization/v1",
@@ -47,7 +80,7 @@ def _make_signed_auth(tmp_path: Path, private_key: Ed25519PrivateKey, **updates)
     auth_file = tmp_path / "auth.json"
     auth_file.write_bytes(raw)
     sig_file = tmp_path / "auth.json.sig"
-    sig = private_key.sign(raw)
+    sig = signing_key.sign(raw)
     import base64
     sig_file.write_bytes(base64.b64encode(sig))
     return auth_file

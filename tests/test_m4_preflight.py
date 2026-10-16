@@ -20,10 +20,31 @@ def _mock_chflags_on_non_bsd(monkeypatch):
     provide mock implementations by default so cross-platform tests can test
     ledger logic. Tests specifically verifying missing capability will
     monkeypatch.delattr to simulate missing API."""
-    if not hasattr(os, "chflags"):
-        monkeypatch.setattr(m4.os, "chflags", lambda _path, _flags: None, raising=False)
-    if not hasattr(stat, "UF_IMMUTABLE"):
+    if not hasattr(os, "chflags") or not hasattr(stat, "UF_IMMUTABLE"):
+        flags_map = {}
+
+        def mock_chflags(path, flags):
+            flags_map[str(Path(path).resolve())] = flags
+
+        orig_stat = Path.stat
+
+        def mock_stat(self, *args, **kwargs):
+            st = orig_stat(self, *args, **kwargs)
+            res_flags = flags_map.get(str(self.resolve()), 0)
+
+            class StatWrapper:
+                def __init__(self, orig, fl):
+                    self._orig = orig
+                    self.st_flags = fl
+
+                def __getattr__(self, item):
+                    return getattr(self._orig, item)
+
+            return StatWrapper(st, res_flags)
+
+        monkeypatch.setattr(m4.os, "chflags", mock_chflags, raising=False)
         monkeypatch.setattr(m4.stat, "UF_IMMUTABLE", 0x2, raising=False)
+        monkeypatch.setattr(Path, "stat", mock_stat)
 
 
 def _authorization(tmp_path, **updates):
