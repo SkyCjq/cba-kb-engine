@@ -1,99 +1,97 @@
-# CBA-KB 知识库引擎
+# CBA-KB｜让每一条篮球结论都有出处
 
-[English](README.md)
+[English](README.md) · [快速开始](#5-分钟快速开始) · [运维手册](docs/operations/OPERATIONS.zh-CN.md)
 
-**CBA-KB** 是面向中国男子篮球职业联赛（CBA）的证据优先型数据与研究引擎。它将异构源材料转化为可溯源的结构化事实、具备实体身份的文档证据、陈述（Statements）、主张（Claims）、核验队列（Verification Queue）与只读研究视图（Research View），支持人类研究员与 AI 系统消费，且绝不把证据与事实混为一谈。
+**新闻说了什么，不等于事实已经得到证实。** CBA-KB 是面向中国男子篮球职业联赛（CBA）的开源知识库引擎：帮助研究者和开发者整理比赛报道、球员资料、联赛公告与文档，保留来源、身份、版权和核验状态，让人或 AI 查资料时可以追问：**“这条结论依据什么？”**
 
-当前生产发布版本：**v2.0.2 — COMPLETE**。
+> **当前正式发布版本：v2.0.2。** `main` 同时包含正在开发的 **v2.0.4-2** 部分功能。完整 Google Drive 归档、真实双后端端到端验收和生产上线尚未完成；本 README 不代表生产发布公告。
 
----
+## 为什么需要 CBA-KB？
 
-## 1. CBA-KB 是什么
+想象你在研究“某球员是否转会”。一篇新闻可能说“据悉即将加盟”，另一份名单却仍显示原球队。普通搜索容易把两句话混在一起；直接让 AI 总结，更可能把传闻写成确定事实。
 
-CBA-KB 为中国篮球研究提供高可复现性的数据与分析管线。它负责抽取并建模联赛注册事实、球员身份、文档级证据、原始陈述与研究主张，同时严格保持溯源证据链、不确定性语义与权利边界。
+CBA-KB 希望把它们分清楚：
 
-公开开源仓库仅包含可复用的**引擎（Public Engine）**：数据契约、适配器、确定性处理逻辑、合成测试用例与 CLI 工具。
+- **Source（来源）**：消息来自哪篇文章、哪份公告、哪个文件？
+- **Document（文档）**：原件是什么，版本有没有变化，能否回到出处？
+- **Statement（陈述）**：来源原文到底说了什么？
+- **Claim（主张）**：哪些判断仍然只是待验证的说法？
+- **Fact（事实）**：哪些结论已有足够的权威证据和核验记录？
 
-## 2. 三条 North Star 原则
+**核心原则：陈述 ≠ 事实；证据 ≠ 事实；未知 ≠ 0。** 当身份、权限或证据不清楚时，系统应保留未决状态或交给人工复核，而不是猜测。
 
-1. **证据优先的真理层级**：
-   > 核心法则：**陈述 ≠ 事实。证据 ≠ 事实。未知 ≠ 0。**
-   引述与观点绝不在未经独立核验的情况下静默坍缩为联赛事实。
-2. **确定性与 Fail-Closed 闭环**：
-   凡遇到歧义、缺失记录或未核实主张，系统直接路由至显式核验队列，绝不猜测或静默丢弃。
-3. **严格的权利与溯源追踪**：
-   每一个事实、陈述与文档均保留指向源头的不可篡改加密指纹链路。
+## 它能做什么？
 
-## 3. Public Engine 与 Private Instance 边界
+| 场景 | CBA-KB 的作用 | 当前边界 |
+| --- | --- | --- |
+| 整理研究资料 | 建立来源、文档、球员身份和可追溯记录 | 公开 Engine 已具备相关数据模型与 CLI |
+| 检查新闻和观点 | 分离 Statement、Claim、Fact，保留待核验事项 | 不会自动把 AI 摘要认定为事实 |
+| 本地 Inbox 试用 | 发现 `.txt`、登记 Source/Document、去重、状态查询和关键词检索 | v2.0.4 开发分支功能；需同名权利声明文件 |
+| Google Drive 资料发现 | 只读发现、增量轮询、记录修订、搜索索引与审批记录 | 开发能力，不等于生产 Drive 已启用 |
+| 安全整理和归档 | 以明确计划、审批、操作后回读为目标 | 真实 Drive 移动仍处整合审查及 E2E 阶段，不能当成已发布功能 |
+| 给人和 AI 使用 | 生成带身份、证据和权限语义的研究数据 | 使用者仍需核验证据并尊重版权 |
 
-| 维度 | 公开引擎 Public Engine (本仓库) | 私有实例 Private Instance (私有部署) |
-| :--- | :--- | :--- |
-| **代码与工具** | **Apache-2.0** 开源许可 | 运维脚本与专有部署配置 |
-| **文档与手册** | **CC BY 4.0** 知识共享许可 | 私有研究笔记与内部运维日志 |
-| **数据与样例** | **CC0-1.0** 合成/公开安全样例 | 真实语料库、版权新闻、私有 Drive ID |
-| **存储与密钥** | 零凭证、零私有云 ID 提交 | 私有 Google Drive 映射、OAuth 令牌 |
+**CBA-KB 不是聊天机器人，也不是自动抓取全网、自动判定所有篮球事实的服务。** 它是可复用的处理引擎，需要你选择合法数据来源、运行环境和审核流程。
 
-## 4. 版本能力演进线
+## 先弄清楚版本状态
 
-- **v1.5.x**：基线球员注册模型、Excel 导出确定性与基础 Drive 发布。
-- **v1.8.x**：多通道文档证据、稳定球员身份注册表与消费端闭环管控。
-- **v1.9.0**：语料摄入契约 v1、陈述模型、主张提取 MVP、核验队列与只读研究视图。
-- **v2.0.x**：Drive 放置安全守卫、Fail-closed 消费端画像与发布编排加固。
-- **v2.0.2**：开源就绪、Apache-2.0 协议落地、CC BY 4.0 文档体系与历史记录脱敏。
-- **v2.0.4（开发中，PR-1）**：本地优先 TXT Inbox 生命周期——轮询自动发现、持久 Source/Document 注册、权利感知查询、CLI 状态/报告。属开发期能力，**不是**生产发布。
+- **v2.0.2：正式发布基线。** 包括公开 Engine、数据契约、合成样例、研究与验证工具。
+- **v2.0.4-2：正在开发。** `main` 中已有本地 Inbox、Drive 只读发现/轮询、权限控制、索引、部分计划审批和 WAL 恢复等代码；这些模块的存在**不代表完整业务链已验收**。
+- **整合 PR [#176](https://github.com/SkyOneBranch/cba-kb-engine/pull/176)：仍在审查。** Guarded Drive move 和统一工作流等改动，必须经过最终代码版本的独立 Q2 与 Human 合并，才算进入 `main`。
+- **还没有完成的事：** 真实隔离 Google Drive E2E、整版需求验收、Production GO、指定主机部署、生产 Drive Inbox 激活和用户实际验收。
 
-## 5. 路线图
+**你可以在本地用合成数据体验开发中的功能；请不要把它理解为已经可以安全地批量移动自己的生产 Drive 文件。**
 
-- **v2.1**：扩展 Person 实体层（教练、裁判、俱乐部管理人员）及历史流转图谱。
-- **v2.2**：社区数据集分发（ODC-By/ODbL）与自动化基准测试套件。
+## 5 分钟快速开始
 
-## 6. 5 分钟快速上手
+准备：Python **3.11+**、Git；以下命令适用于 Linux/macOS 或兼容的终端。无需任何真实 CBA 私有数据，也无需 Google Drive 凭据。
 
 ```bash
-# 1. 克隆仓库
+# 1. 获取公开仓库（main 是开发分支）
 git clone https://github.com/SkyOneBranch/cba-kb-engine.git
 cd cba-kb-engine
 
-# 2. 创建并激活虚拟环境
+# 2. 安装到虚拟环境
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.lock
 python -m pip install --no-deps --no-build-isolation -e .
 
-# 3. 运行环境自检
+# 3. 环境检查和离线测试
 make doctor
-
-# 4. 运行离线测试套件
 make test
-```
 
-可编辑安装会创建文档所使用的 `cba-kb` 命令。若要在无任何私有配置的
-条件下，用 CC0 合成数据复现公开流程，请继续执行
-[clean-room 冒烟步骤](docs/operations/OPERATIONS.zh-CN.md#15-clean-room-合成冒烟)。
-
-### 查看 CLI 命令：
-```bash
+# 4. 查看可以使用的命令
 cba-kb --help
 ```
 
-### 本地优先 Inbox 生命周期（v2.0.4 开发中，PR-1）
+如果你想复现**正式 v2.0.2** 的源码，请在安装前明确切换到 `v2.0.2` Tag；上面的默认克隆得到的是开发分支，不是 v2.0.4-2 已发布版本。
 
-当前生产发布版本保持 **v2.0.2 — COMPLETE**。以下命令演练开发中的 PR-1
-能力：本地 `.txt` 文件自动发现、Source/Document 注册与去重、权利感知
-查询、生命周期状态。不需要 Google 凭证；一切运行在你自己指定的外置
-实例目录中。
+### 体验 1：用虚构数据走一次研究流程
 
 ```bash
-# 1. 创建外置实例（位于引擎目录之外）
-mkdir -p /tmp/cbakb-demo/{config,inbox/documents}
+# 避免把私有环境变量混入公开合成测试
+unset CBA_KB_INSTANCE_ROOT CBA_KB_SOURCE_POLICY_JSON CBA_STATS_AES_KEY GOOGLE_APPLICATION_CREDENTIALS
 
-# 2. 放入合成 TXT 及其权利声明 sidecar
-cat > /tmp/cbakb-demo/inbox/documents/synthetic-news.txt <<'EOF'
+# 只使用公开的合成样例，不上传真实内容
+python scripts/run_cleanroom_smoke.py --output .cleanroom/ci-smoke
+```
+
+它会运行仓库中定义的合成数据研究流程。需要分步查看 Source、Statement、Claim、Research View 等命令，可阅读[公开操作手册](docs/operations/OPERATIONS.zh-CN.md)。
+
+### 体验 2：本地 Inbox 自动发现与搜索（开发功能）
+
+```bash
+# 运行在仓库外部的独立目录
+mkdir -p /tmp/cbakb-demo/config /tmp/cbakb-demo/inbox/documents
+
+cat > /tmp/cbakb-demo/inbox/documents/demo.txt <<'TXT'
 Synthetic CBA Bulletin
 The Harbor Falcons won a fictional preseason game.
-The team scored 88 points in this synthetic report.
-EOF
-cat > /tmp/cbakb-demo/inbox/documents/synthetic-news.txt.source.json <<'EOF'
+TXT
+
+# 本地 TXT 需要相应的来源和权利声明
+cat > /tmp/cbakb-demo/inbox/documents/demo.txt.source.json <<'JSON'
 {
   "schema_version": 1,
   "title": "Synthetic CBA Bulletin",
@@ -105,127 +103,56 @@ cat > /tmp/cbakb-demo/inbox/documents/synthetic-news.txt.source.json <<'EOF'
     "evidence": []
   }
 }
-EOF
+JSON
 
-# 3. 扫描两次：文件须在间隔至少 1 秒的连续两次扫描中完全一致才会处理（稳定性门）
+# 稳定性检查：间隔后执行第二次扫描
 cba-kb --instance-root /tmp/cbakb-demo inbox-scan
 sleep 2
 cba-kb --instance-root /tmp/cbakb-demo inbox-scan
 
-# 4. 或用持续轮询代替手工扫描（Ctrl-C 停止）
-cba-kb --instance-root /tmp/cbakb-demo inbox-poll --interval-seconds 30
-
-# 5. 生命周期状态与权利感知查询
+# 查看状态与关键词检索
 cba-kb --instance-root /tmp/cbakb-demo archive-status --all
 cba-kb --instance-root /tmp/cbakb-demo archive-query --keyword "Harbor Falcons"
-cba-kb --instance-root /tmp/cbakb-demo archive-query --title "Synthetic CBA Bulletin"
-# 注意：--visibility public 已延期到后续 PR（SCOPED PR1）。
-# 本版本所有文档均为 local-only。
 ```
 
-安全约束（默认 fail-closed）：
+这里不会移动、删除或公开你的原始文件。实际处理结果以命令输出为准；若权利声明错误、文件未稳定或需要人工复核，系统可能拒绝摄入。正式使用前请先阅读[完整安全与操作说明](docs/operations/OPERATIONS.zh-CN.md)。
 
-- 每个 `.txt` 都需要同名 `.txt.source.json` sidecar，声明标题、来源
-  与权利。缺失/非法/不可读的元数据（含结构畸形值）、非 UTF-8 字节、
-  符号链接的 sidecar、无可验证证据的公开声明，一律进入
-  `REVIEW_REQUIRED`——绝不静默入库。（SCOPED：本版本无公开搜索。）未解决的人工复核
-  在重扫后依然保留：重复摄入相同输入（以内容哈希验证，而非 mtime/size）
-  不会清除复核决定。仅触碰 mtime 而不改字节，或改 sidecar 字节后恢复
-  mtime/size，都不能绕过复核。
-- **SCOPED PR1（2026-10-14）**：自动公开授权已**延期**到后续独立 PR。
-  所有文档均为 local-only；`--visibility public` 会被拒绝。权利元数据仍会
-  解析存储，但永不触发自动公开。公开声明一律进入 `REVIEW_REQUIRED` 等待
-  人工复核。若关联来源记录缺失，查询将 fail-closed（`INDEX_FAILED`），
-  而非将缺失视为干净。PR-1 没有任何发布路径。
-- Inbox 原件永不重命名、移动或删除（`archive_status` 保持
-  `NOT_REQUESTED`）。
-- 所有状态保存在 `<instance>/data/` 下；引擎源码目录永不被写入。
-  `data/inbox_lifecycle` 本身不得为符号链接（在解析前检查）；若其或任一
-  状态子目录（`sources/`、`ledger/`、`review/`、各 `review/<id>/`）为符号
-  链接，生命周期以 `INBOX_LIFECYCLE_PATH_ESCAPE` 拒绝启动。`.lock` 文件以
-  `O_NOFOLLOW` 打开，验证为普通文件，且拒绝硬链接（`st_nlink > 1`）以防
-  截断外部文件。
-  残余风险：检查与使用之间的符号链接竞态通过 mkdir 后复查缓解，但未使用
-  目录文件描述符彻底消除。
-- **文件系统信任模型（DELTA 2026-10-14）**：仅 Unix（`fcntl`）。
-  `<instance>/data` 须由运行用户独占，无组/其他写权限。同一 UID 恶意进程、
-  启动后并发目录替换、root/bind-mount 明确不在范围内（需 OS 级隔离）。
-  Archive `record.json` 与 `text.txt` 以 `O_NOFOLLOW` 打开；关键词搜索先验
-  证来源合格再读归档文本。
-- 归档的字节即验证的字节（不变量1）：生命周期以 `O_NOFOLLOW` 打开文件，
-  经 `fstat` 验证后做有界读取（最多 1 MiB + 1 字节），读后复核文件描述符
-  身份，再将字节快照直接传给 `DocumentLane._ingest_parsed`。文件绝不从
-  路径二次读取。1 MiB 限制作用于已验证字节，处理入口另有长度断言。
-  残余风险：`_ingest_parsed` 为 DocumentLane 私有 API；若其内部变更，
-  集成将 fail-closed 中断，而非静默通过。
-- 未解决的近重复人工复核持久保留（不变量3）。Lane 的 `exact_merge`/
-  `ACCEPTED` 不能覆盖它：若来源有 `NEAR_DUPLICATE` 复核且 doc_id 未变，
-  即使 lane 接受也保持 REVIEW_REQUIRED。规范化等价的 TXT 修改不视为
-  人工批准。
-- SCOPED：公开搜索已延期。处理失败不会解链来源（保留链接以供恢复/审计）。
-  残余风险：任何真实暴露前仍需人工权利审查。
+## Google Drive：为什么不能“点一下就全部归档”？
 
-**Drive 发现**（`cba-kb drive-discover --folder-id … --ledger …`）——只读：
-枚举 Drive 文件夹、核验访问/内容/版本、记录带去重与修订处理的
-Source/Document 身份、写持久 JSONL ledger。永不写入 Drive。
+处理私人 Drive 文件，最重要的不是移动得快，而是**移动对文件、拥有权限、移动后还能核验**。
 
-**Drive 搜索**（`cba-kb drive-search --registry … --query …`）——按文件名
-查找；只有"访问已核验＋已明确批准"的文件出现在结果里，其余按精确原因
-排除。用 `cba-kb drive-grant --registry … --ledger … --file-id … --approver …`
-批准文件（ledger 留痕，无自动批准）。
+CBA-KB 的设计目标是：先读取准确的文件 ID、原父目录、目标目录、版本和权限证据 → 生成明确计划 → 人工批准 → 执行前再次核验 → 受控操作 → 再从 Drive 读取实际结果。中途缺少必要证据，应停止而不是猜测。
 
-**Drive 搜索索引**（`cba-kb drive-build-index` /
-`cba-kb drive-search-index --principal …`）——持久化关键词索引。只有持有
-有效 `approved` 授权的文档可被检索；`private` / `review` / 未授权文档对
-任何调用者都不可见。索引只存词项和标题（不存正文）；损坏的索引拒绝加
-载。注意：索引关键词来自文档文本，词项存在性在索引文件中天然可见。
+目前，开发分支已包含只读 Drive 发现、增量轮询、搜索、索引及部分受控计划能力；**生产 Drive reparent/move 尚不能视为已通过整版独立验收**。任何真实生产移动、删除、分享、发布或版本指针更新，都需要独立 Human Production GO，并服从 Google Drive 连接工具本身的授权确认。
 
-**Drive 计划**（`cba-kb drive-plan-create` / `drive-plan-approve` /
-`cba-kb drive-plan-apply` / `drive-plan-verify`）——本地维护操作的受控
-工作流（索引重建、tombstone 清理、索引授权撤销）。计划用 SHA 寻址且不
-可变；执行需明确的人工批准（ledger 留痕）；独立回读验证结果。所有操作
-均为本地操作，不写入 Drive。
+真实 OAuth 凭据、私有文件 ID、原始语料和用户运行日志必须留在**Private Instance**，不能提交到公开 GitHub 仓库。
 
-**Drive 弹性**——本地状态的并发控制与崩溃恢复。文件锁防止并发修改；
-预写日志（WAL）检测崩溃的执行；操作带超时（fail-closed）；所有计划
-操作幂等，可安全重试。
+## 谁适合使用？
 
-**统一工作流**（`cba-kb workflow-status --ledger … --registry …`）——
-显示你在业务流中的位置：
-`discover → plan → approve → apply → verify`。
-每步使用上述 CLI 命令；plan 与 apply 之间需要人工批准。
+- **篮球研究者 / 数据整理者**：想知道每个结论来自哪里、哪些仍待验证。
+- **开发者**：想复用 CBA 数据契约、身份映射、解析工具和合成样例。
+- **AI 应用构建者**：不希望模型把传闻、陈述和核验事实混为一谈。
 
-**Drive 轮询**（`cba-kb drive-poll --registry … --ledger … --state …`）——
-持续监听 Drive 变化，增量更新发现 registry。崩溃安全：整批处理完成后
-才推进检查点；重启后恢复不丢失已处理工作。重复内容通过持久化摘要
-索引检测（重启不丢失）；每个来源的修订链持久保存，身份冲突时拒绝
-并报错。只读，永不写入 Drive。默认执行一次；加 `--interval <秒数>`
-进入持续轮询。注意：首次运行仅初始化监听 token。
+公开仓库提供 **Public Engine**；私人真实资料应由使用者在独立的 **Private Instance** 中依法管理。代码采用 [Apache-2.0](LICENSE)，文档依 [CC BY 4.0](DATA_LICENSE.md)，仓库的合成样例依 [CC0-1.0](DATA_LICENSE.md)。第三方报道、照片等仍受原版权约束，详见[第三方数据说明](THIRD_PARTY_DATA.md)。
 
-状态：v2.0.4-2 开发中（非生产发布）。Drive 部署与生产激活是独立的、
-需 Human 批准的步骤。
+## AI 帮忙开发，如何知道代码写得对？
 
-## 7. 语义原则
+本项目也使用 AI Agent 参与开发。可以把流程理解为：**你是产品经理，Muse、Grok 等 Agent 是开发者，CI 和独立审查是测试验收，最后由你决定是否合并。**
 
-- **关注点分离**：陈述（Statement）表示源头说了什么；主张（Claim）表示提炼出的推论；事实（Fact）表示经官方核验的联赛记录。
-- **歧义时 Fail-Closed**：当实体无法唯一匹配到球员 UID 时，保持未决状态或路由至 `verification-queue`。
-- **禁止自行跃迁 / 零幻觉**：AI 模型与解析器绝不允许在没有官方 API 或人工核实的情况下将抽取陈述提升为联赛事实。
+**新 Requirement → 独立 Q1 / Freeze → Agent 开发 → GitHub PR → CI + 独立 Q2 → Human Approval → Merge**
 
-## 8. 数据与权利边界
+- 需求阶段写清楚“要解决什么”和“什么算完成”，复杂需求先独立审规格（Q1）并冻结范围。
+- Muse 或其他具备仓库权限的 Agent 编写代码、测试、提交 PR；可以按任务切换开发主力。
+- GitHub CI 检查可重复运行的测试；与开发过程隔离的 ChatGPT 等 Web AI 可以检查 PR 对应的**确切 HEAD**、复现缺陷并提出退修。
+- 审查 FAIL 就修复后重审；最终仍由 Human 决定批准与合并。**合并不等于生产上线**。
 
-- **代码许可**：引擎代码采用 [Apache-2.0 许可证](LICENSE)。
-- **文档资料**：文档采用 [CC BY 4.0 许可证](DATA_LICENSE.md)。
-- **测试样例**：合成测试用例归入公有领域 [CC0-1.0](DATA_LICENSE.md)。
-- **第三方材料**：联赛通知、媒体报道与摄影作品版权归原权利人所有，详见 [`THIRD_PARTY_DATA.md`](THIRD_PARTY_DATA.md)。
+这是一种参考 [LACD 协作模式](https://github.com/SkyOneBranch/LACD) 的低预算开发方式，**不是 CBA-KB 自带的 AI 编程服务**。不同 AI 工具可能提供免费额度，但额度、价格、权限和实际审查能力由服务商决定；多轮测试和独立审查能降低风险，不能保证代码零缺陷。
 
-## 9. 版本号说明与规范
+## 文档与参与贡献
 
-- 当前版本：**2.0.2**
-- 本项目遵循 [语义化版本 2.0.0 (SemVer)](https://semver.org/lang/zh-CN/) 规范。
-- `pyproject.toml`、`src/cba_kb/__init__.py` 以及 Git 标签中的版本号严格同步。
+- [运维手册（中文）](docs/operations/OPERATIONS.zh-CN.md) · [Operations Manual (English)](docs/operations/OPERATIONS.md)
+- [贡献指南](CONTRIBUTING.md) · [安全报告](SECURITY.md)
+- [数据和版权许可](DATA_LICENSE.md) · [第三方材料说明](THIRD_PARTY_DATA.md)
+- [GitHub Issues](https://github.com/SkyOneBranch/cba-kb-engine/issues) · [Pull Requests](https://github.com/SkyOneBranch/cba-kb-engine/pulls)
 
-## 10. 文档地图、贡献与许可
-
-- **操作手册**：[运维与操作手册](docs/operations/OPERATIONS.zh-CN.md) ([English](docs/operations/OPERATIONS.md))
-- **参与贡献**：提交 PR 前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 与 [SECURITY.md](SECURITY.md)。
-- **开源许可**：[Apache License 2.0](LICENSE) | [NOTICE](NOTICE) | [数据许可策略](DATA_LICENSE.md)。
+**我们的目标不是让 AI 说出更确定的话，而是让每个值得相信的篮球结论都能找到证据。**

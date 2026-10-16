@@ -1,100 +1,97 @@
-# CBA-KB Engine
+# CBA-KB | Basketball research you can trace back to evidence
 
-[中文版](README.zh-CN.md)
+[简体中文](README.zh-CN.md) · [Quick start](#5-minute-quick-start) · [Operations guide](docs/operations/OPERATIONS.md)
 
-**CBA-KB** is an evidence-first data and research engine for the Chinese Basketball Association (CBA). It turns heterogeneous source material into traceable structured facts, identity-aware document evidence, statements, claims, verification queues, and read-only research views that can be consumed by humans and AI systems without collapsing evidence into fact.
+**A headline is not a verified fact.** CBA-KB is an open-source, evidence-first knowledge engine for research on the Chinese Basketball Association (CBA). It helps researchers and developers organize reports, rosters, official notices, and documents without losing their sources, identities, rights, or verification status. The question behind every result is simple: **“Where did this come from?”**
 
-Current production release: **v2.0.2 — COMPLETE**.
+> **Current production release: v2.0.2.** The `main` branch also contains parts of **v2.0.4-2 under development**. Full Google Drive archiving, real two-backend end-to-end acceptance, and production activation are **not complete**. This README is not a production-release announcement.
 
----
+## Why CBA-KB exists
 
-## 1. What CBA-KB Is
+Imagine researching whether a player has transferred. One report says a move is rumored; a separate official roster still lists the previous club. A search result or an AI summary could easily turn that rumor into a fact.
 
-CBA-KB provides a reproducible pipeline for Chinese basketball research. It extracts and models registration facts, player identities, document-level evidence, quoted statements, and research claims while preserving strict provenance, uncertainty, and rights boundaries.
+CBA-KB is designed to keep the pieces separate:
 
-The public repository contains the reusable open-source **Engine**: schemas, adapters, deterministic processing logic, synthetic test fixtures, and CLI tools.
+- **Source:** Where did the information originate?
+- **Document:** What was the original file, and has its revision changed?
+- **Statement:** What did the source actually say?
+- **Claim:** What assertion still needs independent verification?
+- **Fact:** What conclusion has adequate authoritative evidence and a verification record?
 
-## 2. Three North Stars
+**Core rule: Statement ≠ Fact. Evidence ≠ Fact. Unknown ≠ 0.** If identity, rights, or evidence cannot be established, the result should remain unresolved or go to human review—not be guessed.
 
-1. **Evidence-First Truth Hierarchy**:
-   > Core rule: **Statement ≠ Fact. Evidence ≠ Fact. Unknown ≠ 0.**
-   Verbatim quotes and claims are never silently collapsed into canonical facts without independent verification.
-2. **Deterministic & Fail-Closed Operations**:
-   Ambiguity, missing records, or unverified claims route directly to an explicit verification queue rather than guessing or silently dropping data.
-3. **Strict Rights & Provenance Preservation**:
-   Every fact, statement, and document retains an immutable cryptographic provenance trail linking back to its authoritative source.
+## What can it do?
 
-## 3. Public Engine vs. Private Instance
+| Your goal | How CBA-KB helps | Current boundary |
+| --- | --- | --- |
+| Organize research | Link sources, documents, player identity, and provenance | Public Engine includes data models and CLI tools |
+| Examine a report | Separate statements, claims, verified facts, and outstanding checks | AI-generated summaries never become facts automatically |
+| Try a local inbox | Discover `.txt` files, register Source/Document, deduplicate, inspect status, and search | v2.0.4 development capability; requires a rights sidecar |
+| Discover Google Drive material | Read-only discovery, change polling, revision tracking, gated search and index | Development capability, not activated production Drive |
+| Plan archiving | Intended workflow: exact plan, approval, guarded operation, independent readback | Real Drive file moves are still undergoing integration review and E2E work |
+| Serve people and AI | Produce research data with identities, evidence, and rights context | Users remain responsible for validation and copyright compliance |
 
-| Dimension | Public Engine (This Repository) | Private Instance (Private Deployment) |
-| :--- | :--- | :--- |
-| **Code & Tools** | Open source under **Apache-2.0** | Operational configurations & private scripts |
-| **Documentation** | Public documentation under **CC BY 4.0** | Private research notes & internal runbooks |
-| **Data & Fixtures** | Synthetic & mock fixtures under **CC0-1.0** | Real raw corpora, copyrighted news, private Drive IDs |
-| **Storage & Secrets**| No credentials committed; legacy non-secret Drive IDs are documented in [`DATA_LICENSE.md`](DATA_LICENSE.md) | Private Google Drive mappings, OAuth tokens |
+**CBA-KB is not a chatbot or a service that automatically crawls the whole web and declares basketball facts.** It is a reusable engine; you choose appropriate data sources, run it in your environment, and define human-review processes.
 
-## 4. Capability Evolution
+## Understand the release status first
 
-- **v1.5.x**: Baseline registration data model, Excel export determinism, and basic Drive publishing.
-- **v1.8.x**: Document evidence lane, stable player identity registry, and consumer closure controls.
-- **v1.9.0**: Source Intake Contract v1, Statement model, Claim MVP, Verification Queue, and Research View synthesis.
-- **v2.0.x**: Placement enforcement guard, fail-closed consumer profiles, and hardened release orchestration.
-- **v2.0.2**: Public Engine open-source readiness, Apache-2.0 licensing, CC BY 4.0 docs, and sanitized history.
-- **v2.0.4 (development, PR-1)**: Local-first TXT inbox lifecycle — polling auto-discovery, persistent Source/Document registry, rights-aware query, CLI status/report. Development capability, **not** a production release.
+- **v2.0.2: released baseline.** Public Engine, data contracts, synthetic fixtures, research and verification tooling.
+- **v2.0.4-2: in development.** The `main` branch contains code for a local inbox, read-only Drive discovery/polling, permission gates, indexes, some plan approval, and WAL recovery. **Module presence is not proof that the complete workflow has passed acceptance.**
+- **Integration [PR #176](https://github.com/SkyOneBranch/cba-kb-engine/pull/176): under review.** Guarded Drive move and unified workflow changes require independent Q2 against the final commit and a human merge before they reach `main`.
+- **Not yet complete:** real isolated Google Drive E2E, full-scope acceptance, Production GO, deployment to an actual host, production Inbox activation, and user acceptance.
 
-## 5. Roadmap
+**You can experiment locally with synthetic data. Do not treat this as permission to move production Google Drive files.**
 
-- **v2.1**: Expanded Person layer (coaches, referees, club staff) and historical transaction graphs.
-- **v2.2**: Community Dataset distribution (ODC-By/ODbL) and automated benchmark suites.
+## 5-minute quick start
 
-## 6. 5-Minute Quick Start
+Requirements: Python **3.11+** and Git. Commands below target Linux/macOS or a compatible terminal. You do not need private CBA data or Google credentials.
 
 ```bash
-# 1. Clone repository
+# 1. Clone the public repository (main is the development branch)
 git clone https://github.com/SkyOneBranch/cba-kb-engine.git
 cd cba-kb-engine
 
-# 2. Set up virtual environment
+# 2. Install into an isolated Python environment
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.lock
 python -m pip install --no-deps --no-build-isolation -e .
 
-# 3. Verify environment
+# 3. Environment check and offline tests
 make doctor
-
-# 4. Run offline tests
 make test
-```
 
-The editable install creates the documented `cba-kb` command. To reproduce the
-public workflow with CC0 synthetic data and no private configuration, follow the
-[clean-room smoke procedure](docs/operations/OPERATIONS.md#15-clean-room-synthetic-smoke).
-
-### Try the CLI:
-```bash
+# 4. Explore available commands
 cba-kb --help
 ```
 
-### Local-First Inbox Lifecycle (v2.0.4 development, PR-1)
+To reproduce the **released v2.0.2 source**, explicitly check out the `v2.0.2` tag before installation. A default clone of `main` includes development code; it is not a v2.0.4-2 release.
 
-Current production release stays **v2.0.2 — COMPLETE**. The commands below
-exercise the in-development PR-1 capability: automatic discovery of local
-`.txt` files, Source/Document registration with deduplication, rights-aware
-query, and lifecycle status. No Google credentials are needed; everything
-runs against an external instance directory you choose.
+### Try 1: an entirely synthetic research workflow
 
 ```bash
-# 1. Create an external instance (outside the engine tree)
-mkdir -p /tmp/cbakb-demo/{config,inbox/documents}
+# Keep private-instance environment variables out of the public smoke test
+unset CBA_KB_INSTANCE_ROOT CBA_KB_SOURCE_POLICY_JSON CBA_STATS_AES_KEY GOOGLE_APPLICATION_CREDENTIALS
 
-# 2. Drop a synthetic TXT plus its rights sidecar
-cat > /tmp/cbakb-demo/inbox/documents/synthetic-news.txt <<'EOF'
+# Uses public synthetic fixtures, not your private source material
+python scripts/run_cleanroom_smoke.py --output .cleanroom/ci-smoke
+```
+
+For individual Source, Statement, Claim, and Research View commands, see the [public operations guide](docs/operations/OPERATIONS.md).
+
+### Try 2: local Inbox discovery and search (development capability)
+
+```bash
+# Keep instance data outside the repository
+mkdir -p /tmp/cbakb-demo/config /tmp/cbakb-demo/inbox/documents
+
+cat > /tmp/cbakb-demo/inbox/documents/demo.txt <<'TXT'
 Synthetic CBA Bulletin
 The Harbor Falcons won a fictional preseason game.
-The team scored 88 points in this synthetic report.
-EOF
-cat > /tmp/cbakb-demo/inbox/documents/synthetic-news.txt.source.json <<'EOF'
+TXT
+
+# Local TXT files need accompanying provenance/rights metadata
+cat > /tmp/cbakb-demo/inbox/documents/demo.txt.source.json <<'JSON'
 {
   "schema_version": 1,
   "title": "Synthetic CBA Bulletin",
@@ -106,155 +103,56 @@ cat > /tmp/cbakb-demo/inbox/documents/synthetic-news.txt.source.json <<'EOF'
     "evidence": []
   }
 }
-EOF
-# Note: "classification": "public" would route to REVIEW_REQUIRED in SCOPED PR1.
-# Public auto-authorization is deferred to a future PR.
+JSON
 
-# 3. Scan twice: a file is processed only after it looks identical
-#    in two consecutive scans at least 1 second apart (stability gate)
+# Run a second scan after the stability interval
 cba-kb --instance-root /tmp/cbakb-demo inbox-scan
 sleep 2
 cba-kb --instance-root /tmp/cbakb-demo inbox-scan
 
-# 4. Or poll continuously instead of manual scans (Ctrl-C to stop)
-cba-kb --instance-root /tmp/cbakb-demo inbox-poll --interval-seconds 30
-
-# 5. Lifecycle status and rights-aware query
+# Inspect status and try a keyword query
 cba-kb --instance-root /tmp/cbakb-demo archive-status --all
 cba-kb --instance-root /tmp/cbakb-demo archive-query --keyword "Harbor Falcons"
-cba-kb --instance-root /tmp/cbakb-demo archive-query --title "Synthetic CBA Bulletin"
-# Note: --visibility public is deferred to a future PR (SCOPED PR1).
-# All documents are local-only in this release.
 ```
 
-Security constraints (fail-closed by default):
+This demo does not move, delete, or publish originals. Actual results depend on the command output; invalid rights metadata, an unstable file, or a review requirement may prevent ingestion. See the [operations and safety details](docs/operations/OPERATIONS.md) before running with real content.
 
-- Every `.txt` needs a same-named `.txt.source.json` sidecar declaring
-  title, origin, and rights. Missing/invalid/unreadable metadata (including
-  structurally malformed values), non-UTF-8 bytes, a symlinked sidecar, or a
-  public claim without verifiable evidence routes the file to
-  `REVIEW_REQUIRED` — never silently ingested. (SCOPED: there is no
-  public search in this release, so "publicly searchable" does not apply.)
-  An unresolved human review persists across rescans: re-ingesting identical
-  inputs (verified by content hash, not mtime/size) does not clear it.
-  Touching mtime without changing bytes, or changing sidecar bytes while
-  restoring mtime/size, does not bypass the review.
-- **SCOPED PR1 (2026-10-14)**: Automatic public authorization is
-  DEFERRED to a future independent PR. All documents are local-only;
-  `--visibility public` is rejected. The rights metadata is still parsed
-  and stored, but never triggers automatic public visibility. A public
-  classification claim routes the file to `REVIEW_REQUIRED` for human
-  review. If a linked source record is missing, the query fails closed
-  (`INDEX_FAILED`) rather than treating the missing source as clean.
-  There is no publish path in PR-1.
-- Inbox originals are never renamed, moved, or deleted
-  (`archive_status` stays `NOT_REQUESTED`).
-- All state lives under `<instance>/data/`; the engine source tree is
-  never written to. `data/inbox_lifecycle` itself must not be a symlink
-  (checked before resolving); if it or any state subdirectory
-  (`sources/`, `ledger/`, `review/`, per-source `review/<id>/`) is a symlink,
-  the lifecycle refuses with `INBOX_LIFECYCLE_PATH_ESCAPE`. The `.lock` file
-  is opened with `O_NOFOLLOW`, verified as a regular file, and rejected if
-  it has hardlinks (`st_nlink > 1`) to prevent truncating external files.
-  Residual risk: symlink attacks between the check and use (TOCTOU) are
-  mitigated by re-checking after mkdir, but not eliminated by directory
-  file descriptors.
-- **Filesystem trust model (DELTA 2026-10-14)**: Unix-only (`fcntl`).
-  `<instance>/data` must be owned by the runtime user with no group/other
-  write permission. A same-UID malicious process, concurrent directory
-  substitution after startup, and root/bind-mount attacks are explicitly
-  out of scope (require OS-level isolation). Archive `record.json` and
-  `text.txt` are opened with `O_NOFOLLOW`; keyword search verifies source
-  eligibility before reading archive text.
-- The bytes archived are the bytes verified (Invariant 1): the lifecycle
-  opens the file with `O_NOFOLLOW`, verifies via `fstat`, does a bounded
-  read (max 1 MiB + 1 byte), re-verifies the file descriptor identity, and
-  passes the byte snapshot directly to `DocumentLane._ingest_parsed`.
-  The file is never re-read from its path. The 1 MiB limit is enforced on
-  the verified bytes, with an explicit length assertion at the processing
-  boundary.
-  Residual risk: `_ingest_parsed` is a private DocumentLane API; if the
-  lane's internals change, this integration breaks (fail-closed, not silent).
-- An unresolved near-duplicate human review persists (Invariant 3).
-  The lane's `exact_merge`/`ACCEPTED` cannot override it: if the source had
-  a `NEAR_DUPLICATE` review and the doc_id is unchanged, the review is kept
-  even when the lane accepts. Normalized-equivalent TXT edits do not count
-  as human approval.
-- SCOPED: Public search is deferred. A processing failure does not
-  unlink the source (the link is preserved for recovery/audit).
-  Residual risk: human rights clearance is still required before any
-  real-world exposure.
+## Google Drive: why not just move everything in one click?
 
-**Drive discovery** (`cba-kb drive-discover --folder-id … --ledger …`) —
-read-only: lists a Drive folder, verifies access/content/version, records
-Source/Document identity with duplicate and revision handling, and keeps a
-durable JSONL ledger. It never writes to Drive.
+With personal Drive files, the priority is not speed. It is **moving the right file, with the right permissions, and being able to verify what happened afterward**.
 
-**Drive search** (`cba-kb drive-search --registry … --query …`) — finds files
-by name; only access-verified + explicitly approved files appear as results,
-everything else is excluded with an exact reason. Approve a file with
-`cba-kb drive-grant --registry … --ledger … --file-id … --approver …`
-(ledger-recorded, no automatic approvals).
+CBA-KB's intended path is: read exact file ID, original parents, intended destination, revision and rights evidence → prepare an exact plan → obtain human authorization → recheck before a write → execute a guarded operation → independently read the result from Drive. Missing required evidence should stop the action rather than be treated as approval.
 
-**Drive search index** (`cba-kb drive-build-index` /
-`cba-kb drive-search-index --principal …`) — persistent keyword index.
-Only documents with a valid `approved` grant are searchable; `private` /
-`review` / unapproved documents never appear, for any caller. The index
-stores terms and titles only (no body text); a corrupt index refuses to
-load. Note: indexed keywords are derived from document text, so term
-presence is inherently visible in the index file.
+The development branch includes read-only Drive discovery, change polling, search, indexing, and some guarded local planning. **Production Drive reparent/move has not passed full-version independent acceptance.** Real production moves, deletions, sharing, publishing, or pointer updates require separate Human Production GO and any confirmation required by the connected Google Drive tools.
 
-**Drive plan** (`cba-kb drive-plan-create` / `drive-plan-approve` /
-`drive-plan-apply` / `drive-plan-verify`) — guarded workflow for local
-maintenance operations (index rebuild, tombstone purge, index grant
-revoke). Plans are SHA-addressed and immutable; apply requires explicit
-human approval (ledger-recorded); independent readback verifies the
-result. All operations are local; no Drive writes.
+Real OAuth credentials, private folder IDs, raw corpora, and user logs belong in a separate **Private Instance**, not this public GitHub repository.
 
-**Drive resilience** — concurrency and crash recovery for local state.
-File locks prevent concurrent modification; a write-ahead log (WAL)
-detects crashed applies; operations run with timeouts (fail-closed);
-all plan operations are idempotent and safe to retry.
+## Who is it for?
 
-**Unified workflow** (`cba-kb workflow-status --ledger … --registry …`) —
-shows your position in the business flow:
-`discover → plan → approve → apply → verify`.
-Each step uses the CLI commands above; human approval is required
-between plan and apply.
+- **Basketball researchers and curators** who want every claim connected to its source and verification status.
+- **Developers** who want to reuse CBA data contracts, identity mapping, ingestion tools, and synthetic examples.
+- **AI application builders** who want to keep rumors, source statements, and verified facts separate.
 
-**Drive poll** (`cba-kb drive-poll --registry … --ledger … --state …`) —
-watches for Drive changes and incrementally updates the discovery registry.
-Crash-safe: the checkpoint advances only after a batch is fully processed;
-a restart resumes without losing work. Duplicate content is detected via a
-persistent digest index (survives restarts); revision chains per source are
-persisted and fail closed on identity conflicts. Read-only; never writes
-to Drive. Runs once by default; pass `--interval <seconds>` for
-continuous polling. Note: the first run only initializes the watch token.
+The repository provides a **Public Engine**. Real private material is operated separately in a user's **Private Instance** under applicable permissions and law. Code uses [Apache-2.0](LICENSE), docs use [CC BY 4.0](DATA_LICENSE.md), and synthetic fixtures use [CC0-1.0](DATA_LICENSE.md). Third-party reporting and photographs retain their owners' rights; see [third-party data](THIRD_PARTY_DATA.md).
 
-Status: v2.0.4-2 is in development (not a production release). Drive-backed
-deployment and production activation are separate, Human-approved steps.
+## AI can write code. How do we know it is correct?
 
-## 7. Semantic Principles
+AI agents also help develop this project. Think of the human as a **product manager**, Muse or another capable agent as the **developer**, and CI plus independent review as **testing and acceptance**. The human still makes the final decision.
 
-- **Separation of Concerns**: Statements represent what was said; Claims represent asserted hypotheses; Facts represent canonical audited league records.
-- **Fail-Closed on Ambiguity**: When an actor cannot be uniquely matched to a player UID, they are held in unresolved state or routed to `verification-queue`.
-- **Zero Hallucination / Zero Promotion**: An AI model or parser may never promote an extracted statement to a canonical fact without explicit human or official API verification.
+**New Requirement → Independent Q1 / Freeze → Agent implementation → GitHub PR → CI + independent Q2 → Human Approval → Merge**
 
-## 8. Data and Rights Boundaries
+- State what should be built and what counts as done. For complex work, review the specification independently (Q1) and freeze the agreed scope before coding.
+- Muse, Grok, or another agent with suitable repository access can develop, test, and submit a PR; the primary coding agent can change between tasks.
+- GitHub CI supplies repeatable checks. A separate web AI reviewer, such as ChatGPT when it can access the code and evidence, can inspect the **exact PR HEAD**, reproduce issues, and request repairs.
+- A failed review means fix and re-review, not blindly merge. Human approval controls merging; **merging is not production deployment**.
 
-- **Code License**: The Engine code is licensed under the [Apache License 2.0](LICENSE).
-- **Documentation**: Licensed under [CC BY 4.0](DATA_LICENSE.md).
-- **Fixtures**: Synthetic fixtures are dedicated to the public domain under [CC0-1.0](DATA_LICENSE.md).
-- **Third-Party Data**: League notices, media articles, and photographs remain copyrighted by their respective owners. See [`THIRD_PARTY_DATA.md`](THIRD_PARTY_DATA.md).
+This is a budget-conscious collaboration approach inspired by [LACD](https://github.com/SkyOneBranch/LACD), **not a claim that CBA-KB itself is an AI coding service**. AI providers may offer free usage tiers, but availability, quotas, prices, permissions, and review quality vary. Testing and independent review reduce risk; they do not guarantee zero defects.
 
-## 9. Versioning and Release Specification
+## Documentation and contributing
 
-- Current version: **2.0.2**
-- This project adheres to [Semantic Versioning 2.0.0](https://semver.org/).
-- The version in `pyproject.toml`, `src/cba_kb/__init__.py`, and git release tags are strictly synchronized.
+- [Operations Manual](docs/operations/OPERATIONS.md) · [中文操作手册](docs/operations/OPERATIONS.zh-CN.md)
+- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+- [Data and license policy](DATA_LICENSE.md) · [Third-party materials](THIRD_PARTY_DATA.md)
+- [GitHub Issues](https://github.com/SkyOneBranch/cba-kb-engine/issues) · [Pull Requests](https://github.com/SkyOneBranch/cba-kb-engine/pulls)
 
-## 10. Documentation Map, Contributing & License
-
-- **Operations**: [Operations Manual](docs/operations/OPERATIONS.md) ([中文](docs/operations/OPERATIONS.zh-CN.md))
-- **Contributing**: Please review [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) before submitting pull requests.
-- **License**: [Apache License 2.0](LICENSE) | [Notice](NOTICE) | [Data License Policy](DATA_LICENSE.md).
+**The aim is not to make AI sound more certain. It is to make basketball research easier to check against real evidence.**
