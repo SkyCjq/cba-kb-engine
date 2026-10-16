@@ -113,7 +113,18 @@ def main():
     q.add_argument('--ledger',type=Path,required=True)
     q.add_argument('--registry',type=Path,required=True)
     q.add_argument('--production-go',type=str,default=None,
-                   help='Human Production GO reference (required for drive_move ops)')
+                   help='Human Production GO reference (required for drive_move ops; '
+                        'must be paired with --allowed-folders)')
+    q.add_argument('--test-go',type=str,default=None,
+                   help='Isolated TEST authorization reference (for M4 testing only; '
+                        'mutually exclusive with --production-go; '
+                        'must be paired with --allowed-folders)')
+    q.add_argument('--allowed-folders',type=str,default=None,
+                   help='Comma-separated folder IDs permitted for this operation '
+                        '(required with --production-go or --test-go)')
+    q.add_argument('--production-folders',type=str,default=None,
+                   help='Comma-separated known production folder IDs; TEST mode '
+                        'refuses to touch them (defense in depth)')
     q.add_argument('--drive-adapter',type=str,default=None,
                    help='Python import path for Drive adapter factory (e.g., mymod.get_adapter)')
     q=sub.add_parser('drive-plan-verify')
@@ -589,9 +600,21 @@ def main():
             from .drive_plan import apply_plan
             from .drive_search import load_registry
             ctx={"registry": load_registry(a.registry)}
-            # F-04 fix: Inject drive_adapter and production_go for drive_move.
+            # F-04 fix: Inject drive_adapter and authorization for drive_move.
+            # TEST (--test-go) and PRODUCTION (--production-go) are mutually
+            # exclusive; both require --allowed-folders.
             if a.production_go:
                 ctx["production_go"] = a.production_go
+            if getattr(a, 'test_go', None):
+                ctx["test_go"] = a.test_go
+            if getattr(a, 'allowed_folders', None):
+                ctx["allowed_folders"] = [
+                    f.strip() for f in a.allowed_folders.split(',')
+                    if f.strip()]
+            if getattr(a, 'production_folders', None):
+                ctx["production_folders"] = [
+                    f.strip() for f in a.production_folders.split(',')
+                    if f.strip()]
             if a.drive_adapter:
                 import importlib
                 mod_path, _, attr = a.drive_adapter.rpartition('.')
