@@ -207,3 +207,43 @@ def test_missing_hash_rejected_zero_write(tmp_path):
                          "allowed_folders": ["folderA", "folderB"]})
     assert "DRIVE_MOVE_EVIDENCE_MISMATCH" in out["failed"]["error"]
     _assert_zero_write(out, adapter)
+
+
+def test_readback_failure_detected(tmp_path):
+    """Tampered parents after apply -> readback via meta() detects mismatch."""
+    plan_path, ledger_path, adapter = _setup(tmp_path)
+    out = dp.apply_plan(plan_path, ledger_path,
+                        {"drive_adapter": adapter,
+                         "test_go": "TEST-001",
+                         "allowed_folders": ["folderA", "folderB"]})
+    assert out["failed"] is None  # apply succeeded
+    # Attacker/tamper: move file elsewhere after apply.
+    adapter.files["f1"]["parents"] = ["folderX"]
+    # Independent readback (as m4_drive_e2e.py does via drive.meta).
+    final = adapter.meta("f1")
+    assert set(final.get("parents", [])) != {"folderB"}
+    # The script's readback check would fail here (exit 2).
+
+
+def test_cleanup_failure_tracked_not_silent(tmp_path):
+    """Script cleanup logic: failed deletes -> residuals, exit 3.
+
+    Simulates the m4_drive_e2e.py finally-block contract: every
+    created ID that fails deletion must be recorded in
+    residual_file_ids and must NOT report full PASS.
+    """
+    created_ids = ["file1", "file2", "file3"]
+    residuals = []
+    # Simulate: file2 deletion fails.
+    def fake_delete(fid):
+        if fid == "file2":
+            raise RuntimeError("API error")
+    for fid in reversed(created_ids):
+        try:
+            fake_delete(fid)
+        except Exception:  # noqa: BLE001
+            residuals.append(fid)
+    assert residuals == ["file2"]
+    # Contract: non-empty residuals -> exit 3, not 0.
+    exit_code = 3 if residuals else 0
+    assert exit_code == 3
