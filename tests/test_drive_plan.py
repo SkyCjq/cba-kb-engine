@@ -268,7 +268,8 @@ def test_drive_move_success(tmp_path):
     dp.approve_plan(plan_path, "boss", ledger_path)
     out = dp.apply_plan(plan_path, ledger_path,
                         {"drive_adapter": adapter,
-                         "production_go": "human-prod-go-001"})
+                         "production_go": "human-prod-go-001",
+                         "allowed_folders": ["folderA", "folderB"]})
     assert out["failed"] is None
     assert adapter.files["f1"]["parents"] == ["folderB"]
 
@@ -295,7 +296,8 @@ def test_drive_move_parent_mismatch_rejected(tmp_path):
     dp.approve_plan(plan_path, "boss", ledger_path)
     out = dp.apply_plan(plan_path, ledger_path,
                         {"drive_adapter": adapter,
-                         "production_go": "human-prod-go-001"})
+                         "production_go": "human-prod-go-001",
+                         "allowed_folders": ["folderA", "folderB"]})
     assert out["failed"] is not None
     assert "PARENT_MISMATCH" in out["failed"]["error"]
     # File was NOT moved.
@@ -326,7 +328,7 @@ def test_drive_move_no_production_go_rejected(tmp_path):
     out = dp.apply_plan(plan_path, ledger_path,
                         {"drive_adapter": adapter})
     assert out["failed"] is not None
-    assert "PRODUCTION_GO_REQUIRED" in out["failed"]["error"]
+    assert "DRIVE_MOVE_AUTH_REQUIRED" in out["failed"]["error"]
     # File NOT moved.
     assert adapter.files["f1"]["parents"] == ["folderA"]
 
@@ -354,7 +356,8 @@ def test_drive_move_evidence_mismatch_rejected(tmp_path):
     dp.approve_plan(plan_path, "boss", ledger_path)
     out = dp.apply_plan(plan_path, ledger_path,
                         {"drive_adapter": adapter,
-                         "production_go": "go-001"})
+                         "production_go": "go-001",
+                         "allowed_folders": ["folderA", "folderB"]})
     assert out["failed"] is not None
     assert "EVIDENCE_MISMATCH" in out["failed"]["error"]
     assert adapter.files["f1"]["parents"] == ["folderA"]
@@ -398,7 +401,8 @@ def test_drive_move_verify_catches_moved_away(tmp_path):
     dp.approve_plan(plan_path, "boss", ledger_path)
     out = dp.apply_plan(plan_path, ledger_path,
                         {"drive_adapter": adapter,
-                         "production_go": "go-001"})
+                         "production_go": "go-001",
+                         "allowed_folders": ["folderA", "folderB"]})
     assert out["failed"] is None
 
     # Verify passes right after apply.
@@ -444,7 +448,8 @@ def _f01_setup(tmp_path, file_meta, plan_evidence):
     dp.save_plan(pp, plan)
     dp.approve_plan(pp, "boss", lp)
     out = dp.apply_plan(pp, lp, {"drive_adapter": adapter,
-                                 "production_go": "synth-go-001"})
+                                 "production_go": "synth-go-001",
+                         "allowed_folders": ["A", "B"]})
     return out, adapter
 
 

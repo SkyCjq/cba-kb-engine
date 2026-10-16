@@ -47,6 +47,102 @@ PLAN_ALREADY_APPROVED = "PLAN_ALREADY_APPROVED"
 PLAN_PRECONDITION_FAILED = "PLAN_PRECONDITION_FAILED"
 WAL_INCOMPLETE = "WAL_INCOMPLETE"
 
+# Drive move authorization error codes.
+DRIVE_MOVE_AUTH_REQUIRED = "DRIVE_MOVE_AUTH_REQUIRED"
+DRIVE_MOVE_AUTH_AMBIGUOUS = "DRIVE_MOVE_AUTH_AMBIGUOUS"
+DRIVE_MOVE_ALLOWLIST_REQUIRED = "DRIVE_MOVE_ALLOWLIST_REQUIRED"
+DRIVE_MOVE_FOLDER_NOT_ALLOWED = "DRIVE_MOVE_FOLDER_NOT_ALLOWED"
+DRIVE_MOVE_PRODUCTION_FOLDER_BLOCKED = "DRIVE_MOVE_PRODUCTION_FOLDER_BLOCKED"
+
+
+def _resolve_drive_authorization(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve TEST vs PRODUCTION authorization for a Drive write.
+
+    Authorization model (fail-closed):
+    - TEST: ctx["test_go"] non-empty. For isolated testing only.
+      Requires ctx["allowed_folders"] (non-empty list). Touched folders
+      must all be in allowed_folders AND must not be in
+      ctx["production_folders"] (if provided).
+    - PRODUCTION: ctx["production_go"] non-empty. For real production.
+      Requires ctx["allowed_folders"] (non-empty list) bound to the Human
+      authorization scope. A bare non-empty string is NOT sufficient.
+    - Exactly one of test_go / production_go must be present.
+      Both or neither -> fail-closed.
+
+    Returns {"env": "test"|"production", "go_ref": str,
+             "allowed_folders": [str]}.
+
+    Raises ValueError with DRIVE_MOVE_* codes on any violation.
+    """
+    test_go = ctx.get("test_go")
+    production_go = ctx.get("production_go")
+    test_go = str(test_go).strip() if test_go else ""
+    production_go = str(production_go).strip() if production_go else ""
+
+    if test_go and production_go:
+        raise ValueError(
+            f"{DRIVE_MOVE_AUTH_AMBIGUOUS}: ctx must not contain both "
+            f"'test_go' and 'production_go'. Ambiguous authorization "
+            f"rejected.")
+    if not test_go and not production_go:
+        raise ValueError(
+            f"{DRIVE_MOVE_AUTH_REQUIRED}: explicit authorization required "
+            f"in ctx['test_go'] (isolated testing) or "
+            f"ctx['production_go'] (real production) before any Drive "
+            f"write. Plan approval alone is insufficient.")
+
+    allowed = ctx.get("allowed_folders")
+    if not isinstance(allowed, (list, tuple)) or not allowed:
+        raise ValueError(
+            f"{DRIVE_MOVE_ALLOWLIST_REQUIRED}: ctx['allowed_folders'] must "
+            f"be a non-empty list of permitted folder IDs. The authorization "
+            f"reference alone is not sufficient.")
+    allowed_folders = []
+    for f in allowed:
+        if not isinstance(f, str) or not f.strip():
+            raise ValueError(
+                f"{DRIVE_MOVE_ALLOWLIST_REQUIRED}: allowed_folders must "
+                f"contain only non-empty strings, got {f!r}")
+        allowed_folders.append(f.strip())
+
+    env = "test" if test_go else "production"
+    return {"env": env, "go_ref": test_go or production_go,
+            "allowed_folders": allowed_folders}
+
+
+def _check_folder_allowlist(move_plan: Dict[str, Any],
+                            auth: Dict[str, Any],
+                            ctx: Dict[str, Any]) -> None:
+    """Verify all folders touched by the move are authorized.
+
+    Touched = source_parent + destination + expected_parent_set.
+    All must be in auth["allowed_folders"]. In TEST mode, none may be in
+    ctx["production_folders"] (production isolation guard).
+
+    Raises ValueError with DRIVE_MOVE_* codes on violation.
+    Fail-closed: any violation -> error, no write.
+    """
+    touched = {move_plan["source_parent"], move_plan["destination"]}
+    touched.update(move_plan.get("expected_parent_set", []))
+    allowed = set(auth["allowed_folders"])
+    for folder in sorted(touched):
+        if folder not in allowed:
+            raise ValueError(
+                f"{DRIVE_MOVE_FOLDER_NOT_ALLOWED}: folder '{folder}' "
+                f"touched by this move is not in allowed_folders "
+                f"{sorted(allowed)} (env={auth['env']}). Failing closed.")
+    if auth["env"] == "test":
+        prod_folders = ctx.get("production_folders") or []
+        prod_set = {str(f).strip() for f in prod_folders
+                    if isinstance(f, str) and f.strip()}
+        for folder in sorted(touched):
+            if folder in prod_set:
+                raise ValueError(
+                    f"{DRIVE_MOVE_PRODUCTION_FOLDER_BLOCKED}: folder "
+                    f"'{folder}' is a known production folder; TEST "
+                    f"authorization must never touch production. "
+                    f"Failing closed.")
+
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -247,10 +343,15 @@ def _apply_drive_move(params: Dict[str, Any],
     The adapter is provided via ctx["drive_adapter"]. In production, this
     is the real Drive adapter; in tests, a fake.
 
-    F-01 fix: Real Drive writes require explicit Human Production GO in
-    ctx["production_go"] (a non-empty authorization reference). Plan
-    approval alone (approval_ref) is NOT sufficient for execution.
-    Without production_go, the operation fails closed.
+    Authorization (fail-closed):
+    - TEST: ctx["test_go"] (isolated testing) + ctx["allowed_folders"].
+    - PRODUCTION: ctx["production_go"] + ctx["allowed_folders"] bound to
+      the Human authorization scope. A bare non-empty string is NOT
+      sufficient.
+    Exactly one of test_go / production_go must be present.
+    All folders touched (source_parent, destination, expected_parent_set)
+    must be in allowed_folders. In TEST mode, touching a folder listed in
+    ctx["production_folders"] is rejected (production isolation guard).
 
     F-01 fix: Revision evidence (sha256, revision_id, mime_type) from the
     plan is verified against actual current metadata BEFORE the reparent.
@@ -263,15 +364,14 @@ def _apply_drive_move(params: Dict[str, Any],
     # Validate the plan (fail-closed).
     move_plan = validate_drive_move_plan(params.get("move_plan", {}))
 
-    # F-01: Require explicit Human Production GO for execution.
-    # Plan approval (approval_ref) authorizes the plan; production_go
+    # Authorization: TEST vs PRODUCTION (mutually exclusive, fail-closed).
+    # - TEST (ctx["test_go"]): isolated testing only, with allowlist.
+    # - PRODUCTION (ctx["production_go"]): real production, with Human-bound
+    #   allowlist. A bare non-empty string is NOT sufficient.
+    # Plan approval (approval_ref) authorizes the plan; the go reference
     # authorizes the actual Drive write. These are separate.
-    production_go = ctx.get("production_go")
-    if not production_go or not str(production_go).strip():
-        raise ValueError(
-            "DRIVE_MOVE_PRODUCTION_GO_REQUIRED: explicit Human Production "
-            "GO required in ctx['production_go'] before any Drive write. "
-            "Plan approval alone is insufficient.")
+    auth = _resolve_drive_authorization(ctx)
+    _check_folder_allowlist(move_plan, auth, ctx)
 
     adapter = ctx.get("drive_adapter")
     if adapter is None:
@@ -333,7 +433,8 @@ def _apply_drive_move(params: Dict[str, Any],
         adapter.reparent(file_id, move_plan["destination"],
                          old_parent=move_plan["source_parent"])
         result = {"moved": True,
-                  "production_go": str(production_go)}
+                  "auth_env": auth["env"],
+                  "go_ref": auth["go_ref"]}
     # 4. Read back and verify.
     new_meta = adapter.meta(file_id)
     new_parents = set(new_meta.get("parents", []))
