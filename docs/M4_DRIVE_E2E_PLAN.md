@@ -10,8 +10,11 @@
 1. `--instance-root`：含有效 Drive OAuth 的 Private Instance（`token.json` 存在）。
 2. `--test-folder`：隔离测试文件夹 ID；脚本验证其为 folder 类型。
 3. `--test-go`：隔离 TEST 授权引用（**不是** production GO；两者互斥）。
-4. `--production-folders`：已知生产文件夹 ID 列表；**必填**；
-   未提供时脚本拒绝执行（未知生产范围时拒绝真实 Drive 写入）。
+4. `--expected-account`：获批测试邮箱，运行时与 Google `about.user` 精确匹配。
+5. `--approval-record`：Human 本机批准记录，绑定有效期、Git SHA、账号、folder、隔离模式。
+6. 隔离模式二选一：`production-boundary` 要求真实 `--production-folders`；
+   完全独立账号使用 `dedicated-account`，不得填写虚构生产 ID。
+7. `--receipt`：必填；运行前探测可写，结束时原子写入并回读。
 
 授权模型：
 - TEST（`--test-go`）与 PRODUCTION（`--production-go`）互斥，不可同时存在。
@@ -19,17 +22,18 @@
 - TEST 模式下触碰 `production_folders` 中的任何文件夹 → 拒绝，零写入。
 
 执行流程：
-1. 记录认证身份（`about().get(user)`），操作员核验为隔离测试账号。
-2. 创建合成测试文件 `M4_E2E_SYNTHETIC_report.txt`（仅测试文件夹内，显式 allowlist）。
-3. 创建目标子文件夹 `M4_E2E_SYNTHETIC_dest`（仅测试文件夹内）。
-4. 捕获移动前元数据；经 `DriveEvidenceAdapter` 读取真实证据。
-5. 构建 exact plan → 人工批准记录 → `apply_plan`（`test_go` + allowlist）→ 独立 readback。
-6. 捕获移动后元数据；比对前后差异。
-7. 清理测试文件；**清理失败时记录残留 ID 并返回 exit 3，不报告完整 PASS**。
-8. 写 JSON 收据（含步骤、证据、残留 ID）。
+1. 校验 Human 授权记录与当前时间、HEAD、账号及 folder 完全一致。
+2. 读取认证身份（`about().get(user)`）并与获批账号精确比较；不一致时零写入。
+3. 创建合成测试文件 `M4_E2E_SYNTHETIC_report.txt`（仅测试文件夹内，显式 allowlist）。
+4. 创建目标子文件夹 `M4_E2E_SYNTHETIC_dest`（仅测试文件夹内）。
+5. 捕获移动前元数据；经 `DriveEvidenceAdapter` 读取真实证据。
+6. 构建 exact plan → 人工批准记录 → `apply_plan`（`test_go` + allowlist）→ 独立 readback。
+7. 捕获移动后元数据；比对前后差异。
+8. 清理测试文件；**清理失败时记录残留 ID 并返回 exit 3，不报告完整 PASS**。
+9. 原子写入并回读 JSON 收据（含步骤、证据、残留 ID）；失败返回 exit 4。
 
 退出码：`0`=全过且清理完成；`1`=环境/授权/隔离失败；`2`=E2E 断言失败；
-`3`=清理未完成（残留文件，需人工恢复）。
+`3`=清理未完成（残留文件，需人工恢复）；`4`=正式收据无法持久化。
 
 部分执行说明：
 - 测试文件可能在创建后、移动前失败（如证据不符），此时文件**已存在**于 Drive。
@@ -53,10 +57,10 @@
   每次创建前校验目标在白名单内。`production_folders` 黑名单仅为纵深防御，
   不是主要控制手段。
 - **禁止**：测试文件夹之外的任何 Drive 内容；特别是生产归档文件夹。
-- 脚本内 Gate 1b/3/4：`--production-folders` 解析后必须非空；验证 `--test-folder`
-  为 folder 类型且不与生产文件夹重合；Human 须在运行前确认该文件夹为隔离测试用途。
+- `production-boundary` 模式要求非空的真实 `--production-folders`；
+  `dedicated-account` 模式改用等效且更强的身份/所有权/My Drive/精确名称/空目录组合证明。
 - **账号隔离**：优先使用与生产数据隔离的测试 Google 账号或单独限制权限的测试环境。
-  脚本启动时记录认证用户邮箱，操作员必须核验为测试账号。Full Drive scope
+  脚本启动时把认证用户邮箱与获批值精确比较。Full Drive scope
   不等于允许访问整个账号——所有操作仍受文件夹白名单约束。
 - 所有 API 调用均带 `supportsAllDrives=True`（与现有 `drive.py` 一致）。
 
@@ -77,9 +81,9 @@
 2. **确认该文件夹不含生产数据**，且与生产归档文件夹隔离。
 3. **提供或确认隔离测试 Google 账号**（优先与生产数据隔离的测试账号）；
    **完成 `make auth`**（Human 本机），使 Private Instance 具备有效 token。
-4. **给出本次 M4 运行的 TEST 授权引用**（`--test-go` 参数值）及有效期。
+4. **明确批准本次 TEST 授权摘要**，并落盘时间有界、SHA/账号/folder 绑定的授权记录。
    注意：`test_go` 仅授权本次隔离测试，**不能**授权生产操作。
-5. **提供已知生产文件夹 ID 列表**（`--production-folders`，必填）。
+5. 非独立账号时提供真实生产 folder ID；独立账号模式不得用虚构 ID。
 6. 可选：确认 `DEFAULT_EVIDENCE_MAX_BYTES = 100 MiB` 是否合适。
 
 ## 6. 与 M4 无关但已完成的离线验证

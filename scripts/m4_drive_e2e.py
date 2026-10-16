@@ -9,13 +9,15 @@ folder. It is FAIL-CLOSED at every step:
 3. Requires --test-go: isolated TEST authorization reference.
    NOTE: --test-go authorizes ISOLATED TESTING ONLY. It can never
    authorize production operations. There is no --production-go here.
-4. Requires --production-folders: known production folder IDs that TEST
-   must never touch (non-empty, validated).
-5. Creates synthetic test files INSIDE the test folder only
+4. Requires an exact authenticated account and a time-bounded Human approval
+   record bound to this commit, folder, account, and isolation mode.
+5. Requires either a verified production-folder boundary or the stronger
+   dedicated-account proof (sole ownership, My Drive, exact name, empty).
+6. Creates synthetic test files INSIDE the test folder only
    (explicit allowlist, not just blacklist).
-6. Builds an exact drive_move plan, approves it, applies it with
+7. Builds an exact drive_move plan, approves it, applies it with
    test_go + allowlist, and independently readbacks.
-7. Cleans up test files; cleanup failures are TRACKED and reported
+8. Cleans up test files; cleanup failures are TRACKED and reported
    (residual file IDs), never silently ignored.
 
 USAGE (only after Human provides test folder + OAuth):
@@ -23,21 +25,22 @@ USAGE (only after Human provides test folder + OAuth):
         --instance-root /path/to/private/instance \
         --test-folder <ISOLATED_TEST_FOLDER_ID> \
         --test-go "M4-TEST-2026-10-16-human-ref" \
-        --production-folders "<PROD_FOLDER_ID_1>,<PROD_FOLDER_ID_2>" \
+        --expected-account "m4-test@example.com" \
+        --approval-record /secure/path/m4-approval.json \
+        --isolation-mode dedicated-account \
         --receipt /tmp/m4-receipt.json
 
 AUTHORIZATION MODEL:
     This script uses --test-go (isolated TEST authorization) ONLY.
     A TEST reference can never authorize a production write.
-    The production_folders guard rejects any TEST operation touching
-    production folders. File creation is restricted to an explicit
-    allowlist (test folder + created subdirectories).
+    The approval is checked for identity, expiry, commit SHA, folder, and
+    isolation mode. File creation is restricted to an explicit allowlist.
 
 ACCOUNT ISOLATION:
-    Prefer a dedicated test Google account or a separately permissioned
-    test environment. The script logs the authenticated user's email
-    at startup so the operator can verify it is the test account,
-    not a production account. Full Drive scope does NOT imply
+    Prefer a dedicated test Google account. The script requires exact identity
+    equality before any write. Dedicated-account mode additionally verifies
+    sole folder ownership, My Drive placement, exact name, and emptiness.
+    Full Drive scope does NOT imply
     permission to access the entire account -- all operations are
     constrained to the explicit folder allowlist.
 
@@ -53,12 +56,16 @@ EXIT CODES:
     1: environment/auth/isolation failure (fail-closed before writes).
     2: E2E assertion failure (see output + receipt; check residuals).
     3: cleanup incomplete -- residual files remain (see receipt for IDs).
+    4: mandatory JSON receipt could not be durably written/read back.
 """
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
+import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -83,16 +90,112 @@ class _E2EFailure(Exception):
         self.code = code
 
 
-def _write_receipt(path: Optional[str], data: Dict[str, Any]) -> None:
-    """Write JSON receipt (best-effort; never fails the run)."""
-    if not path:
-        return
+class _ReceiptWriteFailure(Exception):
+    """The mandatory durable M4 receipt could not be written."""
+
+
+def _write_receipt(path: str, data: Dict[str, Any]) -> None:
+    """Atomically write the mandatory JSON receipt or fail closed."""
+    target = Path(path).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Optional[Path] = None
     try:
-        Path(path).write_text(json.dumps(data, indent=2, sort_keys=True),
-                               encoding="utf-8")
-        print(f"M4_E2E: receipt written to {path}")
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+        temporary = Path(temporary_name)
+        payload = (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+        temporary = None
+        # Prove that the durable artifact is readable JSON and matches status.
+        persisted = json.loads(target.read_text(encoding="utf-8"))
+        if persisted.get("status") != data.get("status"):
+            raise ValueError("persisted receipt status mismatch")
+        print(f"M4_E2E: receipt written to {target}")
     except Exception as exc:  # noqa: BLE001
-        print(f"M4_E2E_WARN: receipt write failed: {exc}", file=sys.stderr)
+        raise _ReceiptWriteFailure(f"receipt write failed: {exc}") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _parse_utc(value: str, label: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError(f"authorization {label} must be RFC3339") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"authorization {label} must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def _current_git_sha(engine_root: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=engine_root, check=True,
+        capture_output=True, text=True).stdout.strip()
+
+
+def _validate_authorization(path: str, *, test_go: str, engine_sha: str,
+                            expected_account: str, test_folder: str,
+                            isolation_mode: str,
+                            now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Validate a Human-approved, time-bounded, exact M4 TEST record."""
+    try:
+        record = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"cannot read authorization record: {exc}") from exc
+    if not isinstance(record, dict):
+        raise ValueError("authorization record must be a JSON object")
+    exact = {
+        "schema": "cba-kb-m4-test-authorization/v1",
+        "approved": True,
+        "scope": "M4_ISOLATED_TEST_ONLY",
+        "test_go": test_go,
+        "engine_sha": engine_sha,
+        "expected_account": expected_account.lower(),
+        "test_folder": test_folder,
+        "isolation_mode": isolation_mode,
+        "m5_authorized": False,
+        "production_writes_authorized": False,
+    }
+    for field, expected in exact.items():
+        actual = record.get(field)
+        if field == "expected_account" and isinstance(actual, str):
+            actual = actual.lower()
+        if actual != expected:
+            raise ValueError(
+                f"authorization {field} mismatch: expected {expected!r}")
+    if not isinstance(record.get("approved_by"), str) or not record["approved_by"].strip():
+        raise ValueError("authorization approved_by is required")
+    approved_at = _parse_utc(record.get("approved_at"), "approved_at")
+    expires_at = _parse_utc(record.get("expires_at"), "expires_at")
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if not approved_at <= current < expires_at:
+        raise ValueError("authorization is not currently valid")
+    return record
+
+
+def _load_private_instance(instance_root: str, *, engine_root: Path):
+    from cba_kb.instance import load_instance
+    return load_instance(engine_root, instance_root)
+
+
+def _verify_authenticated_account(drive: Any, expected_account: str) -> str:
+    """Return the exact authenticated account or fail before any write."""
+    try:
+        about = drive.api.about().get(fields="user(emailAddress)").execute(
+            num_retries=0)
+        actual = about.get("user", {}).get("emailAddress", "").strip().lower()
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"cannot verify authenticated Google identity: {exc}") from exc
+    if actual != expected_account:
+        raise ValueError(
+            f"authenticated account mismatch: expected {expected_account}, "
+            f"got {actual or 'unknown'}")
+    return actual
 
 
 def main() -> int:
@@ -103,12 +206,17 @@ def main() -> int:
                     help="Isolated test folder ID (ALL operations stay inside)")
     ap.add_argument("--test-go", required=True,
                     help="Isolated TEST authorization reference (NOT a production GO)")
-    ap.add_argument("--production-folders", required=True,
+    ap.add_argument("--expected-account", required=True,
+                    help="Exact Google account approved for this isolated test")
+    ap.add_argument("--approval-record", required=True,
+                    help="Human-approved, time-bounded local TEST authorization JSON")
+    ap.add_argument("--isolation-mode", required=True,
+                    choices=("production-boundary", "dedicated-account"),
+                    help="Isolation proof used for this run")
+    ap.add_argument("--production-folders", default="",
                     help="Comma-separated known production folder IDs; "
-                         "TEST mode refuses to touch them. REQUIRED: "
-                         "refuse real Drive writes when production scope "
-                         "is unknown.")
-    ap.add_argument("--receipt", default=None,
+                         "required in production-boundary mode")
+    ap.add_argument("--receipt", required=True,
                     help="Path for JSON receipt (test log + evidence)")
     ap.add_argument("--keep", action="store_true",
                     help="Keep test files after run (for manual inspection)")
@@ -132,13 +240,43 @@ def main() -> int:
     if not args.test_go.strip():
         fail("explicit --test-go required (isolated TEST authorization)")
 
-    # --- Gate 1b: production scope must be explicitly non-empty ---
+    engine_root = Path(__file__).resolve().parents[1]
+    expected_account = args.expected_account.strip().lower()
+    if not expected_account or "@" not in expected_account:
+        fail("--expected-account must be a valid explicit email address")
+
+    # --- Gate 1b: exact, time-bounded Human authorization ---
+    try:
+        engine_sha = _current_git_sha(engine_root)
+        approval = _validate_authorization(
+            args.approval_record, test_go=args.test_go.strip(),
+            engine_sha=engine_sha, expected_account=expected_account,
+            test_folder=args.test_folder.strip(),
+            isolation_mode=args.isolation_mode)
+    except Exception as exc:  # noqa: BLE001
+        fail(f"invalid TEST authorization: {exc}")
+    receipt["engine_sha"] = engine_sha
+    receipt["approval"] = {
+        "approved_by": approval["approved_by"],
+        "approved_at": approval["approved_at"],
+        "expires_at": approval["expires_at"],
+        "scope": approval["scope"],
+    }
+    step("test_authorization_verified", True, approval["test_go"])
+    try:
+        _write_receipt(args.receipt, receipt)
+    except _ReceiptWriteFailure as exc:
+        fail(str(exc))
+
+    # --- Gate 1c: isolation policy ---
     prod_folders = [f.strip() for f in args.production_folders.split(",")
                     if f.strip()]
-    if not prod_folders:
+    if args.isolation_mode == "production-boundary" and not prod_folders:
         fail("--production-folders must list at least one production "
-             "folder ID; refusing real Drive writes with unknown "
-             "production scope.")
+             "folder ID in production-boundary mode.")
+    if args.isolation_mode == "dedicated-account" and prod_folders:
+        fail("dedicated-account mode must not claim unverifiable production "
+             "folder IDs; omit --production-folders")
     test_folder = args.test_folder.strip()
     if not test_folder:
         fail("--test-folder must be non-empty.")
@@ -160,12 +298,11 @@ def main() -> int:
     # --- Gate 2: OAuth must exist (fail-closed, no interactive auth) ---
     try:
         from cba_kb.drive import Drive, SCOPES
-        from cba_kb.instance import load_instance
     except ImportError as exc:
         fail(f"cannot import drive modules: {exc}")
 
     try:
-        inst = load_instance(args.instance_root)
+        inst = _load_private_instance(args.instance_root, engine_root=engine_root)
     except Exception as exc:
         fail(f"cannot load Private Instance: {exc}")
     token = Path(inst.credentials_store) / "token.json"
@@ -180,25 +317,40 @@ def main() -> int:
 
     # --- Gate 2b: log authenticated identity for account isolation check ---
     try:
-        about = drive.api.about().get(fields="user(emailAddress)").execute(
-            num_retries=0)
-        authed_email = about.get("user", {}).get("emailAddress", "unknown")
-    except Exception as exc:  # noqa: BLE001
-        authed_email = f"unavailable: {exc}"
+        authed_email = _verify_authenticated_account(drive, expected_account)
+    except ValueError as exc:
+        fail(str(exc))
     print(f"M4_E2E: authenticated as: {authed_email}")
-    print(f"M4_E2E: VERIFY this is the isolated TEST account, not production.")
     receipt["authenticated_email"] = authed_email
     receipt["oauth_scopes"] = SCOPES
-    step("auth_identity_logged", True, authed_email)
+    step("auth_identity_verified", True, authed_email)
 
     # --- Gate 3: isolation — verify test folder exists and is a folder ---
     try:
-        folder_meta = drive.meta(test_folder)
+        folder_meta = drive.api.files().get(
+            fileId=test_folder,
+            fields="id,name,mimeType,parents,trashed,driveId,owners(emailAddress)",
+            supportsAllDrives=True).execute(num_retries=0)
     except Exception as exc:
         fail(f"cannot read test folder {test_folder}: {exc}")
     if folder_meta.get("mimeType") != "application/vnd.google-apps.folder":
         fail(f"--test-folder {test_folder} is not a folder "
              f"(mime={folder_meta.get('mimeType')})")
+    if folder_meta.get("trashed"):
+        fail("--test-folder is trashed")
+    if args.isolation_mode == "dedicated-account":
+        owners = {item.get("emailAddress", "").lower()
+                  for item in folder_meta.get("owners", [])}
+        if folder_meta.get("driveId") or owners != {expected_account}:
+            fail("dedicated-account test folder must be owned only by the "
+                 "approved account and must not be in a shared drive")
+        if folder_meta.get("name") != "CBA-KB-M4-ISOLATED-TEST":
+            fail("dedicated-account test folder must be named "
+                 "CBA-KB-M4-ISOLATED-TEST")
+    existing = drive.list(test_folder)
+    if existing:
+        fail(f"--test-folder must be empty before the run; found "
+             f"{len(existing)} existing object(s)")
     step("test_folder_verified", True,
          f"{test_folder} ({folder_meta.get('name')})")
 
@@ -293,7 +445,7 @@ def main() -> int:
             file_id=file_id, source_id="m4-e2e-s1", doc_id="m4-e2e-d1",
             source_parent=test_folder, destination=dest_id,
             expected_parent_set=[dest_id], disposition="ARCHIVE",
-            approval_ref="m4-e2e-human-approval",
+            approval_ref=args.test_go.strip(),
             sha256=sha256, revision_id=ev["revision_id"],
             mime_type="text/plain")
         receipt["plan"] = {
@@ -301,6 +453,7 @@ def main() -> int:
             "source_parent": test_folder,
             "destination": dest_id,
             "expected_parent_set": [dest_id],
+            "approval_ref": args.test_go.strip(),
         }
         with tempfile.TemporaryDirectory() as td:
             plan_path = Path(td) / "plan.json"
@@ -308,8 +461,10 @@ def main() -> int:
             plan = dp.create_plan(
                 [{"op": "drive_move", "params": {"move_plan": move_plan}}])
             dp.save_plan(plan_path, plan)
-            dp.approve_plan(plan_path, "m4-e2e-human", ledger_path)
+            dp.approve_plan(plan_path, approval["approved_by"], ledger_path)
             step("plan_approved", True, plan["plan_id"][:12])
+            receipt["plan"]["plan_id"] = plan["plan_id"]
+            receipt["plan"]["approved_by"] = approval["approved_by"]
             ctx = {"drive_adapter": adapter,
                    "test_go": args.test_go,
                    "allowed_folders": [test_folder, dest_id],
@@ -382,7 +537,14 @@ def main() -> int:
             receipt["status"] = "FAILED"
         else:
             receipt["status"] = "PASSED"
-        _write_receipt(args.receipt, receipt)
+        try:
+            _write_receipt(args.receipt, receipt)
+        except _ReceiptWriteFailure as exc:
+            receipt["status"] = "RECEIPT_WRITE_FAILED"
+            receipt["error"] = str(exc)
+            e2e_error_code = 4
+            e2e_error_msg = str(exc)
+            print(f"M4_E2E_FAIL: {exc}", file=sys.stderr)
 
     # Final determination AFTER cleanup:
     # - residuals exist -> exit 3 (takes priority over E2E error code)

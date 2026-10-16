@@ -11,8 +11,8 @@
 | 1 | 隔离测试 folder ID | 新建空文件夹，仅用于 M4；脚本验证其为 folder 类型 | `1abc...xyz` |
 | 2 | 允许的合成样本 | 确认可使用 `M4_E2E_SYNTHETIC_` 前缀的合成文件（脚本自动创建/清理） | 确认即可 |
 | 3 | OAuth 测试身份 | 隔离测试 Google 账号；Human 本机执行 `make auth` 完成授权的 Private Instance 路径 | `/path/to/instance` |
-| 4 | TEST 授权引用及有效期 | 本次 M4 运行的隔离测试授权字符串（`--test-go` 参数值）+ 有效时间窗口 | `M4-TEST-2026-10-16-001` / `2026-10-16 06:00–08:00 UTC` |
-| 5 | 禁止访问的文件夹边界 | 已知生产文件夹 ID 列表，用于 `--production-folders` 隔离 guard（仅 ID，不索取访问权限）；解析后必须非空 | `1prod...` |
+| 4 | TEST 授权记录 | Human 批准的本机 JSON，绑定 `test_go`、有效期、Git SHA、账号、folder 与隔离模式 | `m4-approval.json` |
+| 5 | 隔离模式 | 独立账号用 `dedicated-account`；否则须使用 `production-boundary` 并提供真实生产 folder ID | `dedicated-account` |
 
 ## 确切运行命令
 
@@ -21,7 +21,9 @@ python scripts/m4_drive_e2e.py \
     --instance-root /path/to/private/instance \
     --test-folder <ISOLATED_TEST_FOLDER_ID> \
     --test-go "M4-TEST-2026-10-16-001" \
-    --production-folders "<PROD_FOLDER_ID_1>,<PROD_FOLDER_ID_2>" \
+    --expected-account "m4-test@example.com" \
+    --approval-record "/secure/path/m4-approval.json" \
+    --isolation-mode dedicated-account \
     --receipt /tmp/m4-receipt.json
 ```
 
@@ -35,14 +37,14 @@ python scripts/m4_drive_e2e.py \
 
 ## 精确测试动作（脚本将执行）
 
-1. 记录认证身份邮箱，操作员核验为测试账号。
+1. 在任何写入前严格核验认证邮箱、授权有效期与 commit/folder 绑定。
 2. 在测试文件夹内创建 `M4_E2E_SYNTHETIC_report.txt`（合成内容，白名单校验）。
 3. 在测试文件夹内创建 `M4_E2E_SYNTHETIC_dest` 子文件夹。
 4. 捕获移动前元数据；经 `DriveEvidenceAdapter` 读取真实证据并校验 SHA-256。
 5. 构建 exact plan → 批准 → `apply_plan`（`test_go` + allowlist）→ 独立 readback。
 6. 捕获移动后元数据；比对前后差异。
 7. 清理测试文件；清理失败记录残留 ID（exit 3）。
-8. 写 JSON 收据（含步骤、证据、残留）。
+8. 原子写入并回读 JSON 收据；写入失败返回 exit 4，绝不报告 PASS。
 
 ## 操作前后元数据比较（收据字段）
 
@@ -67,7 +69,8 @@ python scripts/m4_drive_e2e.py \
 ## 安全保证
 
 - 所有操作限制在 `--test-folder` 内；文件创建经显式白名单校验。
-- TEST 模式触碰 `production_folders` → 拒绝（已测试）。
+- `production-boundary` 模式触碰 `production_folders` → 拒绝。
+- `dedicated-account` 模式不要求虚构生产 ID；它要求账号精确匹配、文件夹由该账号单独拥有、位于 My Drive、名称精确且运行前为空。
 - `test_go` 永不能授权生产写入；与 `production_go` 互斥。
 - 清理失败 → exit 3 + 残留 ID，不报告完整 PASS。
 
