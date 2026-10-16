@@ -48,6 +48,17 @@ ACCOUNT ISOLATION:
     permission to access the entire account -- all operations are
     constrained to the explicit folder allowlist.
 
+SECURITY BOUNDARIES & THREAT MODEL:
+    1. Threat Model Assumptions: Assumes OS kernel and root-owned system files
+       (/etc/cba-kb) are uncompromised. An attacker with root or kernel access
+       can override host-level protections including immutable flags.
+    2. Fail-Closed Guarantees: Missing dependencies, dirty/unverified Git state,
+       preloaded/unverified Python modules, missing UF_IMMUTABLE capability, or
+       directory permission/ACL flaws halt execution immediately with zero mutations.
+    3. Replay Protection: Consumed authorizations are recorded in a dedicated root-owned,
+       wheel-grouped directory with strict POSIX mode 0755, audited macOS ACLs, and
+       UF_IMMUTABLE file flags. If filesystem capabilities are absent, execution fails closed.
+
 PARTIAL EXECUTION:
     If the script fails AFTER creating test files (e.g., evidence
     mismatch, apply failure, readback failure), those files EXIST on
@@ -67,6 +78,7 @@ from __future__ import annotations
 import argparse
 import base64
 from datetime import datetime, timedelta, timezone
+import grp
 import hashlib
 import importlib.abc
 import importlib.machinery
@@ -198,9 +210,13 @@ def _current_git_sha(engine_root: Path, verify_fetch: bool = True) -> str:
     return sha
 
 
+_TRUSTED_SOURCE_EXECUTION_REGISTRY: Dict[int, Dict[str, Any]] = {}
+
+
 class _SourceOnlyLoader(importlib.machinery.SourceFileLoader):
     """Compile module bytecode directly from verified source bytes in memory,
-    strictly bypassing any on-disk __pycache__/*.pyc bytecode caches."""
+    strictly bypassing any on-disk __pycache__/*.pyc bytecode caches,
+    and recording cryptographic execution evidence in _TRUSTED_SOURCE_EXECUTION_REGISTRY."""
 
     def get_code(self, fullname: str) -> Any:
         source_path = self.get_filename(fullname)
@@ -208,8 +224,16 @@ class _SourceOnlyLoader(importlib.machinery.SourceFileLoader):
         return compile(source_bytes, source_path, "exec", dont_inherit=True)
 
     def exec_module(self, module: Any) -> None:
+        source_path = self.get_filename(module.__name__)
+        source_bytes = self.get_data(source_path)
         super().exec_module(module)
         module.__cached__ = None
+        _TRUSTED_SOURCE_EXECUTION_REGISTRY[id(module)] = {
+            "fullname": module.__name__,
+            "source_path": Path(source_path).resolve(),
+            "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
+            "loader": self,
+        }
 
 
 class _SourceOnlyFinder(importlib.abc.MetaPathFinder):
@@ -265,21 +289,19 @@ def _bind_and_sanitize_python_path(engine_root: Path) -> None:
     if not existing_finders:
         sys.meta_path.insert(0, _SourceOnlyFinder("cba_kb", [trusted_src, trusted_legacy]))
 
-    # Check already-loaded modules for untrusted cba_kb injection
-    if "cba_kb" in sys.modules and (trusted_src / "cba_kb").exists():
-        mod = sys.modules["cba_kb"]
-        mod_file = getattr(mod, "__file__", None)
-        if not mod_file or not Path(mod_file).resolve().is_relative_to(trusted_src):
-            raise ValueError(
-                f"cba_kb module already loaded from untrusted location: {mod_file}")
-
-    # Ensure any existing loaded cba_kb modules are marked with SourceOnlyLoader
+    # Cat-2 #3A: Check all existing cba_kb modules in sys.modules.
+    # Any module pre-loaded before establishing the trusted source-only import boundary
+    # or missing valid execution evidence in _TRUSTED_SOURCE_EXECUTION_REGISTRY must be rejected.
     for name, mod in list(sys.modules.items()):
-        if (name == "cba_kb" or name.startswith("cba_kb.")) and mod is not None:
-            mf = getattr(mod, "__file__", None)
-            if mf and Path(mf).resolve().is_relative_to(trusted_src):
-                mod.__loader__ = _SourceOnlyLoader(name, str(Path(mf).resolve()))
-                mod.__cached__ = None
+        if name == "cba_kb" or name.startswith("cba_kb."):
+            if mod is None:
+                raise ValueError(f"cba_kb module {name} is None in sys.modules")
+            reg = _TRUSTED_SOURCE_EXECUTION_REGISTRY.get(id(mod))
+            if not reg or reg.get("fullname") != name:
+                raise ValueError(
+                    f"cba_kb module {name!r} was pre-loaded into sys.modules prior to "
+                    "establishing trusted source-only import boundary; refusing to execute"
+                )
 
     # Sanitize sys.path: remove any entries hosting external cba_kb
     cleaned_path: List[str] = []
@@ -326,15 +348,20 @@ def _verify_cba_kb_module_identity(module: Any, engine_root: Path) -> None:
         raise ValueError(
             f"module {mod_name} file {mod_file} is not a Python source file")
 
-    # Reject if module cached attribute points to an on-disk __pycache__ inside engine
+    # Reject if module cached attribute is present
     cached = getattr(module, "__cached__", None)
-    if cached is not None and isinstance(cached, str):
-        cached_path = Path(cached).resolve()
-        if (cached_path.is_relative_to(trusted_src) or cached_path.is_relative_to(trusted_legacy)):
-            loader = getattr(module, "__loader__", None)
-            if not isinstance(loader, _SourceOnlyLoader):
-                raise ValueError(
-                    f"module {mod_name} loaded unverified engine-local bytecode cache: {cached}")
+    if cached is not None:
+        raise ValueError(
+            f"module {mod_name} loaded unverified engine-local bytecode cache: {cached}")
+
+    # Verify cryptographic execution evidence in trusted source registry
+    reg = _TRUSTED_SOURCE_EXECUTION_REGISTRY.get(id(module))
+    if not reg or reg.get("fullname") != mod_name:
+        raise ValueError(
+            f"cba_kb module {mod_name} was not loaded via verified SourceOnlyLoader")
+    if getattr(module, "__loader__", None) is not reg.get("loader"):
+        raise ValueError(
+            f"cba_kb module {mod_name} __loader__ does not match registered loader")
 
     if (engine_root / ".git").exists():
         rel_path = mod_path.relative_to(engine_root.resolve()).as_posix()
@@ -351,6 +378,9 @@ def _verify_cba_kb_module_identity(module: Any, engine_root: Path) -> None:
             raise ValueError(
                 f"module {rel_path} content does not match Git HEAD blob: "
                 f"expected {expected_blob}, got {actual_blob}")
+        if reg.get("source_sha256") != hashlib.sha256(actual_content).hexdigest():
+            raise ValueError(
+                f"module {rel_path} in-memory compiled bytecode does not match disk source bytes")
 
 
 def _assert_trusted_cba_kb_import(module: Any, engine_root: Path) -> None:
@@ -460,10 +490,54 @@ def _validate_authorization(path: str, *, test_go: str, engine_sha: str,
     return record
 
 
+def _audit_macos_acls(dir_path: Path, is_target: bool) -> None:
+    """Audit macOS ACLs on directory to ensure no unsafe write/delete grants exist."""
+    ls_bin = Path("/bin/ls")
+    if not ls_bin.is_file():
+        raise ValueError("macOS ACL audit failed: /bin/ls does not exist")
+
+    try:
+        proc = subprocess.run(
+            [str(ls_bin), "-lde", str(dir_path)],
+            capture_output=True, text=True, check=True, timeout=5)
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(f"macOS ACL audit timed out inspecting {dir_path}") from exc
+    except subprocess.CalledProcessError as exc:
+        raise ValueError(
+            f"macOS ACL audit command failed for {dir_path}: {exc.stderr or exc}") from exc
+    except Exception as exc:
+        raise ValueError(f"macOS ACL audit error for {dir_path}: {exc}") from exc
+
+    lines = proc.stdout.strip().splitlines()
+    if not lines:
+        raise ValueError(f"macOS ACL audit received empty output for {dir_path}")
+
+    unsafe_tokens = (
+        "write", "writeattr", "writeextattr", "writesecurity", "chown",
+        "add_file", "add_subdirectory", "delete", "delete_child", "append",
+    )
+    for entry in lines[1:]:
+        clean = entry.strip().lower()
+        if not clean:
+            continue
+        parts = clean.split()
+        if len(parts) < 3 or not parts[0].endswith(":"):
+            raise ValueError(
+                f"macOS ACL audit encountered unparseable entry on {dir_path}: {entry.strip()}")
+        if "allow" in parts:
+            allow_idx = parts.index("allow")
+            perms_str = " ".join(parts[allow_idx + 1:])
+            perms = [p.strip() for p in perms_str.replace(" ", ",").split(",") if p.strip()]
+            for p in perms:
+                if p in unsafe_tokens or any(u in p for u in unsafe_tokens):
+                    raise ValueError(
+                        f"system authorization ledger directory {dir_path} has unsafe ACL granting write/delete: {entry.strip()}")
+
+
 def _assert_trusted_consumed_directory(dir_path: Path) -> Path:
     """Verify that the authorization ledger directory and all its parent directories
-    are secure: owned by root, not symlinks, and not writable by group/world
-    (unless sticky bit is set on the target directory)."""
+    are secure: owned by root:wheel, not symlinks, not writable by group/world
+    (unless sticky bit is set on the target directory), and free of unsafe macOS ACLs."""
     if not dir_path.exists():
         raise ValueError(
             f"system authorization ledger directory {dir_path} does not exist. "
@@ -474,10 +548,23 @@ def _assert_trusted_consumed_directory(dir_path: Path) -> Path:
         raise ValueError(
             f"system authorization ledger directory {dir_path} is missing, a symlink, or not a directory")
 
+    try:
+        wheel_gid = grp.getgrnam("wheel").gr_gid
+    except KeyError:
+        try:
+            wheel_gid = grp.getgrnam("root").gr_gid
+        except KeyError:
+            wheel_gid = 0
+
     target_stat = dir_path.stat()
-    if hasattr(os, "geteuid") and target_stat.st_uid != 0:
-        raise ValueError(
-            f"system authorization ledger directory {dir_path} must be owned by root (uid 0)")
+    if hasattr(os, "geteuid"):
+        if target_stat.st_uid != 0:
+            raise ValueError(
+                f"system authorization ledger directory {dir_path} must be owned by root (uid 0)")
+        if getattr(target_stat, "st_gid", None) != wheel_gid:
+            raise ValueError(
+                f"system authorization ledger directory {dir_path} must be owned by wheel (gid {wheel_gid}), "
+                f"got gid {getattr(target_stat, 'st_gid', 'none')}")
 
     # If writable by group or world, it MUST have the sticky bit (S_ISVTX)
     is_group_writable = bool(target_stat.st_mode & 0o020)
@@ -487,36 +574,36 @@ def _assert_trusted_consumed_directory(dir_path: Path) -> Path:
         raise ValueError(
             f"system authorization ledger directory {dir_path} is group/world writable without sticky bit (01000)")
 
-    # Check macOS ACLs on the target directory for unsafe write/delete grants
+    # Audit macOS ACLs on target directory
     if sys.platform == "darwin":
-        try:
-            ls_proc = subprocess.run(
-                ["/bin/ls", "-lde", str(dir_path)],
-                capture_output=True, text=True, check=True, timeout=5)
-            acl_lines = ls_proc.stdout.strip().split("\n")[1:]
-            for line in acl_lines:
-                clean_line = line.strip().lower()
-                if "allow" in clean_line and any(perm in clean_line for perm in ("write", "delete", "append", "writeattr", "writeextattr")):
-                    if "everyone" in clean_line:
-                        raise ValueError(
-                            f"system authorization ledger directory {dir_path} has unsafe ACL granting write/delete: {line.strip()}")
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            pass
+        _audit_macos_acls(dir_path, is_target=True)
 
     # Verify all real ancestor directories up to filesystem root
     resolved_target = dir_path.resolve()
+    if resolved_target != dir_path and sys.platform == "darwin":
+        _audit_macos_acls(resolved_target, is_target=True)
+
     curr: Optional[Path] = resolved_target.parent
     while curr and curr != curr.parent:
         if curr.is_symlink():
             raise ValueError(
                 f"ancestor directory {curr} of authorization ledger is an unsafe symlink")
         p_stat = curr.stat()
-        if hasattr(os, "geteuid") and p_stat.st_uid != 0:
-            raise ValueError(
-                f"ancestor directory {curr} of authorization ledger must be owned by root")
+        if hasattr(os, "geteuid"):
+            if p_stat.st_uid != 0:
+                raise ValueError(
+                    f"ancestor directory {curr} of authorization ledger must be owned by root")
+            if getattr(p_stat, "st_gid", None) != wheel_gid:
+                raise ValueError(
+                    f"ancestor directory {curr} of authorization ledger must be owned by wheel (gid {wheel_gid}), "
+                    f"got gid {getattr(p_stat, 'st_gid', 'none')}")
         if p_stat.st_mode & 0o022:
             raise ValueError(
                 f"ancestor directory {curr} of authorization ledger must not be group/world writable")
+
+        if sys.platform == "darwin":
+            _audit_macos_acls(curr, is_target=False)
+
         curr = curr.parent
 
     return resolved_target
@@ -530,6 +617,13 @@ def _consume_authorization(instance: Any, record: Dict[str, Any],
     if (authorization_id != authorization_id.lower()
             or any(ch not in "0123456789abcdef-" for ch in authorization_id)):
         raise ValueError("authorization_id must be lowercase hex/UUID form")
+
+    # Scheme 1: Mandatory UF_IMMUTABLE capability pre-check.
+    # Must fail closed immediately if platform capability is missing, before any filesystem write.
+    if not hasattr(os, "chflags") or not hasattr(stat, "UF_IMMUTABLE"):
+        raise ValueError(
+            "mandatory immutable flag capability (os.chflags / stat.UF_IMMUTABLE) "
+            "is not available on this platform; cannot enforce anti-rollback guarantee")
 
     # Production execution path strictly uses SYSTEM_CONSUMED_DIR (/etc/cba-kb/consumed_authorizations).
     # No environment variable overrides, no weak user-home fallbacks.
@@ -557,21 +651,23 @@ def _consume_authorization(instance: Any, record: Dict[str, Any],
     }, sort_keys=True).encode("utf-8") + b"\n"
 
     primary_target: Optional[Path] = None
-    for root in consumed_roots:
-        root.mkdir(parents=True, exist_ok=True)
-        target = root / f"{authorization_id}.json"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        try:
-            descriptor = os.open(target, flags, 0o400)
-        except FileExistsError as exc:
-            raise ValueError("TEST authorization was already consumed") from exc
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
+    created_targets: List[Path] = []
+    try:
+        for root in consumed_roots:
+            root.mkdir(parents=True, exist_ok=True)
+            target = root / f"{authorization_id}.json"
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                descriptor = os.open(target, flags, 0o400)
+            except FileExistsError as exc:
+                raise ValueError("TEST authorization was already consumed") from exc
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            created_targets.append(target)
 
-        # Scheme 1: Mandatory UF_IMMUTABLE on platforms that support it
-        if hasattr(os, "chflags") and hasattr(stat, "UF_IMMUTABLE"):
+            # Scheme 1: Mandatory UF_IMMUTABLE application and readback verification
             try:
                 os.chflags(target, stat.UF_IMMUTABLE)
             except OSError as exc:
@@ -582,10 +678,17 @@ def _consume_authorization(instance: Any, record: Dict[str, Any],
                 raise ValueError(
                     f"mandatory UF_IMMUTABLE flag was not applied to {target}")
 
-        if primary_target is None:
-            primary_target = target
+            if primary_target is None:
+                primary_target = target
 
-    return primary_target or target
+        return primary_target or target
+    except Exception as exc:
+        print(f"M4_E2E_SECURITY_CRITICAL: authorization consumption failed into partial state: {exc}",
+              file=sys.stderr)
+        print("M4_E2E_SECURITY_CRITICAL: manual administrator intervention may be required "
+              "to inspect or remove unverified ledger entries before retrying.",
+              file=sys.stderr)
+        raise
 
 
 def _load_private_instance(instance_root: str, *, engine_root: Path):

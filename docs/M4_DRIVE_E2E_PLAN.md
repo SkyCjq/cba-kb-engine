@@ -1,12 +1,12 @@
 # M4: 真实隔离 Drive E2E 准备清单
 
-> 状态：`PREPARED / EXTERNAL_AUTH_BLOCKED` —— 脚本与数据已就绪，等待 Human 提供隔离测试 Drive 授权后执行。
+> 状态：`SECURITY_HARDENING_PENDING_INDEPENDENT_REVIEW` —— 代码修复与攻击演练已完成，等待独立 Q2 终审及 Human 合并后执行。
 
 ## 1. 可执行脚本
 
 `scripts/m4_drive_e2e.py` —— 真实 Drive E2E 全链路脚本。
 
-执行条件（缺一即 fail-closed，不写任何数据）：
+执行前置关卡（首次写入前的安全阻断，缺一即 fail-closed，保证首次创建前 0 Drive 写入）：
 1. `--instance-root`：含有效 Drive OAuth 的 Private Instance（`token.json` 存在）。
 2. `--test-folder`：隔离测试文件夹 ID；脚本验证其为 folder 类型。
 3. `--test-go`：隔离 TEST 授权引用（**不是** production GO；两者互斥）。
@@ -99,3 +99,20 @@
 
 - `tests/test_drive_evidence_contract.py`（14 项）：模拟原始 Drive API 响应，覆盖 adapter 工厂、元数据转换、MD5≠SHA-256、原生文档 fail-closed、缺失证据拒绝、reparent 接口、readback。
 - 真实 `googleapiclient` 未安装环境下的测试失败为**预先存在的环境缺失**，与本次改动无关。
+
+## 7. 安全边界、威胁模型与残余风险
+
+1. **操作系统与特权攻击者边界**：
+   - 本安全设计基于非 root 普通用户执行模型。所有系统级信任锚（`/etc/cba-kb/m4_approval_ed25519_public.pem`）与独立账本（`/etc/cba-kb/consumed_authorizations`）依赖 `root:wheel` 属主、只读或 sticky bit 权限。
+   - 系统不宣称能够抵御已取得本地 root/sudo 权限的攻击者（特权用户可通过 `sudo chflags nouchg` 或修改系统文件绕过防护）。
+2. **Drive 远程状态与 TOCTOU 风险**：
+   - 远程 Google Drive 状态可能在检查与执行之间发生外部并发变化。本脚本通过在每次真实 mutation（创建/移动）紧邻前重新验签、重核有效期与父子边界来降低 TOCTOU 窗口，但分布式环境下的理论网络竞态无法无条件绝对消除。
+3. **Python 运行时代码来源**：
+   - 若 Python 进程在 sanitizer 启动前已被恶意代码预加载或注入，源码的 Git hash 无法证明已载入内存的对象可信。因此，本方案强制在业务代码载入前建立 `_SourceOnlyFinder` 边界，拒绝对预加载模块的事后 whitewash，并对在内存中动态编译的源码字节记录密码学 SHA-256 审计凭证。
+4. **部分执行与未清理残留风险**：
+   - 若在成功创建测试文件后发生网络中断、Google API 5xx、系统崩溃或收据磁盘写入失败，已创建的合成文件将残留在测试文件夹中。此时保证“零写入”是不符合事实的；脚本会尽力清理并输出包含残留 ID 的收据，操作者须根据收据进行手动核验与清理。
+5. **验证环境与测试替身边界**：
+   - **Linux CI**：证明代码跨平台语法、逻辑分支与回归测试的正确性，但 Linux 内核原生缺少 macOS 特有的 `os.chflags(UF_IMMUTABLE)` 与 macOS ACL，不能作为 macOS 原生文件系统防御能力的实机证据。
+   - **Fake/Mock Drive**：证明调用序列、参数过滤与契约边界，但不能代替真实 Google Drive API 权限与网络行为。
+   - **本地 macOS 攻击演练**：在真实 macOS 环境下验证了 ACL 审计与 `UF_IMMUTABLE` 的防删除防覆盖能力。
+   - **真实隔离 Drive E2E**：只有在 Human 合并 PR 并在独立测试文件夹下实际运行后，才能证明真实端到端完整就绪。

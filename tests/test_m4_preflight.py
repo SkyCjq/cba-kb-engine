@@ -12,7 +12,18 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 import m4_drive_e2e as m4
-from cba_kb import drive as drive_module
+
+
+@pytest.fixture(autouse=True)
+def _mock_chflags_on_non_bsd(monkeypatch):
+    """On platforms without native chflags/UF_IMMUTABLE (e.g. Linux CI),
+    provide mock implementations by default so cross-platform tests can test
+    ledger logic. Tests specifically verifying missing capability will
+    monkeypatch.delattr to simulate missing API."""
+    if not hasattr(os, "chflags"):
+        monkeypatch.setattr(m4.os, "chflags", lambda _path, _flags: None, raising=False)
+    if not hasattr(stat, "UF_IMMUTABLE"):
+        monkeypatch.setattr(m4.stat, "UF_IMMUTABLE", 0x2, raising=False)
 
 
 def _authorization(tmp_path, **updates):
@@ -48,11 +59,19 @@ def _authorization(tmp_path, **updates):
     return path, signature, public_bytes
 
 
-def test_private_instance_loader_passes_engine_and_private_roots(tmp_path):
-    engine = tmp_path / "engine"
+def test_private_instance_loader_passes_engine_and_private_roots(tmp_path, monkeypatch):
+    engine = Path(__file__).resolve().parents[1]
     private = tmp_path / "private"
-    engine.mkdir()
     (private / "config").mkdir(parents=True)
+
+    # Clean existing cba_kb modules from sys.modules so SourceOnlyLoader loads fresh
+    for mod_name in list(sys.modules.keys()):
+        if mod_name == "cba_kb" or mod_name.startswith("cba_kb."):
+            monkeypatch.delitem(sys.modules, mod_name, raising=False)
+    monkeypatch.setattr(
+        sys, "meta_path",
+        [f for f in sys.meta_path if not (isinstance(f, m4._SourceOnlyFinder) and f.prefix == "cba_kb")]
+    )
 
     instance = m4._load_private_instance(str(private), engine_root=engine)
 
@@ -290,6 +309,7 @@ def test_expired_oauth_without_refresh_token_fails_closed(tmp_path, monkeypatch)
         Credentials, "from_authorized_user_file",
         classmethod(lambda _cls, _path: ExpiredCredentials()))
 
+    from cba_kb import drive as drive_module
     with pytest.raises(RuntimeError, match="Drive authorization missing"):
         drive_module.credentials(
             tmp_path, interactive=False, credentials_store=store)
@@ -455,7 +475,7 @@ def test_bind_and_sanitize_python_path_rejects_untrusted_cba_kb(tmp_path, monkey
     untrusted_module = SimpleNamespace(__file__=str(tmp_path / "evil" / "cba_kb" / "__init__.py"), __name__="cba_kb")
     monkeypatch.setitem(m4.sys.modules, "cba_kb", untrusted_module)
 
-    with pytest.raises(ValueError, match="cba_kb module already loaded from untrusted location"):
+    with pytest.raises(ValueError, match="pre-loaded into sys.modules prior to establishing"):
         m4._bind_and_sanitize_python_path(fake_engine)
 
 
@@ -504,7 +524,14 @@ def test_verify_cba_kb_module_identity_validates_blob_hash(tmp_path, monkeypatch
     # 1. When git blob matches, passes
     monkeypatch.setattr(
         m4, "_run_git", lambda _args, **_kw: SimpleNamespace(stdout=correct_blob + "\n"))
-    mod = SimpleNamespace(__file__=str(code_file), __name__="cba_kb.test_mod")
+    loader = m4._SourceOnlyLoader("cba_kb.test_mod", str(code_file))
+    mod = SimpleNamespace(__file__=str(code_file), __name__="cba_kb.test_mod", __loader__=loader)
+    m4._TRUSTED_SOURCE_EXECUTION_REGISTRY[id(mod)] = {
+        "fullname": "cba_kb.test_mod",
+        "source_path": code_file.resolve(),
+        "source_sha256": hashlib.sha256(code_content).hexdigest(),
+        "loader": loader,
+    }
     m4._verify_cba_kb_module_identity(mod, engine)
 
     # 2. When file content diverges from git blob, raises ValueError
@@ -539,6 +566,8 @@ def test_verify_cba_kb_module_identity_rejects_external_source(tmp_path):
 def test_verify_all_cba_kb_modules_scans_sys_modules(monkeypatch):
     engine_root = Path(__file__).resolve().parents[1]
     checked = []
+    dummy_mod = SimpleNamespace(__name__="cba_kb.test_sub", __file__=str(engine_root / "src" / "cba_kb" / "__init__.py"))
+    monkeypatch.setitem(m4.sys.modules, "cba_kb.test_sub", dummy_mod)
     monkeypatch.setattr(
         m4, "_verify_cba_kb_module_identity",
         lambda mod, _eng: checked.append(getattr(mod, "__name__", str(mod))))
@@ -552,6 +581,8 @@ def test_verify_all_cba_kb_modules_propagates_verification_failure(monkeypatch):
     def failing_verifier(*_args, **_kwargs):
         raise ValueError("module content does not match Git HEAD blob")
 
+    dummy_mod = SimpleNamespace(__name__="cba_kb.dummy", __file__=str(engine_root / "src" / "cba_kb" / "__init__.py"))
+    monkeypatch.setitem(m4.sys.modules, "cba_kb.dummy", dummy_mod)
     monkeypatch.setattr(m4, "_verify_cba_kb_module_identity", failing_verifier)
     with pytest.raises(ValueError, match="content does not match Git HEAD blob"):
         m4._verify_all_cba_kb_modules(engine_root)
@@ -618,17 +649,15 @@ def test_verify_cba_kb_module_rejects_cached_local_pyc(tmp_path):
 
 def test_verify_all_cba_kb_modules_rejects_module_without_file(monkeypatch):
     engine_root = Path(__file__).resolve().parents[1]
-    m4._bind_and_sanitize_python_path(engine_root)
     bad_mod = SimpleNamespace(__name__="cba_kb.missing_file")
-    monkeypatch.setitem(m4.sys.modules, "cba_kb.missing_file", bad_mod)
+    monkeypatch.setattr(m4.sys, "modules", {"cba_kb.missing_file": bad_mod})
     with pytest.raises(ValueError, match="lacks mandatory __file__ attribute"):
         m4._verify_all_cba_kb_modules(engine_root)
 
 
 def test_verify_all_cba_kb_modules_rejects_none_module(monkeypatch):
     engine_root = Path(__file__).resolve().parents[1]
-    m4._bind_and_sanitize_python_path(engine_root)
-    monkeypatch.setitem(m4.sys.modules, "cba_kb.nil_mod", None)
+    monkeypatch.setattr(m4.sys, "modules", {"cba_kb.nil_mod": None})
     with pytest.raises(ValueError, match="module cba_kb.nil_mod is None in sys.modules"):
         m4._verify_all_cba_kb_modules(engine_root)
 
@@ -673,6 +702,7 @@ def test_assert_trusted_consumed_directory_rejects_world_writable_without_sticky
     # Mock target as root owned but world-writable without S_ISVTX (0o40777)
     fake_stat = SimpleNamespace(
         st_uid=0,
+        st_gid=0,
         st_mode=stat.S_IFDIR | 0o777,
     )
     monkeypatch.setattr(
@@ -689,11 +719,13 @@ def test_assert_trusted_consumed_directory_rejects_group_writable_ancestor(tmp_p
     # Target has sticky bit and root owner
     target_stat = SimpleNamespace(
         st_uid=0,
+        st_gid=0,
         st_mode=stat.S_IFDIR | stat.S_ISVTX | 0o777,
     )
     # Ancestor is group-writable (0o775)
     ancestor_stat = SimpleNamespace(
         st_uid=0,
+        st_gid=0,
         st_mode=stat.S_IFDIR | 0o775,
     )
     def mock_stat(self, *args, **kwargs):
@@ -751,3 +783,290 @@ def test_consume_authorization_verifies_uf_immutable_is_actually_set(tmp_path, m
     monkeypatch.setattr(Path, "stat", mock_stat)
     with pytest.raises(ValueError, match="mandatory UF_IMMUTABLE flag was not applied"):
         m4._consume_authorization(instance, record, trusted_consumed_root=independent)
+
+
+def test_bind_and_sanitize_rejects_preloaded_cba_kb_module(monkeypatch):
+    """F-01: Pre-loaded cba_kb module must be rejected rather than whitewashed."""
+    import types
+    fake_mod = types.ModuleType("cba_kb")
+    fake_mod.__file__ = str(Path(m4.__file__).parent.parent / "src" / "cba_kb" / "__init__.py")
+    monkeypatch.setitem(sys.modules, "cba_kb", fake_mod)
+    # Remove existing finders to simulate initial process state
+    monkeypatch.setattr(sys, "meta_path", [f for f in sys.meta_path if not isinstance(f, m4._SourceOnlyFinder)])
+
+    with pytest.raises(ValueError, match="pre-loaded into sys.modules prior to establishing"):
+        m4._bind_and_sanitize_python_path(Path(m4.__file__).parent.parent)
+
+
+def test_assert_trusted_consumed_directory_rejects_non_wheel_gid(tmp_path, monkeypatch):
+    """F-02: Target directory owned by root but not wheel group must be rejected."""
+    target = tmp_path / "consumed"
+    target.mkdir()
+
+    orig_stat = Path.stat
+    def mock_stat(self, *args, **kwargs):
+        st = orig_stat(self, *args, **kwargs)
+        if self == target:
+            return SimpleNamespace(
+                st_mode=0o1777 | stat.S_IFDIR,
+                st_uid=0,
+                st_gid=999,  # Non-wheel GID
+            )
+        if self == target.parent:
+            return SimpleNamespace(
+                st_mode=0o755 | stat.S_IFDIR,
+                st_uid=0,
+                st_gid=0,
+            )
+        return st
+
+    monkeypatch.setattr(Path, "stat", mock_stat)
+    with pytest.raises(ValueError, match="must be owned by wheel"):
+        m4._assert_trusted_consumed_directory(target)
+
+
+def test_assert_trusted_consumed_directory_rejects_named_user_write_acl(tmp_path, monkeypatch):
+    """F-02: Named user write ACL must be rejected."""
+    target = tmp_path / "consumed"
+    target.mkdir()
+
+    orig_stat = Path.stat
+    def mock_stat(self, *args, **kwargs):
+        st = orig_stat(self, *args, **kwargs)
+        if self == target:
+            return SimpleNamespace(
+                st_mode=0o1777 | stat.S_IFDIR,
+                st_uid=0,
+                st_gid=0,
+            )
+        # Mock all ancestors up to root as root:wheel 0755
+        if self in target.parents or str(self).startswith(str(tmp_path)):
+            return SimpleNamespace(
+                st_mode=0o755 | stat.S_IFDIR,
+                st_uid=0,
+                st_gid=0,
+            )
+        return st
+
+    monkeypatch.setattr(Path, "stat", mock_stat)
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    def mock_subprocess_run(cmd, *args, **kwargs):
+        if cmd[0] == "/bin/ls":
+            # Target has named user write ACL
+            output = f"drwxrwxrwt+ 2 root wheel 64 Oct 16 20:00 {target}\n 0: user:attacker allow add_file,delete\n"
+            return SimpleNamespace(stdout=output, stderr="", returncode=0)
+        return subprocess.run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(m4.subprocess, "run", mock_subprocess_run)
+    with pytest.raises(ValueError, match="unsafe ACL granting write/delete"):
+        m4._assert_trusted_consumed_directory(target)
+
+
+def test_assert_trusted_consumed_directory_rejects_named_group_write_acl(tmp_path, monkeypatch):
+    """F-02: Named group write ACL must be rejected."""
+    target = tmp_path / "consumed"
+    target.mkdir()
+
+    orig_stat = Path.stat
+    def mock_stat(self, *args, **kwargs):
+        st = orig_stat(self, *args, **kwargs)
+        if self == target:
+            return SimpleNamespace(
+                st_mode=0o1777 | stat.S_IFDIR,
+                st_uid=0,
+                st_gid=0,
+            )
+        if self in target.parents or str(self).startswith(str(tmp_path)):
+            return SimpleNamespace(
+                st_mode=0o755 | stat.S_IFDIR,
+                st_uid=0,
+                st_gid=0,
+            )
+        return st
+
+    monkeypatch.setattr(Path, "stat", mock_stat)
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    def mock_subprocess_run(cmd, *args, **kwargs):
+        if cmd[0] == "/bin/ls":
+            output = f"drwxrwxrwt+ 2 root wheel 64 Oct 16 20:00 {target}\n 0: group:staff allow write\n"
+            return SimpleNamespace(stdout=output, stderr="", returncode=0)
+        return subprocess.run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(m4.subprocess, "run", mock_subprocess_run)
+    with pytest.raises(ValueError, match="unsafe ACL granting write/delete"):
+        m4._assert_trusted_consumed_directory(target)
+
+
+def test_assert_trusted_consumed_directory_rejects_ancestor_write_acl(tmp_path, monkeypatch):
+    """F-02: Ancestor directory write ACL must be rejected."""
+    target = tmp_path / "sub" / "consumed"
+    target.mkdir(parents=True)
+
+    orig_stat = Path.stat
+    def mock_stat(self, *args, **kwargs):
+        st = orig_stat(self, *args, **kwargs)
+        if self == target:
+            return SimpleNamespace(
+                st_mode=0o1777 | stat.S_IFDIR,
+                st_uid=0,
+                st_gid=0,
+            )
+        if self in target.parents or str(self).startswith(str(tmp_path)):
+            return SimpleNamespace(
+                st_mode=0o755 | stat.S_IFDIR,
+                st_uid=0,
+                st_gid=0,
+            )
+        return st
+
+    monkeypatch.setattr(Path, "stat", mock_stat)
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    def mock_subprocess_run(cmd, *args, **kwargs):
+        if cmd[0] == "/bin/ls":
+            inspected = cmd[-1]
+            if inspected == str(target.parent):
+                output = f"drwxr-xr-x+ 2 root wheel 64 Oct 16 20:00 {inspected}\n 0: user:attacker allow add_subdirectory,delete\n"
+            else:
+                output = f"drwxr-xr-x 2 root wheel 64 Oct 16 20:00 {inspected}\n"
+            return SimpleNamespace(stdout=output, stderr="", returncode=0)
+        return subprocess.run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(m4.subprocess, "run", mock_subprocess_run)
+    with pytest.raises(ValueError, match="unsafe ACL granting write/delete"):
+        m4._assert_trusted_consumed_directory(target)
+
+
+def test_assert_trusted_consumed_directory_rejects_acl_command_failure(tmp_path, monkeypatch):
+    """F-02: /bin/ls command failure must fail closed instead of swallowing exception."""
+    import subprocess
+    target = tmp_path / "consumed"
+    target.mkdir()
+
+    orig_stat = Path.stat
+    def mock_stat(self, *args, **kwargs):
+        st = orig_stat(self, *args, **kwargs)
+        if self == target:
+            return SimpleNamespace(
+                st_mode=0o1777 | stat.S_IFDIR,
+                st_uid=0,
+                st_gid=0,
+            )
+        if self in target.parents or str(self).startswith(str(tmp_path)):
+            return SimpleNamespace(
+                st_mode=0o755 | stat.S_IFDIR,
+                st_uid=0,
+                st_gid=0,
+            )
+        return st
+
+    monkeypatch.setattr(Path, "stat", mock_stat)
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    def mock_subprocess_run(cmd, *args, **kwargs):
+        if cmd[0] == "/bin/ls":
+            raise subprocess.CalledProcessError(1, cmd, stderr="Permission denied or I/O error")
+        return subprocess.run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(m4.subprocess, "run", mock_subprocess_run)
+    with pytest.raises(ValueError, match="macOS ACL audit command failed"):
+        m4._assert_trusted_consumed_directory(target)
+
+
+def test_assert_trusted_consumed_directory_rejects_unparseable_acl(tmp_path, monkeypatch):
+    """F-02: Corrupted or unparseable ACL entry must fail closed."""
+    target = tmp_path / "consumed"
+    target.mkdir()
+
+    orig_stat = Path.stat
+    def mock_stat(self, *args, **kwargs):
+        st = orig_stat(self, *args, **kwargs)
+        if self == target:
+            return SimpleNamespace(
+                st_mode=0o1777 | stat.S_IFDIR,
+                st_uid=0,
+                st_gid=0,
+            )
+        if self in target.parents or str(self).startswith(str(tmp_path)):
+            return SimpleNamespace(
+                st_mode=0o755 | stat.S_IFDIR,
+                st_uid=0,
+                st_gid=0,
+            )
+        return st
+
+    monkeypatch.setattr(Path, "stat", mock_stat)
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    def mock_subprocess_run(cmd, *args, **kwargs):
+        if cmd[0] == "/bin/ls":
+            output = f"drwxrwxrwt+ 2 root wheel 64 Oct 16 20:00 {target}\n invalid_corrupted_acl_line_without_colon\n"
+            return SimpleNamespace(stdout=output, stderr="", returncode=0)
+        return subprocess.run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(m4.subprocess, "run", mock_subprocess_run)
+    with pytest.raises(ValueError, match="macOS ACL audit encountered unparseable entry"):
+        m4._assert_trusted_consumed_directory(target)
+
+
+def test_consume_authorization_fails_closed_when_chflags_missing(tmp_path, monkeypatch):
+    """F-03: Missing os.chflags must fail closed unconditionally."""
+    instance = SimpleNamespace(data_root=tmp_path / "data")
+    independent = tmp_path / "independent"
+    record = {
+        "authorization_id": "66666666-6666-4666-8666-666666666666",
+        "_record_sha256": "f" * 64,
+    }
+
+    if hasattr(m4.os, "chflags"):
+        monkeypatch.delattr(m4.os, "chflags")
+
+    with pytest.raises(ValueError, match="mandatory immutable flag capability"):
+        m4._consume_authorization(instance, record, trusted_consumed_root=independent)
+
+
+def test_consume_authorization_pre_checks_capability_before_creating_ledger(tmp_path, monkeypatch):
+    """F-03: Pre-check prevents any ledger file creation when capability is missing."""
+    instance = SimpleNamespace(data_root=tmp_path / "data")
+    independent = tmp_path / "independent"
+    record = {
+        "authorization_id": "77777777-7777-4777-8777-777777777777",
+        "_record_sha256": "7" * 64,
+    }
+
+    if hasattr(m4.stat, "UF_IMMUTABLE"):
+        monkeypatch.delattr(m4.stat, "UF_IMMUTABLE")
+
+    with pytest.raises(ValueError, match="mandatory immutable flag capability"):
+        m4._consume_authorization(instance, record, trusted_consumed_root=independent)
+
+    # Verify NO files were created on disk
+    assert not list(independent.glob("*"))
+    assert not (Path(instance.data_root) / "m4_consumed_authorizations").exists()
+
+
+def test_consume_authorization_partial_state_failure_logging(tmp_path, monkeypatch, capsys):
+    """F-03: Partial state failure logs security critical alert and raises ValueError."""
+    instance = SimpleNamespace(data_root=tmp_path / "data")
+    independent = tmp_path / "independent"
+    record = {
+        "authorization_id": "88888888-8888-4888-8888-888888888888",
+        "_record_sha256": "8" * 64,
+    }
+
+    monkeypatch.setattr(m4.stat, "UF_IMMUTABLE", getattr(stat, "UF_IMMUTABLE", 0x2), raising=False)
+    def failing_chflags(*_a, **_kw):
+        raise OSError("I/O error during chflags")
+
+    monkeypatch.setattr(m4.os, "chflags", failing_chflags, raising=False)
+
+    with pytest.raises(ValueError, match="failed to set mandatory UF_IMMUTABLE flag"):
+        m4._consume_authorization(instance, record, trusted_consumed_root=independent)
+
+    captured = capsys.readouterr()
+    assert "M4_E2E_SECURITY_CRITICAL: authorization consumption failed into partial state" in captured.err
+    assert "manual administrator intervention may be required" in captured.err
+
+

@@ -78,20 +78,31 @@ python scripts/m4_drive_e2e.py \
 - 脱敏：收据中的 `sha256` 仅打印前 16 位（日志）；完整值仅在收据文件内。
 - 不记录：OAuth token 内容、生产文件夹内容。
 
-## 安全保证
+## 安全保证与边界说明
 
 - 所有操作限制在 `--test-folder` 内；文件创建经显式白名单校验。
 - `production-boundary` 模式触碰 `production_folders` 或祖先链包含 `production_folders` → 拒绝。
 - `dedicated-account` 模式不要求虚构生产 ID；它要求账号精确匹配、文件夹由该账号单独拥有、位于 My Drive、名称精确且运行前为空。
-- `dedicated-account` 还要求完整分页枚举 Drive 空间；`incompleteSearch` 会拒绝执行，且除
-  测试 folder 与本次已创建对象外不得存在其他可访问的未删除对象。
-- 授权在每个创建和实际 `reparent` mutation 紧前重新验签、解析同一字节流并检查有效期；
-  一次性 `authorization_id` 以原子 `O_EXCL` 独立持久化账本（防回滚重放）消费，重放会被拒绝；过期后仅允许范围内清理。
-- 授权窗口最长两小时；信任锚必须 root-owned，防止执行进程替换公钥后自签。
+- `dedicated-account` 还要求完整分页枚举 Drive 空间；`incompleteSearch` 会拒绝执行，且除测试 folder 与本次已创建对象外不得存在其他可访问的未删除对象。
+- 授权在每个创建和实际 `reparent` mutation 紧前重新验签、解析同一字节流并检查有效期；一次性 `authorization_id` 以原子 `O_EXCL` 独立持久化账本（防回滚重放）消费，重放会被拒绝；过期后仅允许范围内清理。
+- 授权窗口最长两小时；信任锚必须 root-owned，防止普通执行进程替换公钥后自签。
 - `test_go` 永不能授权生产写入；与 `production_go` 互斥。
 - 清理失败 → exit 3 + 残留 ID，不报告完整 PASS。
 
+## 安全边界、威胁模型与残余风险
+
+1. **威胁模型与信任假设**：
+   - 防护假设操作系统内核、系统级只读目录及 root-owned 配置未被恶意接管。若攻击者具备 root 或内核级权限，本地所有文件标记及进程防御均可能被破坏。
+   - 依赖 `/etc/cba-kb` 的 root 归属与 wheel 组权限，以及 `/var/run/cba-kb` 独立消费账本目录的所有权审计与 macOS ACL 审计（无额外 allow 写入规则）。
+2. **Fail-Closed 故障停机原则**：
+   - 依赖项缺失、Git 状态未完全同步干净、Python 运行环境受污染（如预先加载非源 loader 的模块）、缺少 `UF_IMMUTABLE` 特性或目录权限/ACL 不合规时，均立即中止，绝不发生 Drive 写入。
+3. **残余风险与局限性**：
+   - **中断后的残余文件**：若进程在写入测试文件后因网络故障或断电异常退出，测试文件仍留存于测试文件夹中。需通过 `--receipt` 输出的残留列表或人工登录 Google Drive 进行清理。
+   - **Google Drive API 延迟与最终一致性**：Drive API 存在微小的元数据同步延迟。readback 机制在 mutation 后立即查询，但在极少数极端网络重试场景下，可能受到服务端一致性窗口影响。
+   - **非跨平台账本不可变性**：`UF_IMMUTABLE` 是 BSD/macOS 原生文件系统特性。在无特权容器或不支持该特性的 Linux 环境中，系统将主动 fail-closed 拒绝写入。
+
 ## 当前状态
 
-`M4_READY_FOR_AUTH` —— 代码、测试、脚本、文档全部就绪；
-**唯一阻断**：上表 5 项 Human 信息。
+`SECURITY_HARDENING_PENDING_INDEPENDENT_REVIEW` —— 代码、测试、脚本、文档已完成定向安全加固与攻击自查演练；
+**等待独立 Q2 复审**：待通过独立 Q2 PASS 并经 Human 决策合并到 main 后，方可签发测试授权并执行。
+
