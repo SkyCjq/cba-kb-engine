@@ -60,9 +60,11 @@ def main() -> int:
                     help="Isolated test folder ID (ALL operations stay inside)")
     ap.add_argument("--test-go", required=True,
                     help="Isolated TEST authorization reference (NOT a production GO)")
-    ap.add_argument("--production-folders", default="",
+    ap.add_argument("--production-folders", required=True,
                     help="Comma-separated known production folder IDs; "
-                         "TEST mode refuses to touch them")
+                         "TEST mode refuses to touch them. REQUIRED: "
+                         "refuse real Drive writes when production scope "
+                         "is unknown.")
     ap.add_argument("--keep", action="store_true",
                     help="Keep test files after run (for manual inspection)")
     args = ap.parse_args()
@@ -147,6 +149,14 @@ def main() -> int:
 
         # Read evidence via the evidence adapter (real API fields).
         ev = adapter.meta(file_id)
+        # Fail-closed: sha256 must be a valid string before use.
+        # A None sha256 means evidence could not be established
+        # (native doc, oversize, download failure) -> explicit failure,
+        # not a TypeError from slicing None.
+        if not isinstance(ev.get("sha256"), str) or not ev["sha256"]:
+            fail("sha256 evidence unavailable from real API "
+                 "(native doc, oversize file, or download failure); "
+                 "cannot verify content identity. Failing closed.", code=2)
         print(f"M4_E2E: evidence: sha256={ev['sha256'][:16]}... "
               f"revision_id={ev['revision_id']} mime_type={ev['mime_type']}")
         if ev["sha256"] != sha256:

@@ -10,7 +10,8 @@
 1. `--instance-root`：含有效 Drive OAuth 的 Private Instance（`token.json` 存在）。
 2. `--test-folder`：隔离测试文件夹 ID；脚本验证其为 folder 类型。
 3. `--test-go`：隔离 TEST 授权引用（**不是** production GO；两者互斥）。
-4. `--production-folders`：已知生产文件夹 ID 列表；TEST 模式拒绝触碰。
+4. `--production-folders`：已知生产文件夹 ID 列表；**必填**；
+   未提供时脚本拒绝执行（未知生产范围时拒绝真实 Drive 写入）。
 
 授权模型：
 - TEST（`--test-go`）与 PRODUCTION（`--production-go`）互斥，不可同时存在。
