@@ -283,28 +283,41 @@ def _apply_drive_move(params: Dict[str, Any],
     meta = adapter.meta(file_id)
     current_parents = meta.get("parents", [])
 
-    # F-01: Verify revision evidence against actual metadata BEFORE write.
+    # F-01 (R3 fix): Verify revision evidence against actual metadata
+    # BEFORE write. Strict rule: if the plan specifies an expected value,
+    # the actual metadata MUST provide it and it MUST match exactly.
+    # Missing/empty/whitespace actual with non-empty expected → FAIL.
+    # This prevents bypassing validation via absent adapter fields.
     evidence = move_plan["identity_and_revision_evidence"]
     expected_sha = evidence.get("sha256", "")
     expected_rev = evidence.get("revision_id", "")
     expected_mime = evidence.get("mime_type", "")
-    actual_sha = meta.get("sha256", "")
-    actual_rev = meta.get("revision_id", "")
-    actual_mime = meta.get("mime_type", "")
-    # sha256 is mandatory and must match exactly.
-    if not actual_sha or actual_sha != expected_sha:
-        raise ValueError(
-            f"DRIVE_MOVE_EVIDENCE_MISMATCH: sha256 mismatch or missing. "
-            f"Expected {expected_sha[:16]}..., got {actual_sha[:16] if actual_sha else 'MISSING'}...")
-    # revision_id and mime_type must match if both are specified.
-    if expected_rev and actual_rev and expected_rev != actual_rev:
-        raise ValueError(
-            f"DRIVE_MOVE_EVIDENCE_MISMATCH: revision_id mismatch. "
-            f"Expected {expected_rev}, got {actual_rev}")
-    if expected_mime and actual_mime and expected_mime != actual_mime:
-        raise ValueError(
-            f"DRIVE_MOVE_EVIDENCE_MISMATCH: mime_type mismatch. "
-            f"Expected {expected_mime}, got {actual_mime}")
+    # Use .get() without default to distinguish missing vs empty.
+    actual_sha = meta.get("sha256")
+    actual_rev = meta.get("revision_id")
+    actual_mime = meta.get("mime_type")
+
+    def _require_exact(field_name: str, expected, actual):
+        """Strict evidence check: non-empty expected requires exact actual."""
+        exp = str(expected).strip() if expected is not None else ""
+        if not exp:
+            return  # Caller explicitly doesn't care about this field.
+        act = str(actual).strip() if actual is not None else ""
+        if not act:
+            raise ValueError(
+                f"DRIVE_MOVE_EVIDENCE_MISMATCH: {field_name} required "
+                f"(expected '{exp}') but missing/empty in actual metadata. "
+                f"Cannot verify identity; failing closed.")
+        if act != exp:
+            raise ValueError(
+                f"DRIVE_MOVE_EVIDENCE_MISMATCH: {field_name} mismatch. "
+                f"Expected '{exp}', got '{act}'.")
+
+    # sha256 is mandatory (validator ensures non-empty) and must match.
+    _require_exact("sha256", expected_sha, actual_sha)
+    # revision_id and mime_type: if plan specifies, actual must match.
+    _require_exact("revision_id", expected_rev, actual_rev)
+    _require_exact("mime_type", expected_mime, actual_mime)
 
     # 2. Verify source_parent matches.
     if move_plan["source_parent"] not in current_parents:

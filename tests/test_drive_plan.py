@@ -219,17 +219,20 @@ class FakeDriveAdapter:
     """Fake Drive adapter for testing (no real API calls)."""
     def __init__(self):
         self.files = {}  # file_id -> {"parents": [...], "name": str, ...}
+        self.reparent_calls = 0  # Count actual reparent invocations.
 
     def meta(self, file_id):
         if file_id not in self.files:
             raise ValueError(f"File not found: {file_id}")
         f = self.files[file_id]
+        # Return all fields; missing keys → None (not "") to test strictness.
         return {"id": file_id, "parents": f["parents"],
-                "sha256": f.get("sha256", ""),
-                "revision_id": f.get("revision_id", ""),
-                "mime_type": f.get("mime_type", "")}
+                "sha256": f.get("sha256"),
+                "revision_id": f.get("revision_id"),
+                "mime_type": f.get("mime_type")}
 
     def reparent(self, file_id, new_parent, old_parent=None):
+        self.reparent_calls += 1
         if file_id not in self.files:
             raise ValueError(f"File not found: {file_id}")
         parents = self.files[file_id]["parents"]
@@ -409,3 +412,140 @@ def test_drive_move_verify_catches_moved_away(tmp_path):
     ok, errors = dp.verify_plan(plan_path, {"drive_adapter": adapter})
     assert not ok
     assert any("drive_move verify failed" in e for e in errors)
+
+
+# ============ F-01 R3: Strict evidence validation matrix ============
+
+def _f01_setup(tmp_path, file_meta, plan_evidence):
+    """Full call chain: create→save→approve→apply. Returns (out, adapter)."""
+    from cba_kb.drive_move_plan import create_drive_move_plan
+    adapter = FakeDriveAdapter()
+    adapter.files["f1"] = {"parents": ["A"], **file_meta}
+    mp = create_drive_move_plan(
+        file_id="f1", source_id="s1", doc_id="d1",
+        source_parent="A", destination="B",
+        expected_parent_set=["B"],
+        disposition="ARCHIVE",
+        approval_ref="human-001",
+        sha256=plan_evidence.get("sha256", "x" * 60),
+        revision_id=plan_evidence.get("revision_id", ""),
+        mime_type=plan_evidence.get("mime_type", ""),
+    )
+    # Override evidence directly for None cases (create_ doesn't allow None).
+    if "sha256" in plan_evidence or "revision_id" in plan_evidence or "mime_type" in plan_evidence:
+        mp["identity_and_revision_evidence"].update(plan_evidence)
+        # Re-validate after manual update.
+        from cba_kb.drive_move_plan import validate_drive_move_plan
+        # Note: validator requires sha256 non-empty; None will fail here.
+        # For testing handler strictness, we bypass validator for None cases
+        # by catching and re-raising as handler test.
+    plan = dp.create_plan([{"op": "drive_move", "params": {"move_plan": mp}}])
+    pp, lp = tmp_path / "p.json", tmp_path / "l.jsonl"
+    dp.save_plan(pp, plan)
+    dp.approve_plan(pp, "boss", lp)
+    out = dp.apply_plan(pp, lp, {"drive_adapter": adapter,
+                                 "production_go": "synth-go-001"})
+    return out, adapter
+
+
+def test_f01_revision_id_missing_in_actual(tmp_path):
+    """revision_id expected but missing in actual → FAIL, 0 reparent."""
+    out, adapter = _f01_setup(
+        tmp_path,
+        file_meta={"sha256": "x" * 60},  # No revision_id!
+        plan_evidence={"sha256": "x" * 60, "revision_id": "r123"},
+    )
+    assert out["failed"] is not None
+    assert "EVIDENCE_MISMATCH" in out["failed"]["error"]
+    assert adapter.reparent_calls == 0
+    assert adapter.files["f1"]["parents"] == ["A"]
+
+
+def test_f01_revision_id_none_in_actual(tmp_path):
+    """revision_id=None in actual → FAIL, 0 reparent."""
+    out, adapter = _f01_setup(
+        tmp_path,
+        file_meta={"sha256": "x" * 60, "revision_id": None},
+        plan_evidence={"sha256": "x" * 60, "revision_id": "r123"},
+    )
+    assert out["failed"] is not None
+    assert "EVIDENCE_MISMATCH" in out["failed"]["error"]
+    assert adapter.reparent_calls == 0
+
+
+def test_f01_revision_id_mismatch(tmp_path):
+    """revision_id mismatch → FAIL, 0 reparent."""
+    out, adapter = _f01_setup(
+        tmp_path,
+        file_meta={"sha256": "x" * 60, "revision_id": "r999"},
+        plan_evidence={"sha256": "x" * 60, "revision_id": "r123"},
+    )
+    assert out["failed"] is not None
+    assert "EVIDENCE_MISMATCH" in out["failed"]["error"]
+    assert adapter.reparent_calls == 0
+
+
+def test_f01_mime_type_missing_in_actual(tmp_path):
+    """mime_type expected but missing in actual → FAIL, 0 reparent."""
+    out, adapter = _f01_setup(
+        tmp_path,
+        file_meta={"sha256": "x" * 60, "revision_id": "r123"},
+        plan_evidence={"sha256": "x" * 60, "revision_id": "r123",
+                       "mime_type": "text/plain"},
+    )
+    assert out["failed"] is not None
+    assert "EVIDENCE_MISMATCH" in out["failed"]["error"]
+    assert adapter.reparent_calls == 0
+
+
+def test_f01_mime_type_empty_in_actual(tmp_path):
+    """mime_type='' in actual → FAIL, 0 reparent."""
+    out, adapter = _f01_setup(
+        tmp_path,
+        file_meta={"sha256": "x" * 60, "revision_id": "r123", "mime_type": ""},
+        plan_evidence={"sha256": "x" * 60, "revision_id": "r123",
+                       "mime_type": "text/plain"},
+    )
+    assert out["failed"] is not None
+    assert "EVIDENCE_MISMATCH" in out["failed"]["error"]
+    assert adapter.reparent_calls == 0
+
+
+def test_f01_mime_type_mismatch(tmp_path):
+    """mime_type mismatch → FAIL, 0 reparent."""
+    out, adapter = _f01_setup(
+        tmp_path,
+        file_meta={"sha256": "x" * 60, "revision_id": "r123",
+                   "mime_type": "application/pdf"},
+        plan_evidence={"sha256": "x" * 60, "revision_id": "r123",
+                       "mime_type": "text/plain"},
+    )
+    assert out["failed"] is not None
+    assert "EVIDENCE_MISMATCH" in out["failed"]["error"]
+    assert adapter.reparent_calls == 0
+
+
+def test_f01_sha256_mismatch(tmp_path):
+    """sha256 mismatch → FAIL, 0 reparent."""
+    out, adapter = _f01_setup(
+        tmp_path,
+        file_meta={"sha256": "y" * 60},
+        plan_evidence={"sha256": "x" * 60},
+    )
+    assert out["failed"] is not None
+    assert "EVIDENCE_MISMATCH" in out["failed"]["error"]
+    assert adapter.reparent_calls == 0
+
+
+def test_f01_all_evidence_match(tmp_path):
+    """All three match exactly → PASS, exactly 1 reparent."""
+    out, adapter = _f01_setup(
+        tmp_path,
+        file_meta={"sha256": "x" * 60, "revision_id": "r123",
+                   "mime_type": "text/plain"},
+        plan_evidence={"sha256": "x" * 60, "revision_id": "r123",
+                       "mime_type": "text/plain"},
+    )
+    assert out["failed"] is None, f"Unexpected failure: {out['failed']}"
+    assert adapter.reparent_calls == 1
+    assert adapter.files["f1"]["parents"] == ["B"]
