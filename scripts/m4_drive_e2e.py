@@ -68,6 +68,9 @@ import argparse
 import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
+import importlib.abc
+import importlib.machinery
+import importlib.util
 import json
 import os
 import stat
@@ -195,11 +198,72 @@ def _current_git_sha(engine_root: Path, verify_fetch: bool = True) -> str:
     return sha
 
 
+class _SourceOnlyLoader(importlib.machinery.SourceFileLoader):
+    """Compile module bytecode directly from verified source bytes in memory,
+    strictly bypassing any on-disk __pycache__/*.pyc bytecode caches."""
+
+    def get_code(self, fullname: str) -> Any:
+        source_path = self.get_filename(fullname)
+        source_bytes = self.get_data(source_path)
+        return compile(source_bytes, source_path, "exec", dont_inherit=True)
+
+    def exec_module(self, module: Any) -> None:
+        super().exec_module(module)
+        module.__cached__ = None
+
+
+class _SourceOnlyFinder(importlib.abc.MetaPathFinder):
+    """Meta-path finder strictly binding cba_kb module imports to reviewed engine source,
+    enforcing compilation directly from source without loading pre-existing .pyc caches."""
+
+    def __init__(self, prefix: str, trusted_roots: List[Path]):
+        self.prefix = prefix
+        self.trusted_roots = [r.resolve() for r in trusted_roots if r.exists()]
+
+    def find_spec(self, fullname: str, path: Optional[List[str]],
+                  target: Optional[Any] = None) -> Optional[Any]:
+        if fullname != self.prefix and not fullname.startswith(self.prefix + "."):
+            return None
+        rel_parts = fullname.split(".")
+        for root in self.trusted_roots:
+            candidate_dir = root.joinpath(*rel_parts)
+            pkg_init = candidate_dir / "__init__.py"
+            if pkg_init.is_file():
+                loader = _SourceOnlyLoader(fullname, str(pkg_init))
+                return importlib.util.spec_from_file_location(
+                    fullname, str(pkg_init), loader=loader,
+                    submodule_search_locations=[str(candidate_dir)])
+            mod_file = root.joinpath(*rel_parts[:-1], rel_parts[-1] + ".py")
+            if mod_file.is_file():
+                loader = _SourceOnlyLoader(fullname, str(mod_file))
+                return importlib.util.spec_from_file_location(
+                    fullname, str(mod_file), loader=loader)
+        return None
+
+
 def _bind_and_sanitize_python_path(engine_root: Path) -> None:
-    """Bind Python module resolution strictly to the reviewed engine root."""
+    """Bind Python module resolution strictly to the reviewed engine root,
+    installing SourceOnlyFinder to prevent loading on-disk .pyc caches,
+    and redirecting pycache_prefix to an isolated directory."""
     resolved_engine = engine_root.resolve()
     trusted_src = (resolved_engine / "src").resolve()
     trusted_legacy = (resolved_engine / "legacy").resolve()
+
+    sys.dont_write_bytecode = True
+
+    # Isolate sys.pycache_prefix to a process-private temporary directory
+    if not getattr(sys, "_cba_kb_isolated_cache", None):
+        cache_dir = tempfile.mkdtemp(prefix=".cba_kb_cache_")
+        sys.pycache_prefix = cache_dir
+        sys._cba_kb_isolated_cache = cache_dir
+
+    # Install SourceOnlyFinder at the front of sys.meta_path
+    existing_finders = [
+        f for f in sys.meta_path
+        if isinstance(f, _SourceOnlyFinder) and f.prefix == "cba_kb"
+    ]
+    if not existing_finders:
+        sys.meta_path.insert(0, _SourceOnlyFinder("cba_kb", [trusted_src, trusted_legacy]))
 
     # Check already-loaded modules for untrusted cba_kb injection
     if "cba_kb" in sys.modules and (trusted_src / "cba_kb").exists():
@@ -208,6 +272,14 @@ def _bind_and_sanitize_python_path(engine_root: Path) -> None:
         if not mod_file or not Path(mod_file).resolve().is_relative_to(trusted_src):
             raise ValueError(
                 f"cba_kb module already loaded from untrusted location: {mod_file}")
+
+    # Ensure any existing loaded cba_kb modules are marked with SourceOnlyLoader
+    for name, mod in list(sys.modules.items()):
+        if (name == "cba_kb" or name.startswith("cba_kb.")) and mod is not None:
+            mf = getattr(mod, "__file__", None)
+            if mf and Path(mf).resolve().is_relative_to(trusted_src):
+                mod.__loader__ = _SourceOnlyLoader(name, str(Path(mf).resolve()))
+                mod.__cached__ = None
 
     # Sanitize sys.path: remove any entries hosting external cba_kb
     cleaned_path: List[str] = []
@@ -234,17 +306,35 @@ def _verify_cba_kb_module_identity(module: Any, engine_root: Path) -> None:
     trusted_legacy = (engine_root / "legacy").resolve()
     if not (trusted_src / "cba_kb").exists():
         return
-    mod_file = getattr(module, "__file__", None)
-    if not mod_file:
-        raise ValueError(
-            f"module {getattr(module, '__name__', 'unknown')} has no __file__")
+
+    mod_name = getattr(module, "__name__", "unknown")
+    if not hasattr(module, "__file__") or getattr(module, "__file__", None) is None:
+        raise ValueError(f"cba_kb module {mod_name} lacks mandatory __file__ attribute")
+
+    mod_file = getattr(module, "__file__")
+    if not isinstance(mod_file, str) or not mod_file.strip():
+        raise ValueError(f"cba_kb module {mod_name} has invalid __file__: {mod_file!r}")
+
     mod_path = Path(mod_file).resolve()
+    if not mod_path.is_file():
+        raise ValueError(f"cba_kb module {mod_name} file does not exist on disk: {mod_file}")
+
     if not (mod_path.is_relative_to(trusted_src) or mod_path.is_relative_to(trusted_legacy)):
         raise ValueError(
-            f"untrusted module {getattr(module, '__name__', 'unknown')} loaded from: {mod_file}")
+            f"untrusted module {mod_name} loaded from: {mod_file}")
     if not mod_path.name.endswith(".py"):
         raise ValueError(
-            f"module {getattr(module, '__name__', 'unknown')} file {mod_file} is not a Python source file")
+            f"module {mod_name} file {mod_file} is not a Python source file")
+
+    # Reject if module cached attribute points to an on-disk __pycache__ inside engine
+    cached = getattr(module, "__cached__", None)
+    if cached is not None and isinstance(cached, str):
+        cached_path = Path(cached).resolve()
+        if (cached_path.is_relative_to(trusted_src) or cached_path.is_relative_to(trusted_legacy)):
+            loader = getattr(module, "__loader__", None)
+            if not isinstance(loader, _SourceOnlyLoader):
+                raise ValueError(
+                    f"module {mod_name} loaded unverified engine-local bytecode cache: {cached}")
 
     if (engine_root / ".git").exists():
         rel_path = mod_path.relative_to(engine_root.resolve()).as_posix()
@@ -268,10 +358,20 @@ def _assert_trusted_cba_kb_import(module: Any, engine_root: Path) -> None:
 
 
 def _verify_all_cba_kb_modules(engine_root: Path) -> None:
-    for name, mod in list(sys.modules.items()):
-        if name == "cba_kb" or name.startswith("cba_kb."):
-            if mod is not None and hasattr(mod, "__file__"):
-                _verify_cba_kb_module_identity(mod, engine_root)
+    cba_modules = {
+        name: mod for name, mod in sys.modules.items()
+        if name == "cba_kb" or name.startswith("cba_kb.")
+    }
+    if not cba_modules:
+        raise ValueError("no cba_kb modules found in sys.modules to verify")
+
+    for name, mod in list(cba_modules.items()):
+        if mod is None:
+            raise ValueError(f"module {name} is None in sys.modules")
+        if not hasattr(mod, "__file__") or getattr(mod, "__file__", None) is None:
+            raise ValueError(
+                f"module {name} lacks mandatory __file__ attribute")
+        _verify_cba_kb_module_identity(mod, engine_root)
 
 
 def _read_root_trust_anchor(path: Path = SYSTEM_APPROVAL_PUBLIC_KEY) -> bytes:
@@ -360,6 +460,68 @@ def _validate_authorization(path: str, *, test_go: str, engine_sha: str,
     return record
 
 
+def _assert_trusted_consumed_directory(dir_path: Path) -> Path:
+    """Verify that the authorization ledger directory and all its parent directories
+    are secure: owned by root, not symlinks, and not writable by group/world
+    (unless sticky bit is set on the target directory)."""
+    if not dir_path.exists():
+        raise ValueError(
+            f"system authorization ledger directory {dir_path} does not exist. "
+            f"It must be pre-created by root (e.g. 'sudo mkdir -p {dir_path} && "
+            f"sudo chmod 1777 {dir_path} && sudo chown root:wheel {dir_path}')")
+
+    if dir_path.is_symlink() or not dir_path.is_dir():
+        raise ValueError(
+            f"system authorization ledger directory {dir_path} is missing, a symlink, or not a directory")
+
+    target_stat = dir_path.stat()
+    if hasattr(os, "geteuid") and target_stat.st_uid != 0:
+        raise ValueError(
+            f"system authorization ledger directory {dir_path} must be owned by root (uid 0)")
+
+    # If writable by group or world, it MUST have the sticky bit (S_ISVTX)
+    is_group_writable = bool(target_stat.st_mode & 0o020)
+    is_world_writable = bool(target_stat.st_mode & 0o002)
+    has_sticky_bit = bool(target_stat.st_mode & stat.S_ISVTX)
+    if (is_group_writable or is_world_writable) and not has_sticky_bit:
+        raise ValueError(
+            f"system authorization ledger directory {dir_path} is group/world writable without sticky bit (01000)")
+
+    # Check macOS ACLs on the target directory for unsafe write/delete grants
+    if sys.platform == "darwin":
+        try:
+            ls_proc = subprocess.run(
+                ["/bin/ls", "-lde", str(dir_path)],
+                capture_output=True, text=True, check=True, timeout=5)
+            acl_lines = ls_proc.stdout.strip().split("\n")[1:]
+            for line in acl_lines:
+                clean_line = line.strip().lower()
+                if "allow" in clean_line and any(perm in clean_line for perm in ("write", "delete", "append", "writeattr", "writeextattr")):
+                    if "everyone" in clean_line:
+                        raise ValueError(
+                            f"system authorization ledger directory {dir_path} has unsafe ACL granting write/delete: {line.strip()}")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+
+    # Verify all real ancestor directories up to filesystem root
+    resolved_target = dir_path.resolve()
+    curr: Optional[Path] = resolved_target.parent
+    while curr and curr != curr.parent:
+        if curr.is_symlink():
+            raise ValueError(
+                f"ancestor directory {curr} of authorization ledger is an unsafe symlink")
+        p_stat = curr.stat()
+        if hasattr(os, "geteuid") and p_stat.st_uid != 0:
+            raise ValueError(
+                f"ancestor directory {curr} of authorization ledger must be owned by root")
+        if p_stat.st_mode & 0o022:
+            raise ValueError(
+                f"ancestor directory {curr} of authorization ledger must not be group/world writable")
+        curr = curr.parent
+
+    return resolved_target
+
+
 def _consume_authorization(instance: Any, record: Dict[str, Any],
                            trusted_consumed_root: Optional[Path] = None) -> Path:
     authorization_id = record.get("authorization_id")
@@ -373,18 +535,7 @@ def _consume_authorization(instance: Any, record: Dict[str, Any],
     # No environment variable overrides, no weak user-home fallbacks.
     # trusted_consumed_root is accepted only when explicitly passed (e.g. in unit tests).
     if trusted_consumed_root is None:
-        try:
-            SYSTEM_CONSUMED_DIR.mkdir(parents=True, exist_ok=True)
-        except (OSError, PermissionError) as exc:
-            raise ValueError(
-                f"system authorization ledger directory {SYSTEM_CONSUMED_DIR} cannot be accessed/created: {exc}"
-            ) from exc
-        stat_info = SYSTEM_CONSUMED_DIR.stat()
-        if hasattr(os, "geteuid") and stat_info.st_uid != 0:
-            raise ValueError(
-                f"system authorization ledger directory {SYSTEM_CONSUMED_DIR} must be owned by root"
-            )
-        independent_consumed_root = SYSTEM_CONSUMED_DIR
+        independent_consumed_root = _assert_trusted_consumed_directory(SYSTEM_CONSUMED_DIR)
     else:
         independent_consumed_root = Path(trusted_consumed_root).resolve()
         independent_consumed_root.mkdir(parents=True, exist_ok=True)
@@ -418,11 +569,19 @@ def _consume_authorization(instance: Any, record: Dict[str, Any],
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+
+        # Scheme 1: Mandatory UF_IMMUTABLE on platforms that support it
         if hasattr(os, "chflags") and hasattr(stat, "UF_IMMUTABLE"):
             try:
                 os.chflags(target, stat.UF_IMMUTABLE)
-            except OSError:
-                pass
+            except OSError as exc:
+                raise ValueError(
+                    f"failed to set mandatory UF_IMMUTABLE flag on {target}: {exc}") from exc
+            target_stat = target.stat()
+            if not (getattr(target_stat, "st_flags", 0) & stat.UF_IMMUTABLE):
+                raise ValueError(
+                    f"mandatory UF_IMMUTABLE flag was not applied to {target}")
+
         if primary_target is None:
             primary_target = target
 

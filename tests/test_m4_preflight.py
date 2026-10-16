@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -554,3 +555,197 @@ def test_verify_all_cba_kb_modules_propagates_verification_failure(monkeypatch):
     monkeypatch.setattr(m4, "_verify_cba_kb_module_identity", failing_verifier)
     with pytest.raises(ValueError, match="content does not match Git HEAD blob"):
         m4._verify_all_cba_kb_modules(engine_root)
+
+
+def test_pyc_isolation_and_source_only_execution(tmp_path, monkeypatch):
+    import py_compile
+    import struct
+
+    pkg = tmp_path / "cba_kb_test_pkg"
+    pkg.mkdir()
+    init_py = pkg / "__init__.py"
+    init_py.write_text("", encoding="utf-8")
+    mod_py = pkg / "target.py"
+    mod_py.write_text("RESULT = 'SAFE_SOURCE'\n", encoding="utf-8")
+
+    # Forge a malicious .pyc in __pycache__ with matching timestamp and size
+    pyc_dir = pkg / "__pycache__"
+    pyc_dir.mkdir()
+    pyc_file = pyc_dir / f"target.cpython-{sys.version_info.major}{sys.version_info.minor}.pyc"
+    evil_src = tmp_path / "evil.py"
+    evil_src.write_text("RESULT = 'MALICIOUS_PYC'\n", encoding="utf-8")
+    py_compile.compile(str(evil_src), cfile=str(pyc_file))
+
+    st = mod_py.stat()
+    with open(pyc_file, "r+b") as handle:
+        handle.seek(8)
+        handle.write(struct.pack("<I", int(st.st_mtime)))
+        handle.write(struct.pack("<I", st.st_size))
+
+    # Install SourceOnlyFinder for cba_kb_test_pkg
+    finder = m4._SourceOnlyFinder("cba_kb_test_pkg", [tmp_path])
+    monkeypatch.setattr(m4.sys, "meta_path", [finder] + m4.sys.meta_path)
+
+    import importlib
+    imported = importlib.import_module("cba_kb_test_pkg.target")
+    # Must execute safe source, NOT malicious pyc!
+    assert imported.RESULT == "SAFE_SOURCE"
+    # Loader must be _SourceOnlyLoader
+    assert isinstance(imported.__loader__, m4._SourceOnlyLoader)
+
+
+def test_verify_cba_kb_module_rejects_cached_local_pyc(tmp_path):
+    engine = tmp_path / "engine"
+    src = engine / "src" / "cba_kb"
+    src.mkdir(parents=True)
+    code_file = src / "cached_mod.py"
+    code_file.write_text("X = 1\n", encoding="utf-8")
+
+    # Create local __pycache__
+    pyc_dir = src / "__pycache__"
+    pyc_dir.mkdir()
+    pyc_file = pyc_dir / "cached_mod.cpython-311.pyc"
+    pyc_file.write_bytes(b"cached_bytecode")
+
+    mod = SimpleNamespace(
+        __file__=str(code_file),
+        __name__="cba_kb.cached_mod",
+        __cached__=str(pyc_file),
+    )
+    with pytest.raises(ValueError, match="loaded unverified engine-local bytecode cache"):
+        m4._verify_cba_kb_module_identity(mod, engine)
+
+
+def test_verify_all_cba_kb_modules_rejects_module_without_file(monkeypatch):
+    engine_root = Path(__file__).resolve().parents[1]
+    m4._bind_and_sanitize_python_path(engine_root)
+    bad_mod = SimpleNamespace(__name__="cba_kb.missing_file")
+    monkeypatch.setitem(m4.sys.modules, "cba_kb.missing_file", bad_mod)
+    with pytest.raises(ValueError, match="lacks mandatory __file__ attribute"):
+        m4._verify_all_cba_kb_modules(engine_root)
+
+
+def test_verify_all_cba_kb_modules_rejects_none_module(monkeypatch):
+    engine_root = Path(__file__).resolve().parents[1]
+    m4._bind_and_sanitize_python_path(engine_root)
+    monkeypatch.setitem(m4.sys.modules, "cba_kb.nil_mod", None)
+    with pytest.raises(ValueError, match="module cba_kb.nil_mod is None in sys.modules"):
+        m4._verify_all_cba_kb_modules(engine_root)
+
+
+def test_verify_cba_kb_module_identity_rejects_non_existent_file(tmp_path):
+    engine = tmp_path / "engine"
+    (engine / "src" / "cba_kb").mkdir(parents=True)
+    ghost_file = engine / "src" / "cba_kb" / "ghost.py"
+    mod = SimpleNamespace(__file__=str(ghost_file), __name__="cba_kb.ghost")
+    with pytest.raises(ValueError, match="file does not exist on disk"):
+        m4._verify_cba_kb_module_identity(mod, engine)
+
+
+def test_assert_trusted_consumed_directory_rejects_nonexistent_directory(tmp_path):
+    nonexistent = tmp_path / "does_not_exist"
+    with pytest.raises(ValueError, match="does not exist"):
+        m4._assert_trusted_consumed_directory(nonexistent)
+
+
+def test_assert_trusted_consumed_directory_rejects_symlink_directory(tmp_path):
+    real_dir = tmp_path / "real_dir"
+    real_dir.mkdir()
+    sym_dir = tmp_path / "sym_dir"
+    sym_dir.symlink_to(real_dir)
+    with pytest.raises(ValueError, match="is missing, a symlink, or not a directory"):
+        m4._assert_trusted_consumed_directory(sym_dir)
+
+
+def test_assert_trusted_consumed_directory_rejects_non_root_owned(tmp_path):
+    if not hasattr(os, "geteuid") or os.geteuid() == 0:
+        pytest.skip("test requires non-root user")
+    user_dir = tmp_path / "user_dir"
+    user_dir.mkdir()
+    with pytest.raises(ValueError, match="must be owned by root"):
+        m4._assert_trusted_consumed_directory(user_dir)
+
+
+def test_assert_trusted_consumed_directory_rejects_world_writable_without_sticky_bit(tmp_path, monkeypatch):
+    target = tmp_path / "target"
+    target.mkdir()
+
+    # Mock target as root owned but world-writable without S_ISVTX (0o40777)
+    fake_stat = SimpleNamespace(
+        st_uid=0,
+        st_mode=stat.S_IFDIR | 0o777,
+    )
+    monkeypatch.setattr(
+        Path, "stat", lambda self, *args, **kwargs: fake_stat if self == target else os.stat(self, *args, **kwargs))
+    with pytest.raises(ValueError, match="is group/world writable without sticky bit"):
+        m4._assert_trusted_consumed_directory(target)
+
+
+def test_assert_trusted_consumed_directory_rejects_group_writable_ancestor(tmp_path, monkeypatch):
+    target = tmp_path / "sub" / "target"
+    target.parent.mkdir(parents=True)
+    target.mkdir()
+
+    # Target has sticky bit and root owner
+    target_stat = SimpleNamespace(
+        st_uid=0,
+        st_mode=stat.S_IFDIR | stat.S_ISVTX | 0o777,
+    )
+    # Ancestor is group-writable (0o775)
+    ancestor_stat = SimpleNamespace(
+        st_uid=0,
+        st_mode=stat.S_IFDIR | 0o775,
+    )
+    def mock_stat(self, *args, **kwargs):
+        if self == target:
+            return target_stat
+        if self == target.parent:
+            return ancestor_stat
+        return os.stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", mock_stat)
+    with pytest.raises(ValueError, match="must not be group/world writable"):
+        m4._assert_trusted_consumed_directory(target)
+
+
+def test_consume_authorization_enforces_mandatory_uf_immutable(tmp_path, monkeypatch):
+    instance = SimpleNamespace(data_root=tmp_path / "data")
+    independent = tmp_path / "independent"
+    record = {
+        "authorization_id": "44444444-4444-4444-8444-444444444444",
+        "_record_sha256": "d" * 64,
+    }
+
+    # Simulate chflags failing with OSError
+    def failing_chflags(*_args, **_kwargs):
+        raise OSError("filesystem does not support flags")
+
+    monkeypatch.setattr(m4.os, "chflags", failing_chflags)
+    with pytest.raises(ValueError, match="failed to set mandatory UF_IMMUTABLE flag"):
+        m4._consume_authorization(instance, record, trusted_consumed_root=independent)
+
+
+def test_consume_authorization_verifies_uf_immutable_is_actually_set(tmp_path, monkeypatch):
+    instance = SimpleNamespace(data_root=tmp_path / "data")
+    independent = tmp_path / "independent"
+    record = {
+        "authorization_id": "55555555-5555-4555-8555-555555555555",
+        "_record_sha256": "e" * 64,
+    }
+
+    # Simulate chflags being a no-op (doesn't set flag)
+    monkeypatch.setattr(m4.os, "chflags", lambda *_args, **_kw: None)
+    orig_stat = Path.stat
+    def mock_stat(self):
+        st = orig_stat(self)
+        if str(self).endswith(".json"):
+            return SimpleNamespace(
+                st_mode=st.st_mode,
+                st_uid=st.st_uid,
+                st_flags=0,
+            )
+        return st
+
+    monkeypatch.setattr(Path, "stat", mock_stat)
+    with pytest.raises(ValueError, match="mandatory UF_IMMUTABLE flag was not applied"):
+        m4._consume_authorization(instance, record, trusted_consumed_root=independent)
