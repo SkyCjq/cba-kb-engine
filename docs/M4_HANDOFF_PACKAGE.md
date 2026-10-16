@@ -1,7 +1,8 @@
 # M4 隔离测试交接包：Human 最小授权清单
 
-> `scripts/m4_drive_e2e.py` 的 F-01/F-02 有界修复已就绪，但 F-03 的同 UID
-> anti-rollback 边界仍需 Human 裁定；在该裁定与独立 Q2 之前不得执行真实 M4。
+> `scripts/m4_drive_e2e.py` 的 F-01/F-02 有界修复已就绪。Human 已仅对本 M4
+> 隔离测试执行器接受 `LOCAL_SAME_UID_LEDGER_ROLLBACK`，现等待 exact-HEAD 独立 Q2；
+> 该决定不是 TEST GO，不得据此执行真实 M4。
 > **不得索取**：生产 OAuth token、生产 GO。生产文件夹 ID 仅用于隔离 guard
 > （禁止访问边界），不索取其访问权限。
 
@@ -101,10 +102,11 @@ python scripts/m4_drive_e2e.py \
    - **中断后的残余文件**：若进程在写入测试文件后因网络故障或断电异常退出，测试文件仍留存于测试文件夹中。需通过 `--receipt` 输出的残留列表或人工登录 Google Drive 进行清理。
    - **Google Drive API 延迟与最终一致性**：Drive API 存在微小的元数据同步延迟。readback 机制在 mutation 后立即查询，但在极少数极端网络重试场景下，可能受到服务端一致性窗口影响。
    - **非跨平台账本不可变性**：`UF_IMMUTABLE` 是 BSD/macOS 原生文件系统特性。在无特权容器或不支持该特性的 Linux 环境中，系统将主动 fail-closed 拒绝写入。
-   - **同 UID anti-rollback 未闭环**：账本文件由普通执行用户创建并拥有；该用户可以清除自己的 `UF_IMMUTABLE` 标志并删除两份记录。`O_CREAT | O_EXCL` 只防止记录仍存在时的重复消费。若维持“抵御同 UID 恶意回滚”的原安全承诺，需要一个由普通执行 UID 无法改写/删除的保护域（例如职责极窄的 root-owned 写入组件）；本 PR 未获授权引入此类组件。状态：`HUMAN_SECURITY_BOUNDARY_DECISION_REQUIRED`。
+   - **同 UID 回滚（已接受的模型外风险）**：账本文件由普通执行用户创建并拥有；该用户可以清除自己的 `UF_IMMUTABLE` 标志并删除两份记录。`O_CREAT | O_EXCL` 只防止记录仍存在时的正常重复消费。Human 已仅对本 M4 测试执行器接受 `LOCAL_SAME_UID_LEDGER_ROLLBACK`；不得将现有机制描述为同 UID anti-rollback。该裁定不适用于其他生产授权路径，且不授权引入 root helper、SUID、守护进程或系统级授权服务。
 
 ## 当前状态
 
-`HUMAN_SECURITY_BOUNDARY_DECISION_REQUIRED` —— F-01/F-02 已完成有界修复；F-03 在非 root 设计下不能兑现同 UID anti-rollback。
-Human 决定维持更强保证并授权系统组件，或明确调整威胁模型后，仍须对新的 exact HEAD 做独立 Q2；在此之前不得签发测试授权或执行真实 Drive 写入。
+`PR184_SCOPE_DECISION_APPLIED_AWAITING_INDEPENDENT_Q2` —— F-01/F-02 已完成有界修复；
+F-03 的同 UID 回滚已被 Human 明确限定为本 M4 测试执行器的模型外风险。仍须对新的
+exact HEAD 做独立 Q2；该裁定不是 Q2 PASS、合并许可或真实 Drive TEST GO。
 

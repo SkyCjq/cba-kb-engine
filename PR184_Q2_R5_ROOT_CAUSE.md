@@ -8,6 +8,7 @@
 - Base: `1071203abad6ede606480c7fa0c66bbdc9e00920`
 - Source report: complete original conversation `6ad22c08-7578-83ea-b711-f47cb948de6d`, titled `独立安全审查 Verdict`; the report identifies itself as `Independent Q2 Security Review — Round 5` and is bound to the SHA above.
 - Product contract: Notion page `3f9ad272535b81989f9bced84b3b8317`, version tree `3f3ad272535b81fa8090ec74993f944f`, and LACD SOP `3f7ad272535b81aea143dabe626a42c2`, read on 2026-10-16.
+- Human scope decision: CBA-KB Human Owner instruction dated 2026-10-16, accepting `LOCAL_SAME_UID_LEDGER_ROLLBACK` for the PR #184 M4 isolated test runner only.
 
 This repair does not run real Drive M4, does not access OAuth material, does not change M5 or production configuration, and does not claim that v2.0.4-2 is complete.
 
@@ -92,7 +93,7 @@ The current machine is macOS and `/bin/ls -lde /` was read successfully, but thi
 
 ### Remaining issue / Human decision
 
-The bounded F-02 code defects are repaired. Independent Q2 should assess the strict parser against the intended deployed macOS version. This does not solve F-03 and does not justify real M4 while the authorization boundary is undecided.
+The bounded F-02 code defects are repaired. Independent Q2 should assess the strict parser against the intended deployed macOS version. This does not solve F-03; the later Human scope decision accepts that separate same-UID risk only for this M4 runner and still does not authorize a real M4 run.
 
 ## F-03 — `UF_IMMUTABLE` and authorization anti-rollback
 
@@ -111,12 +112,12 @@ The documentation and script described the dual ledger plus mandatory `UF_IMMUTA
 
 ### Concrete reproduction
 
-`test_attack_b3_same_uid_can_clear_both_user_owned_ledgers_and_replay` consumes once, clears both flags as the owning UID, deletes both records, and consumes the same authorization again. It passes as a characterization of the unresolved boundary, not as a claimed defense.
+`test_attack_b3_same_uid_can_clear_both_user_owned_ledgers_and_replay` consumes once, clears both flags as the owning UID, deletes both records, and consumes the same authorization again. It remains a passing characterization of the Human-accepted `LOCAL_SAME_UID_LEDGER_ROLLBACK` model exclusion, not a claimed defense.
 
 ### Bounded changes made
 
-- No anti-rollback claim was deleted from the acceptance contract.
-- Script and M4 documents now distinguish `O_EXCL` duplicate rejection from same-UID rollback resistance and system-level non-rollback.
+- The M4-only threat model now distinguishes `O_EXCL` duplicate rejection from same-UID rollback resistance and system-level non-rollback.
+- The accepted exclusion is not propagated to any other Engine or production authorization path, and no original v2.0.4-2 business acceptance item is removed or lowered.
 - Unexpected ledger I/O exceptions are normalized to a security-critical `ValueError` after emitting partial-state recovery guidance.
 - No root helper, daemon, sudoers entry, SUID program, or root-run Drive Engine was introduced.
 
@@ -125,16 +126,34 @@ The documentation and script described the dual ledger plus mandatory `UF_IMMUTA
 1. **Maintain the stronger same-UID anti-rollback promise.** Add a narrowly scoped privileged writer or another protection domain in which the ordinary Drive execution UID cannot remove records. This requires privileged installation, request validation, upgrade/rollback procedures, logging, failure recovery, and long-term platform maintenance. The whole Engine should not run as root.
 2. **Change the threat model.** Explicitly accept that a fully malicious same-UID local process can roll back both local records, while retaining signature checks, expiry, exact SHA/folder/account binding, mutation-time revalidation, and `O_EXCL` protection against normal duplicates. This is a reduction of the previously claimed security boundary and therefore requires explicit Human approval.
 
-### Decision
+### Human decision applied
 
-`HUMAN_SECURITY_BOUNDARY_DECISION_REQUIRED`
+On 2026-10-16 the Human Owner formally selected option 2 for the PR #184 M4
+isolated test runner only and accepted:
 
-The current task does not authorize either a privileged component or acceptance of the weaker threat model. Real M4 remains blocked on this decision and subsequent exact-head independent Q2.
+`LOCAL_SAME_UID_LEDGER_ROLLBACK`
+
+The accepted risk is that a malicious process already holding the complete
+execution authority of the same macOS UID can clear the user-owned immutable
+flags, delete both local consumption records, and replay an otherwise still
+valid signed authorization. This is outside this test runner's threat model.
+The decision does not apply to any other CBA-KB production authorization path.
+
+All other controls remain required: Human signature, expiry and exact
+SHA/account/folder/isolation binding, mutation allowlists, production boundary,
+canonical-root checks, exact plan/approve/apply, SHA-256 evidence, real
+reparent, independent readback, residual cleanup/receipt, and fail-closed
+handling of invalid authorization, scope escape, or evidence mismatch. Normal
+duplicate rejection while either ledger record exists remains mandatory.
+
+No root helper, SUID program, daemon, sudoers rule, or new system authorization
+service is authorized. The next gate is exact-HEAD independent Q2; this Human
+decision is not Q2 PASS, merge approval, real Drive TEST GO, M4 PASS, or M5 GO.
 
 ## Root-cause outcome
 
 - F-01: repaired with a single verified execution snapshot.
 - F-02: finite implementation gaps repaired; native provisioned target evidence remains outstanding.
-- F-03: underlying same-UID design contradiction is proven and transparently documented; no unauthorized weakening or privileged redesign was performed.
+- F-03: same-UID rollback remains characterized and is now an explicitly accepted, M4-runner-only model exclusion; no privileged redesign was introduced.
 
-Overall result: `PR184_PARTIAL_REPAIR_HUMAN_SECURITY_DECISION_REQUIRED`.
+Overall result: `PR184_SCOPE_DECISION_APPLIED_AWAITING_INDEPENDENT_Q2`.

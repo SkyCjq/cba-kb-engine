@@ -1,6 +1,8 @@
 # M4: 真实隔离 Drive E2E 准备清单
 
-> 状态：`HUMAN_SECURITY_BOUNDARY_DECISION_REQUIRED` —— F-01/F-02 已完成有界修复；F-03 的同 UID anti-rollback 无法由当前非 root 设计兑现，等待 Human 裁定，禁止真实 Drive 写入。
+> 状态：`PR184_SCOPE_DECISION_APPLIED_AWAITING_INDEPENDENT_Q2` —— Human 已仅对
+> M4 隔离测试执行器接受 `LOCAL_SAME_UID_LEDGER_ROLLBACK`；F-01/F-02 修复及所有
+> Drive/授权边界保持不变。该裁定不是 Q2 PASS、Merge Approval 或真实 Drive TEST GO。
 
 ## 1. 可执行脚本
 
@@ -117,3 +119,19 @@
    - **Fake/Mock Drive**：证明调用序列、参数过滤与契约边界，但不能代替真实 Google Drive API 权限与网络行为。
    - **本地 macOS 证据边界**：本轮实机证明文件所有者可以清除自己的 `UF_IMMUTABLE`，因此不能据此宣称同 UID anti-rollback；ACL 解析与根目录覆盖由定向测试证明，尚未取得对实际 root-owned 账本目录的原生完整演练收据。
    - **真实隔离 Drive E2E**：只有在 Human 合并 PR 并在独立测试文件夹下实际运行后，才能证明真实端到端完整就绪。
+
+## 8. Human F-03 威胁模型裁定（2026-10-16）
+
+- 决策：仅对 PR #184 的 M4 隔离测试执行器接受
+  `LOCAL_SAME_UID_LEDGER_ROLLBACK`。已获得同一 macOS 用户身份完整执行权限的恶意
+  进程删除两份本地消费账本，属于本执行器模型外风险。
+- 保留：Human TEST 签名、有效期、SHA/账号/folder/隔离模式绑定、精确操作白名单、
+  Canonical Root 与生产隔离、exact plan/approve/apply、SHA-256、真实 reparent、独立
+  readback、残留清理与 JSON 收据，以及所有越界/身份/证据错误的 fail-closed。
+- 账本仍使用 `O_CREAT | O_EXCL`、双记录、fsync、`UF_IMMUTABLE` 与权限/ACL 审计，
+  用于正常重复消费拒绝、防意外重复与审计；不得描述为可抵御恶意同 UID 回滚。
+- 不引入 root helper、SUID、守护进程、sudoers 或新的系统级授权服务。
+- 此裁定不适用于 Engine 其他生产授权路径，也不改变 F1–F8、R1–R7、A1–A6、
+  AC01–08、GAT01–08、C-01～C-09、DEP-01～DEP-08 或真实 Drive Production GO 义务。
+- 下一门禁：由 Human 指派的独立 Q2 对本次裁定后的 exact HEAD 审查；在新的 TEST GO
+  之前不得执行真实 M4，且本裁定本身不构成 Q2 PASS 或合并许可。

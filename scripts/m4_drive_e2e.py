@@ -59,7 +59,9 @@ SECURITY BOUNDARIES & THREAT MODEL:
        and a root-owned, wheel-grouped directory with audited macOS ACLs, then marked
        UF_IMMUTABLE. Existing records reject normal repeats. Because the ordinary execution
        UID owns newly created files, this is not a system-level same-UID anti-rollback
-       guarantee; that stronger boundary requires a Human decision and privileged component.
+       guarantee. For this M4 test runner only, Human has explicitly accepted
+       LOCAL_SAME_UID_LEDGER_ROLLBACK as outside the threat model. This does not
+       apply to other CBA-KB authorization paths.
 
 PARTIAL EXECUTION:
     If the script fails AFTER creating test files (e.g., evidence
@@ -737,7 +739,8 @@ def _consume_authorization(instance: Any, record: Dict[str, Any],
     if not hasattr(os, "chflags") or not hasattr(stat, "UF_IMMUTABLE"):
         raise ValueError(
             "mandatory immutable flag capability (os.chflags / stat.UF_IMMUTABLE) "
-            "is not available on this platform; cannot enforce anti-rollback guarantee")
+            "is not available on this platform; cannot enforce the configured "
+            "ledger durability and duplicate-consumption guard")
 
     # Production execution path strictly uses SYSTEM_CONSUMED_DIR (/etc/cba-kb/consumed_authorizations).
     # No environment variable overrides, no weak user-home fallbacks.

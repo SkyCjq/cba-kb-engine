@@ -13,7 +13,7 @@ Allowed states in Matrix B are `PASS`, `PARTIAL`, `OPEN`, `BLOCKED`, and `NOT_VE
 | Private Instance loading | Source-only loader; external/preloaded modules rejected | Preserved; loader now uses one verified byte snapshot | `test_bind_and_sanitize_rejects_preloaded_cba_kb_module`, source-only loader tests |
 | OAuth identity verification | Exact `about.user.emailAddress` equality | Unchanged | `tests/test_m4_preflight.py`; full suite |
 | Expired/bad signature rejection | Ed25519 exact-byte verification, bounded expiry | Unchanged | authorization negative tests |
-| One-time authorization consumption | First use succeeds; existing ledger rejects repeat; claimed same-UID rollback was false | Normal first/repeat behavior preserved; same-UID limitation explicitly characterized and remains blocking | authorization consumption tests; `test_attack_b3_same_uid_can_clear_both_user_owned_ledgers_and_replay` |
+| One-time authorization consumption | First use succeeds; existing ledger rejects repeat; claimed same-UID rollback was false | Normal first/repeat behavior preserved; same-UID rollback remains characterized as the M4-runner-only accepted model exclusion `LOCAL_SAME_UID_LEDGER_ROLLBACK` | authorization consumption tests; `test_attack_b3_same_uid_can_clear_both_user_owned_ledgers_and_replay` |
 | `dedicated-account` | Exact account, sole ownership, My Drive root, exact name, exhaustive inventory | Unchanged | dedicated-account tests |
 | `production-boundary` | Canonical root and forbidden ancestor checks | Unchanged | production-boundary ancestor tests |
 | Canonical Root / production isolation | Exact parent proof; shared-drive/root collisions rejected | Unchanged | M4 boundary tests |
@@ -39,7 +39,7 @@ Before-edit targeted baseline: `66 passed in 0.56s`. The final targeted suite, i
 | F5 searchable isolation | PARTIAL | Local/Drive search and rights tests exist; complete real-Drive permissions/index rebuild UX not verified | UNCHANGED_BY_PR184 / NOT_CLAIMED_AS_COMPLETED |
 | F6 exact plan/authorization/archive-retain | PARTIAL | Exact plan/approve/apply code and contract tests exist; Local+real Drive authorized golden paths remain required | PR184 hardening only; not completion |
 | F7 observability/recovery/statistics | PARTIAL | Status, receipts, retry/recovery and reports exist in code/tests; full user workflow and three-rate readback not verified | UNCHANGED_BY_PR184 / NOT_CLAIMED_AS_COMPLETED |
-| F8 open-source real E2E/delivery | BLOCKED | Real isolated Drive M4 is forbidden in this task and F-03 awaits Human decision; clean Local and release evidence also remain | NOT_CLAIMED_AS_COMPLETED |
+| F8 open-source real E2E/delivery | BLOCKED | F-03 scope decision is applied, but real isolated Drive M4 remains forbidden in this task; independent Q2, clean Local and release evidence still remain | NOT_CLAIMED_AS_COMPLETED |
 
 ### R1–R7
 
@@ -69,7 +69,7 @@ Before-edit targeted baseline: `66 passed in 0.56s`. The final targeted suite, i
 | ID | State | Evidence / next required phase | PR #184 effect |
 |---|---|---|---|
 | AC01 Local complete E2E | OPEN | Local TXT capability remains in code/tests; complete authorized archive/retain/status golden path not rerun here | UNCHANGED_BY_PR184 |
-| AC02 isolated real Drive E2E | BLOCKED | Prohibited in this task; F-03 decision first | PR184 is preflight only |
+| AC02 isolated real Drive E2E | BLOCKED | Prohibited in this task; F-03 decision is recorded, but independent Q2 and a separate Human TEST GO are still required | PR184 is preflight only |
 | AC03 repeat/restart/failure correctness | PARTIAL | Automated negative/recovery coverage exists; no real Drive fault run | UNCHANGED_BY_PR184 |
 | AC04 rights/source/system/OCR/XLSX negatives | PARTIAL | Automated classification tests exist; real ten-sample execution remains open | UNCHANGED_BY_PR184 |
 | AC05 search/lineage/status visibility | PARTIAL | APIs and tests exist; real cross-backend user readback remains open | UNCHANGED_BY_PR184 |
@@ -82,7 +82,7 @@ Before-edit targeted baseline: `66 passed in 0.56s`. The final targeted suite, i
 | ID | State | Evidence / next required phase | PR #184 effect |
 |---|---|---|---|
 | GAT01 Local golden path | OPEN | Full worker→search→authorized disposition→report run required | UNCHANGED_BY_PR184 |
-| GAT02 Drive golden path | BLOCKED | Real isolated Drive run not authorized; F-03 decision required | PR184 preflight only |
+| GAT02 Drive golden path | BLOCKED | Real isolated Drive run not authorized; F-03 decision does not constitute TEST GO | PR184 preflight only |
 | GAT03 idempotency | PARTIAL | Repeat/revision/restart tests exist; real dual-backend run absent | UNCHANGED_BY_PR184 |
 | GAT04 rights review | PARTIAL | Negative automated coverage exists; real sample suite absent | UNCHANGED_BY_PR184 |
 | GAT05 original-object search | PARTIAL | Search/lineage tests exist; real Drive readback absent | UNCHANGED_BY_PR184 |
@@ -129,9 +129,12 @@ Before-edit targeted baseline: `66 passed in 0.56s`. The final targeted suite, i
 | LACD status / strict verify | v1.0.2 `VALIDATED`; local validation pass, drift clean, blocking none; remote enforcement explicitly `unverified (LOCAL_ONLY)` |
 | Git diff / changed-file scope | 5 existing PR files plus these 2 required reports; no `.github/`, production config, M5, release pointer, or core product module change |
 | GitHub CI for code-bearing commit `46861cfbf414590681c316a0178f536eafd9cf0f` | 6/6 SUCCESS: `cleanroom-smoke`, `tests`, `evidence`, `policy`, and two `lacd-verify` checks; the tests job completed in 8m51s |
+| Human decision application targeted tests | `73 passed in 0.57s`; includes F-01/F-02, normal duplicate/expiry/identity/scope rejection and the retained same-UID rollback characterization |
+| Human decision application full pytest | `1745 passed, 6 skipped in 203.35s`; test and skip counts unchanged from the prior repair HEAD |
+| Human decision application secret/LACD pre-commit checks | Explicit six-file secret scan passed; LACD v1.0.2 strict local verify `VALIDATED`, drift clean, blocking none; remote deliberately not queried at this stage |
 
 ## Conclusion
 
-The repair does not delete negative tests, loosen assertions, change Fake Drive success behavior, modify production configuration, or narrow the v2.0.4-2 completion definition. F-01 and the bounded F-02 gaps are repaired. F-03 proves that the current non-root mechanism cannot satisfy the previously claimed same-UID anti-rollback property.
+The repair does not delete negative tests, loosen assertions, change Fake Drive success behavior, modify production configuration, or narrow the v2.0.4-2 completion definition. F-01 and the bounded F-02 gaps are repaired. F-03 proves that the current non-root mechanism cannot satisfy same-UID anti-rollback; Human accepted that fact only as the M4 test runner's `LOCAL_SAME_UID_LEDGER_ROLLBACK` model exclusion. README.md and README.zh-CN.md were reviewed and require no content change because public product usage, production authorization boundaries, and completion criteria are unchanged.
 
-Final state: `PR184_PARTIAL_REPAIR_HUMAN_SECURITY_DECISION_REQUIRED`.
+Final state: `PR184_SCOPE_DECISION_APPLIED_AWAITING_INDEPENDENT_Q2`.

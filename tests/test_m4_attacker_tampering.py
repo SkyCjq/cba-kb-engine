@@ -235,9 +235,10 @@ def test_attack_b2_replay_blocked_by_independent_ledger(tmp_path):
 def test_attack_b3_same_uid_can_clear_both_user_owned_ledgers_and_replay(tmp_path):
     """F-03 R5 characterization: UF_IMMUTABLE is not same-UID anti-rollback.
 
-    This passing test is evidence of the unresolved security boundary, not a
-    claimed defense: the owner can clear the user flag, delete both records,
-    and make O_EXCL accept the authorization again.
+    This passing test records the Human-accepted
+    LOCAL_SAME_UID_LEDGER_ROLLBACK model exclusion; it is not a claimed
+    defense. The owner can clear the user flag, delete both records, and make
+    O_EXCL accept the authorization again.
     """
     instance = SimpleNamespace(data_root=tmp_path / "data")
     independent = tmp_path / "independent"
