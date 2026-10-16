@@ -237,14 +237,24 @@ def _apply_drive_move(params: Dict[str, Any],
 
     This is the guarded Drive move operation (F6). It:
     1. Validates the move plan via drive_move_plan.validate_drive_move_plan().
-    2. Reads current metadata via the adapter (from ctx).
-    3. Verifies source_parent matches actual current parent.
-    4. Executes the move via adapter.reparent().
-    5. Reads back and verifies expected_parent_set matches.
+    2. Requires explicit Human Production GO in ctx (fail-closed).
+    3. Reads current metadata via the adapter (from ctx).
+    4. Verifies source_parent matches actual current parent.
+    5. Verifies revision evidence (sha256/revision_id/mime_type) matches.
+    6. Executes the move via adapter.reparent().
+    7. Reads back and verifies expected_parent_set matches.
 
     The adapter is provided via ctx["drive_adapter"]. In production, this
-    is the real Drive adapter; in tests, a fake. Real Drive writes require
-    separate Human Production GO (not granted by plan approval alone).
+    is the real Drive adapter; in tests, a fake.
+
+    F-01 fix: Real Drive writes require explicit Human Production GO in
+    ctx["production_go"] (a non-empty authorization reference). Plan
+    approval alone (approval_ref) is NOT sufficient for execution.
+    Without production_go, the operation fails closed.
+
+    F-01 fix: Revision evidence (sha256, revision_id, mime_type) from the
+    plan is verified against actual current metadata BEFORE the reparent.
+    Stale evidence → fail closed, no write.
 
     Fail-closed: any mismatch → error, no move.
     """
@@ -252,6 +262,16 @@ def _apply_drive_move(params: Dict[str, Any],
 
     # Validate the plan (fail-closed).
     move_plan = validate_drive_move_plan(params.get("move_plan", {}))
+
+    # F-01: Require explicit Human Production GO for execution.
+    # Plan approval (approval_ref) authorizes the plan; production_go
+    # authorizes the actual Drive write. These are separate.
+    production_go = ctx.get("production_go")
+    if not production_go or not str(production_go).strip():
+        raise ValueError(
+            "DRIVE_MOVE_PRODUCTION_GO_REQUIRED: explicit Human Production "
+            "GO required in ctx['production_go'] before any Drive write. "
+            "Plan approval alone is insufficient.")
 
     adapter = ctx.get("drive_adapter")
     if adapter is None:
@@ -262,6 +282,30 @@ def _apply_drive_move(params: Dict[str, Any],
     # 1. Read current metadata.
     meta = adapter.meta(file_id)
     current_parents = meta.get("parents", [])
+
+    # F-01: Verify revision evidence against actual metadata BEFORE write.
+    evidence = move_plan["identity_and_revision_evidence"]
+    expected_sha = evidence.get("sha256", "")
+    expected_rev = evidence.get("revision_id", "")
+    expected_mime = evidence.get("mime_type", "")
+    actual_sha = meta.get("sha256", "")
+    actual_rev = meta.get("revision_id", "")
+    actual_mime = meta.get("mime_type", "")
+    # sha256 is mandatory and must match exactly.
+    if not actual_sha or actual_sha != expected_sha:
+        raise ValueError(
+            f"DRIVE_MOVE_EVIDENCE_MISMATCH: sha256 mismatch or missing. "
+            f"Expected {expected_sha[:16]}..., got {actual_sha[:16] if actual_sha else 'MISSING'}...")
+    # revision_id and mime_type must match if both are specified.
+    if expected_rev and actual_rev and expected_rev != actual_rev:
+        raise ValueError(
+            f"DRIVE_MOVE_EVIDENCE_MISMATCH: revision_id mismatch. "
+            f"Expected {expected_rev}, got {actual_rev}")
+    if expected_mime and actual_mime and expected_mime != actual_mime:
+        raise ValueError(
+            f"DRIVE_MOVE_EVIDENCE_MISMATCH: mime_type mismatch. "
+            f"Expected {expected_mime}, got {actual_mime}")
+
     # 2. Verify source_parent matches.
     if move_plan["source_parent"] not in current_parents:
         raise ValueError(
@@ -275,7 +319,8 @@ def _apply_drive_move(params: Dict[str, Any],
     else:
         adapter.reparent(file_id, move_plan["destination"],
                          old_parent=move_plan["source_parent"])
-        result = {"moved": True}
+        result = {"moved": True,
+                  "production_go": str(production_go)}
     # 4. Read back and verify.
     new_meta = adapter.meta(file_id)
     new_parents = set(new_meta.get("parents", []))
@@ -584,4 +629,34 @@ def verify_plan(plan_path: Any,
             except ValueError as exc:
                 errors.append(f"op {entry['index']}: index unreadable: "
                               f"{exc}")
+        elif op_name == "drive_move":
+            # F-03 fix: Independent verify for drive_move.
+            # Re-reads Drive metadata via adapter and verifies the parent
+            # set matches expected_parent_set. This catches cases where
+            # the file was moved again after apply.
+            from .drive_move_plan import validate_drive_move_plan
+            try:
+                move_plan = validate_drive_move_plan(
+                    params.get("move_plan", {}))
+            except ValueError as exc:
+                errors.append(f"op {entry['index']}: invalid move_plan: "
+                              f"{exc}")
+                continue
+            adapter = (ctx or {}).get("drive_adapter")
+            if adapter is None:
+                errors.append(f"op {entry['index']}: drive_move verify "
+                              f"requires ctx['drive_adapter']")
+                continue
+            try:
+                meta = adapter.meta(move_plan["file_id"])
+                current = set(meta.get("parents", []))
+                expected = set(move_plan["expected_parent_set"])
+                if current != expected:
+                    errors.append(
+                        f"op {entry['index']}: drive_move verify failed: "
+                        f"current parents {sorted(current)} != expected "
+                        f"{sorted(expected)}")
+            except Exception as exc:
+                errors.append(f"op {entry['index']}: drive_move verify "
+                              f"error: {exc}")
     return (len(errors) == 0, errors)

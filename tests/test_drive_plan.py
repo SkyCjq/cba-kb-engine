@@ -218,12 +218,16 @@ def test_verify_partial_log_fails(env):
 class FakeDriveAdapter:
     """Fake Drive adapter for testing (no real API calls)."""
     def __init__(self):
-        self.files = {}  # file_id -> {"parents": [...], "name": str}
+        self.files = {}  # file_id -> {"parents": [...], "name": str, ...}
 
     def meta(self, file_id):
         if file_id not in self.files:
             raise ValueError(f"File not found: {file_id}")
-        return {"id": file_id, "parents": self.files[file_id]["parents"]}
+        f = self.files[file_id]
+        return {"id": file_id, "parents": f["parents"],
+                "sha256": f.get("sha256", ""),
+                "revision_id": f.get("revision_id", ""),
+                "mime_type": f.get("mime_type", "")}
 
     def reparent(self, file_id, new_parent, old_parent=None):
         if file_id not in self.files:
@@ -239,7 +243,9 @@ class FakeDriveAdapter:
 def test_drive_move_success(tmp_path):
     from cba_kb.drive_move_plan import create_drive_move_plan
     adapter = FakeDriveAdapter()
-    adapter.files["f1"] = {"parents": ["folderA"], "name": "doc"}
+    adapter.files["f1"] = {"parents": ["folderA"], "name": "doc",
+                           "sha256": "x" * 60, "revision_id": "r1",
+                           "mime_type": "text/plain"}
 
     move_plan = create_drive_move_plan(
         file_id="f1", source_id="s1", doc_id="d1",
@@ -248,6 +254,8 @@ def test_drive_move_success(tmp_path):
         disposition="ARCHIVE",
         approval_ref="human-001",
         sha256="x" * 60,
+        revision_id="r1",
+        mime_type="text/plain",
     )
     plan = dp.create_plan([{"op": "drive_move",
                             "params": {"move_plan": move_plan}}])
@@ -256,7 +264,8 @@ def test_drive_move_success(tmp_path):
     dp.save_plan(plan_path, plan)
     dp.approve_plan(plan_path, "boss", ledger_path)
     out = dp.apply_plan(plan_path, ledger_path,
-                        {"drive_adapter": adapter})
+                        {"drive_adapter": adapter,
+                         "production_go": "human-prod-go-001"})
     assert out["failed"] is None
     assert adapter.files["f1"]["parents"] == ["folderB"]
 
@@ -264,7 +273,8 @@ def test_drive_move_success(tmp_path):
 def test_drive_move_parent_mismatch_rejected(tmp_path):
     from cba_kb.drive_move_plan import create_drive_move_plan
     adapter = FakeDriveAdapter()
-    adapter.files["f1"] = {"parents": ["folderX"], "name": "doc"}  # Wrong!
+    adapter.files["f1"] = {"parents": ["folderX"], "name": "doc",  # Wrong!
+                           "sha256": "x" * 60}
 
     move_plan = create_drive_move_plan(
         file_id="f1", source_id="s1", doc_id="d1",
@@ -281,8 +291,121 @@ def test_drive_move_parent_mismatch_rejected(tmp_path):
     dp.save_plan(plan_path, plan)
     dp.approve_plan(plan_path, "boss", ledger_path)
     out = dp.apply_plan(plan_path, ledger_path,
-                        {"drive_adapter": adapter})
+                        {"drive_adapter": adapter,
+                         "production_go": "human-prod-go-001"})
     assert out["failed"] is not None
     assert "PARENT_MISMATCH" in out["failed"]["error"]
     # File was NOT moved.
     assert adapter.files["f1"]["parents"] == ["folderX"]
+
+
+def test_drive_move_no_production_go_rejected(tmp_path):
+    """F-01: Without production_go, drive_move fails closed (no write)."""
+    from cba_kb.drive_move_plan import create_drive_move_plan
+    adapter = FakeDriveAdapter()
+    adapter.files["f1"] = {"parents": ["folderA"], "sha256": "x" * 60}
+
+    move_plan = create_drive_move_plan(
+        file_id="f1", source_id="s1", doc_id="d1",
+        source_parent="folderA", destination="folderB",
+        expected_parent_set=["folderB"],
+        disposition="ARCHIVE",
+        approval_ref="human-001",
+        sha256="x" * 60,
+    )
+    plan = dp.create_plan([{"op": "drive_move",
+                            "params": {"move_plan": move_plan}}])
+    plan_path = tmp_path / "plan.json"
+    ledger_path = tmp_path / "ledger.jsonl"
+    dp.save_plan(plan_path, plan)
+    dp.approve_plan(plan_path, "boss", ledger_path)
+    # No production_go in ctx!
+    out = dp.apply_plan(plan_path, ledger_path,
+                        {"drive_adapter": adapter})
+    assert out["failed"] is not None
+    assert "PRODUCTION_GO_REQUIRED" in out["failed"]["error"]
+    # File NOT moved.
+    assert adapter.files["f1"]["parents"] == ["folderA"]
+
+
+def test_drive_move_evidence_mismatch_rejected(tmp_path):
+    """F-01: Stale sha256 fails closed (no write)."""
+    from cba_kb.drive_move_plan import create_drive_move_plan
+    adapter = FakeDriveAdapter()
+    # Actual file has different sha256!
+    adapter.files["f1"] = {"parents": ["folderA"], "sha256": "y" * 60}
+
+    move_plan = create_drive_move_plan(
+        file_id="f1", source_id="s1", doc_id="d1",
+        source_parent="folderA", destination="folderB",
+        expected_parent_set=["folderB"],
+        disposition="ARCHIVE",
+        approval_ref="human-001",
+        sha256="x" * 60,  # Stale!
+    )
+    plan = dp.create_plan([{"op": "drive_move",
+                            "params": {"move_plan": move_plan}}])
+    plan_path = tmp_path / "plan.json"
+    ledger_path = tmp_path / "ledger.jsonl"
+    dp.save_plan(plan_path, plan)
+    dp.approve_plan(plan_path, "boss", ledger_path)
+    out = dp.apply_plan(plan_path, ledger_path,
+                        {"drive_adapter": adapter,
+                         "production_go": "go-001"})
+    assert out["failed"] is not None
+    assert "EVIDENCE_MISMATCH" in out["failed"]["error"]
+    assert adapter.files["f1"]["parents"] == ["folderA"]
+
+
+def test_drive_move_destination_expected_mismatch_rejected():
+    """F-02: Validator rejects destination not in expected_parent_set."""
+    from cba_kb.drive_move_plan import create_drive_move_plan, DriveMovePlanError
+    import pytest
+    with pytest.raises(DriveMovePlanError,
+                       match="PLAN_ARCHIVE_DESTINATION_MISMATCH"):
+        create_drive_move_plan(
+            file_id="f1", source_id="s1", doc_id="d1",
+            source_parent="A", destination="B",
+            expected_parent_set=["C"],  # Q2's counterexample!
+            disposition="ARCHIVE",
+            approval_ref="human-001",
+            sha256="x" * 60,
+        )
+
+
+def test_drive_move_verify_catches_moved_away(tmp_path):
+    """F-03: verify_plan detects file moved after apply."""
+    from cba_kb.drive_move_plan import create_drive_move_plan
+    adapter = FakeDriveAdapter()
+    adapter.files["f1"] = {"parents": ["folderA"], "sha256": "x" * 60}
+
+    move_plan = create_drive_move_plan(
+        file_id="f1", source_id="s1", doc_id="d1",
+        source_parent="folderA", destination="folderB",
+        expected_parent_set=["folderB"],
+        disposition="ARCHIVE",
+        approval_ref="human-001",
+        sha256="x" * 60,
+    )
+    plan = dp.create_plan([{"op": "drive_move",
+                            "params": {"move_plan": move_plan}}])
+    plan_path = tmp_path / "plan.json"
+    ledger_path = tmp_path / "ledger.jsonl"
+    dp.save_plan(plan_path, plan)
+    dp.approve_plan(plan_path, "boss", ledger_path)
+    out = dp.apply_plan(plan_path, ledger_path,
+                        {"drive_adapter": adapter,
+                         "production_go": "go-001"})
+    assert out["failed"] is None
+
+    # Verify passes right after apply.
+    ok, errors = dp.verify_plan(plan_path, {"drive_adapter": adapter})
+    assert ok, f"Should verify: {errors}"
+
+    # Now someone moves the file elsewhere (simulating drift).
+    adapter.files["f1"]["parents"] = ["folderZ"]
+
+    # Verify must FAIL.
+    ok, errors = dp.verify_plan(plan_path, {"drive_adapter": adapter})
+    assert not ok
+    assert any("drive_move verify failed" in e for e in errors)

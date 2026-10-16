@@ -47,9 +47,11 @@ def test_workflow_status_cli(tmp_path):
         "--registry", str(registry),
     )
     assert rc == 0, f"CLI failed: {err}"
-    # Output contains JSON with flow info.
+    # Output contains JSON with flow info and inferred stage.
     assert "discover" in out
     assert "approve" in out
+    assert "current_stage" in out
+    assert "next_action" in out
 
 
 def test_drive_plan_cli_chain(tmp_path):

@@ -73,3 +73,40 @@ def test_all_rates(tmp_path):
     assert "processing" in result
     assert "archive" in result
     assert "query_hit" in result
+
+
+def test_processing_rate_no_ledger_returns_none(tmp_path):
+    """F-05: Missing ledger + discovered>0 → None (not 0.0)."""
+    ledger = tmp_path / "missing.jsonl"
+    result = om.compute_processing_rate(ledger, discovered_count=5)
+    assert result["rate"] is None
+    assert "unknown" in result.get("note", "").lower()
+
+
+def test_archive_rate_excludes_unapproved(tmp_path):
+    """F-05: Unapproved archived docs don't inflate the rate."""
+    ledger = tmp_path / "ledger.jsonl"
+    with open(ledger, "w") as f:
+        import json
+        f.write(json.dumps({"action": "archive_approved", "doc_id": "d1"}) + "\n")
+        f.write(json.dumps({"action": "document_archived", "doc_id": "d1"}) + "\n")
+        f.write(json.dumps({"action": "document_archived", "doc_id": "d2"}) + "\n")  # Not approved!
+    result = om.compute_archive_rate(ledger)
+    assert result["numerator"] == 1  # Only d1
+    assert result["denominator"] == 1
+    assert result["rate"] == 1.0  # Not 2.0!
+    assert "d2" in result.get("policy_violations", [])
+
+
+def test_query_hit_rate_missing_count_excluded(tmp_path):
+    """F-05: Queries missing result_count are excluded."""
+    ledger = tmp_path / "ledger.jsonl"
+    with open(ledger, "w") as f:
+        import json
+        f.write(json.dumps({"action": "query", "result_count": 5}) + "\n")
+        f.write(json.dumps({"action": "query"}) + "\n")  # Missing!
+        f.write(json.dumps({"action": "query", "result_count": 0}) + "\n")
+    result = om.compute_query_hit_rate(ledger)
+    assert result["numerator"] == 1
+    assert result["denominator"] == 2  # Missing excluded
+    assert result["incomplete_queries"] == 1

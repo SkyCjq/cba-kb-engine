@@ -99,6 +99,21 @@ def validate_drive_move_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
             raise DriveMovePlanError(
                 "PLAN_RETAIN_DESTINATION_MISMATCH: destination must equal "
                 "source_parent for RETAIN_IN_PLACE")
+        # For RETAIN, expected_parent_set must contain source_parent.
+        if plan["source_parent"] not in expected:
+            raise DriveMovePlanError(
+                "PLAN_RETAIN_EXPECTED_MISMATCH: expected_parent_set must "
+                "contain source_parent for RETAIN_IN_PLACE")
+
+    # F-02 fix: For ARCHIVE, destination must be in expected_parent_set.
+    # This catches logic errors (e.g., destination=B but expected=["C"])
+    # at validation time, BEFORE any Drive write occurs.
+    if disposition == "ARCHIVE":
+        if plan["destination"] not in expected:
+            raise DriveMovePlanError(
+                "PLAN_ARCHIVE_DESTINATION_MISMATCH: destination must be in "
+                "expected_parent_set for ARCHIVE. Got destination="
+                f"{plan['destination']}, expected_parent_set={expected}")
 
     # identity_and_revision_evidence must have sha256.
     evidence = plan["identity_and_revision_evidence"]
