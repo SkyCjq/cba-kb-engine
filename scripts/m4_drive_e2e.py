@@ -35,7 +35,7 @@ USAGE (only after Human provides test folder + OAuth):
 AUTHORIZATION MODEL:
     This script uses --test-go (isolated TEST authorization) ONLY.
     A TEST reference can never authorize a production write.
-    The Human OpenSSH signature and approval are checked for identity, expiry,
+    The Human Ed25519 signature and approval are checked for identity, expiry,
     clean commit SHA, folder, and isolation mode before every mutation.
     File creation is restricted to an explicit allowlist.
 
@@ -65,6 +65,7 @@ EXIT CODES:
 from __future__ import annotations
 
 import argparse
+import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -75,6 +76,11 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+
+SYSTEM_GIT = Path("/usr/bin/git")
+SYSTEM_APPROVAL_PUBLIC_KEY = Path(
+    "/etc/cba-kb/m4_approval_ed25519_public.pem")
 
 
 def fail(msg: str, code: int = 1) -> "NoReturn":
@@ -137,18 +143,37 @@ def _parse_utc(value: str, label: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _assert_root_owned_file(path: Path, label: str) -> Path:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{label} is missing or unsafe")
+    file_stat = path.stat()
+    if hasattr(os, "geteuid") and file_stat.st_uid != 0:
+        raise ValueError(f"{label} must be owned by root")
+    if stat.S_IMODE(file_stat.st_mode) & 0o022:
+        raise ValueError(f"{label} must not be group/world writable")
+    return path.resolve()
+
+
+def _trusted_git() -> str:
+    return str(_assert_root_owned_file(SYSTEM_GIT, "system Git executable"))
+
+
 def _current_git_sha(engine_root: Path) -> str:
+    git = _trusted_git()
+    subprocess.run(
+        [git, "fetch", "origin", "--prune", "--tags"], cwd=engine_root,
+        check=True, capture_output=True, text=True, timeout=120)
     sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=engine_root, check=True,
+        [git, "rev-parse", "HEAD"], cwd=engine_root, check=True,
         capture_output=True, text=True).stdout.strip()
     branch = subprocess.run(
-        ["git", "branch", "--show-current"], cwd=engine_root, check=True,
+        [git, "branch", "--show-current"], cwd=engine_root, check=True,
         capture_output=True, text=True).stdout.strip()
     upstream = subprocess.run(
-        ["git", "rev-parse", "origin/main"], cwd=engine_root, check=True,
+        [git, "rev-parse", "origin/main"], cwd=engine_root, check=True,
         capture_output=True, text=True).stdout.strip()
     dirty = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        [git, "status", "--porcelain=v1", "--untracked-files=all"],
         cwd=engine_root, check=True, capture_output=True, text=True).stdout.strip()
     if branch != "main" or sha != upstream or dirty:
         raise ValueError(
@@ -156,33 +181,39 @@ def _current_git_sha(engine_root: Path) -> str:
     return sha
 
 
-def _assert_trusted_allowed_signers(path: Path) -> Path:
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("Private Instance M4 allowed-signers file is missing/unsafe")
-    file_stat = path.stat()
-    if hasattr(os, "geteuid") and file_stat.st_uid != 0:
-        raise ValueError("M4 allowed-signers trust anchor must be owned by root")
-    if stat.S_IMODE(file_stat.st_mode) & 0o022:
-        raise ValueError("M4 allowed-signers file must not be group/world writable")
-    return path.resolve()
-
-
-def _verify_authorization_signature(record_path: str, signature_path: str,
-                                    allowed_signers_path: Path,
-                                    approved_by: str) -> None:
-    """Verify a Human-controlled OpenSSH signature over the exact JSON bytes."""
-    allowed = _assert_trusted_allowed_signers(allowed_signers_path)
+def _read_root_trust_anchor(path: Path = SYSTEM_APPROVAL_PUBLIC_KEY) -> bytes:
+    trusted = _assert_root_owned_file(path, "M4 Ed25519 public-key trust anchor")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(trusted, flags)
     try:
-        record_bytes = Path(record_path).read_bytes()
-        verified = subprocess.run(
-            ["ssh-keygen", "-Y", "verify", "-f", str(allowed),
-             "-I", approved_by, "-n", "cba-kb-m4-test",
-             "-s", str(Path(signature_path).resolve())],
-            input=record_bytes, capture_output=True, check=False)
-    except OSError as exc:
-        raise ValueError(f"cannot verify Human authorization signature: {exc}") from exc
-    if verified.returncode != 0:
-        raise ValueError("Human authorization signature verification failed")
+        opened = os.fstat(descriptor)
+        if hasattr(os, "geteuid") and opened.st_uid != 0:
+            raise ValueError("opened M4 trust anchor is not root-owned")
+        if stat.S_IMODE(opened.st_mode) & 0o022:
+            raise ValueError("opened M4 trust anchor is writable by group/world")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            return handle.read()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _verify_authorization_signature(record_bytes: bytes, signature_path: str,
+                                    public_key_bytes: bytes) -> None:
+    """Verify Ed25519 over the exact bytes that are subsequently parsed."""
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    try:
+        public_key = serialization.load_pem_public_key(public_key_bytes)
+        if not isinstance(public_key, Ed25519PublicKey):
+            raise ValueError("M4 approval key must be Ed25519")
+        signature = base64.b64decode(
+            Path(signature_path).read_bytes().strip(), validate=True)
+        public_key.verify(signature, record_bytes)
+    except (OSError, ValueError, InvalidSignature) as exc:
+        raise ValueError("Human authorization signature verification failed") from exc
 
 
 def _validate_authorization(path: str, *, test_go: str, engine_sha: str,
@@ -190,11 +221,14 @@ def _validate_authorization(path: str, *, test_go: str, engine_sha: str,
                             isolation_mode: str,
                             production_folders_sha256: str,
                             signature_path: str,
-                            allowed_signers_path: Path,
+                            public_key_bytes: bytes,
                             now: Optional[datetime] = None) -> Dict[str, Any]:
     """Validate a Human-approved, time-bounded, exact M4 TEST record."""
     try:
-        record = json.loads(Path(path).read_text(encoding="utf-8"))
+        record_bytes = Path(path).read_bytes()
+        _verify_authorization_signature(
+            record_bytes, signature_path, public_key_bytes)
+        record = json.loads(record_bytes)
     except (OSError, ValueError) as exc:
         raise ValueError(f"cannot read authorization record: {exc}") from exc
     if not isinstance(record, dict):
@@ -202,8 +236,6 @@ def _validate_authorization(path: str, *, test_go: str, engine_sha: str,
     approved_by = record.get("approved_by")
     if not isinstance(approved_by, str) or not approved_by.strip():
         raise ValueError("authorization approved_by is required")
-    _verify_authorization_signature(
-        path, signature_path, allowed_signers_path, approved_by)
     exact = {
         "schema": "cba-kb-m4-test-authorization/v1",
         "approved": True,
@@ -231,7 +263,36 @@ def _validate_authorization(path: str, *, test_go: str, engine_sha: str,
         raise ValueError("authorization is not currently valid")
     if expires_at - approved_at > timedelta(hours=2):
         raise ValueError("authorization validity window must not exceed two hours")
+    record["_record_sha256"] = hashlib.sha256(record_bytes).hexdigest()
     return record
+
+
+def _consume_authorization(instance: Any, record: Dict[str, Any]) -> Path:
+    authorization_id = record.get("authorization_id")
+    if not isinstance(authorization_id, str) or not authorization_id:
+        raise ValueError("authorization_id is required")
+    if (authorization_id != authorization_id.lower()
+            or any(ch not in "0123456789abcdef-" for ch in authorization_id)):
+        raise ValueError("authorization_id must be lowercase hex/UUID form")
+    consumed_root = Path(instance.data_root) / "m4_consumed_authorizations"
+    consumed_root.mkdir(parents=True, exist_ok=True)
+    os.chmod(consumed_root, 0o700)
+    target = consumed_root / f"{authorization_id}.json"
+    payload = json.dumps({
+        "authorization_id": authorization_id,
+        "record_sha256": record["_record_sha256"],
+        "consumed_at": datetime.now(timezone.utc).isoformat(),
+    }, sort_keys=True).encode("utf-8") + b"\n"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(target, flags, 0o600)
+    except FileExistsError as exc:
+        raise ValueError("TEST authorization was already consumed") from exc
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return target
 
 
 def _load_private_instance(instance_root: str, *, engine_root: Path):
@@ -261,9 +322,11 @@ def _list_all_drive_objects(drive: Any) -> List[Dict[str, Any]]:
         result = drive.api.files().list(
             q="trashed=false", spaces="drive", corpora="user",
             pageToken=page, pageSize=1000,
-            fields="nextPageToken,files(id,name,mimeType,parents,driveId)",
+            fields="nextPageToken,incompleteSearch,files(id,name,mimeType,parents,driveId)",
             supportsAllDrives=True, includeItemsFromAllDrives=True,
         ).execute(num_retries=0)
+        if result.get("incompleteSearch"):
+            raise ValueError("dedicated-account Drive inventory search was incomplete")
         items.extend(result.get("files", []))
         page = result.get("nextPageToken")
         if not page:
@@ -271,7 +334,8 @@ def _list_all_drive_objects(drive: Any) -> List[Dict[str, Any]]:
 
 
 def _verify_dedicated_account(drive: Any, folder_meta: Dict[str, Any],
-                              test_folder: str, expected_account: str) -> None:
+                              test_folder: str, expected_account: str,
+                              allowed_ids: List[str]) -> None:
     owners = {item.get("emailAddress", "").lower()
               for item in folder_meta.get("owners", [])}
     root_id = drive.api.files().get(
@@ -287,10 +351,10 @@ def _verify_dedicated_account(drive: Any, folder_meta: Dict[str, Any],
     if not root_id or set(folder_meta.get("parents", [])) != {root_id}:
         raise ValueError("dedicated-account folder must be directly under My Drive root")
     inventory = _list_all_drive_objects(drive)
-    if {item.get("id") for item in inventory} != {test_folder}:
+    if {item.get("id") for item in inventory} != set(allowed_ids):
         raise ValueError(
-            "dedicated-account must have no other accessible, non-trashed "
-            "Drive objects")
+            "dedicated-account inventory differs from the exact approved "
+            "test-run object set")
 
 
 def _is_not_found(exc: Exception) -> bool:
@@ -345,6 +409,22 @@ def _authorized_mutation(require_authorization, mutation):
     return mutation()
 
 
+class _AuthorizedDriveAdapter:
+    """Delegate reads, but gate the actual reparent mutation at call time."""
+
+    def __init__(self, adapter: Any, mutation_gate):
+        self._adapter = adapter
+        self._mutation_gate = mutation_gate
+
+    def meta(self, file_id: str) -> Dict[str, Any]:
+        return self._adapter.meta(file_id)
+
+    def reparent(self, file_id: str, new_parent: str,
+                 old_parent: Optional[str] = None) -> Dict[str, Any]:
+        self._mutation_gate()
+        return self._adapter.reparent(file_id, new_parent, old_parent)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="M4 isolated Drive E2E")
     ap.add_argument("--instance-root", required=True,
@@ -358,7 +438,7 @@ def main() -> int:
     ap.add_argument("--approval-record", required=True,
                     help="Human-approved, time-bounded local TEST authorization JSON")
     ap.add_argument("--approval-signature", required=True,
-                    help="Human OpenSSH signature over the exact approval JSON")
+                    help="base64 Ed25519 signature over the exact approval JSON")
     ap.add_argument("--isolation-mode", required=True,
                     choices=("production-boundary", "dedicated-account"),
                     help="Isolation proof used for this run")
@@ -418,7 +498,10 @@ def main() -> int:
         engine_sha = _current_git_sha(engine_root)
     except Exception as exc:  # noqa: BLE001
         fail(f"cannot establish clean Engine/Private Instance boundary: {exc}")
-    allowed_signers = Path(inst.config_root) / "m4_approval_allowed_signers"
+    try:
+        approval_public_key = _read_root_trust_anchor()
+    except Exception as exc:  # noqa: BLE001
+        fail(f"cannot load trusted Human approval key: {exc}")
 
     def require_current_authorization() -> Dict[str, Any]:
         return _validate_authorization(
@@ -427,7 +510,7 @@ def main() -> int:
             test_folder=test_folder, isolation_mode=args.isolation_mode,
             production_folders_sha256=prod_folders_sha256,
             signature_path=args.approval_signature,
-            allowed_signers_path=allowed_signers)
+            public_key_bytes=approval_public_key)
 
     try:
         approval = require_current_authorization()
@@ -440,6 +523,7 @@ def main() -> int:
         "expires_at": approval["expires_at"],
         "scope": approval["scope"],
         "production_folders_sha256": prod_folders_sha256,
+        "authorization_id": approval["authorization_id"],
     }
     step("test_authorization_verified", True, approval["test_go"])
     try:
@@ -500,7 +584,8 @@ def main() -> int:
     if args.isolation_mode == "dedicated-account":
         try:
             _verify_dedicated_account(
-                drive, folder_meta, test_folder, expected_account)
+                drive, folder_meta, test_folder, expected_account,
+                [test_folder])
         except ValueError as exc:
             fail(str(exc))
     existing = drive.list(test_folder)
@@ -525,10 +610,25 @@ def main() -> int:
     ).hexdigest()
     receipt["run_marker"] = run_marker
     created_ids: List[str] = []
+    live_run_ids: List[str] = [test_folder]
     dest_id: Optional[str] = None
     file_id: Optional[str] = None
     e2e_error_code: int = 0
     e2e_error_msg: str = ""
+
+    def require_mutation_gate() -> Dict[str, Any]:
+        current_approval = require_current_authorization()
+        if args.isolation_mode == "dedicated-account":
+            current_folder = drive.api.files().get(
+                fileId=test_folder,
+                fields="id,name,mimeType,parents,trashed,driveId,owners(emailAddress)",
+                supportsAllDrives=True).execute(num_retries=0)
+            if current_folder.get("trashed"):
+                raise ValueError("dedicated-account test folder became trashed")
+            _verify_dedicated_account(
+                drive, current_folder, test_folder, expected_account,
+                live_run_ids)
+        return current_approval
 
     try:
         from googleapiclient.http import MediaIoBaseUpload
@@ -536,6 +636,8 @@ def main() -> int:
 
         # Pre-allocate exact IDs so a successful create with a lost response
         # remains discoverable and cleanable.
+        _consume_authorization(inst, approval)
+        step("test_authorization_consumed", True, approval["authorization_id"])
         allocated = drive.api.files().generateIds(
             count=2, space="drive", type="files",
         ).execute(num_retries=0).get("ids", [])
@@ -547,7 +649,7 @@ def main() -> int:
         # Create source file (allowlist-checked).
         assert_in_scope(test_folder, "source file creation")
         created = _authorized_mutation(
-            require_current_authorization,
+            require_mutation_gate,
             lambda: drive.api.files().create(
                 body={"id": file_id,
                       "name": "M4_E2E_SYNTHETIC_report.txt",
@@ -559,6 +661,7 @@ def main() -> int:
                 fields="id", supportsAllDrives=True).execute(num_retries=0))
         if created.get("id") != file_id:
             raise _E2EFailure("source create returned an unexpected ID", 2)
+        live_run_ids.append(file_id)
         step("create_test_file", True, file_id)
         receipt["source_file_id"] = file_id
         receipt["source_sha256_local"] = sha256
@@ -566,7 +669,7 @@ def main() -> int:
         # Create destination subfolder (allowlist-checked).
         assert_in_scope(test_folder, "destination folder creation")
         dest = _authorized_mutation(
-            require_current_authorization,
+            require_mutation_gate,
             lambda: drive.api.files().create(
                 body={"id": dest_id,
                       "name": "M4_E2E_SYNTHETIC_dest",
@@ -576,6 +679,7 @@ def main() -> int:
                 fields="id", supportsAllDrives=True).execute(num_retries=0))
         if dest.get("id") != dest_id:
             raise _E2EFailure("destination create returned an unexpected ID", 2)
+        live_run_ids.append(dest_id)
         allowed_create_folders.append(dest_id)
         step("create_dest_folder", True, dest_id)
         receipt["dest_folder_id"] = dest_id
@@ -643,12 +747,14 @@ def main() -> int:
             step("plan_approved", True, plan["plan_id"][:12])
             receipt["plan"]["plan_id"] = plan["plan_id"]
             receipt["plan"]["approved_by"] = approval["approved_by"]
-            ctx = {"drive_adapter": adapter,
+            guarded_adapter = _AuthorizedDriveAdapter(
+                adapter, require_mutation_gate)
+            ctx = {"drive_adapter": guarded_adapter,
                    "test_go": args.test_go,
                    "allowed_folders": [test_folder, dest_id],
                    "production_folders": prod_folders}
             out = _authorized_mutation(
-                require_current_authorization,
+                require_mutation_gate,
                 lambda: dp.apply_plan(plan_path, ledger_path, ctx))
             if out["failed"] is not None:
                 step("apply", False, out["failed"]["error"])

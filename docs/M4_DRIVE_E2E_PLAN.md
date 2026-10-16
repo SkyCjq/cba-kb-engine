@@ -11,9 +11,11 @@
 2. `--test-folder`：隔离测试文件夹 ID；脚本验证其为 folder 类型。
 3. `--test-go`：隔离 TEST 授权引用（**不是** production GO；两者互斥）。
 4. `--expected-account`：获批测试邮箱，运行时与 Google `about.user` 精确匹配。
-5. `--approval-record` + `--approval-signature`：Human 本机批准记录及其 OpenSSH
-   签名，绑定最长两小时的有效期、Git SHA、账号、folder、生产边界摘要与隔离模式；
-   Human 私钥不交给 Codex，allowed-signers 信任锚须由 Human 安装为 root-owned。
+5. `--approval-record` + `--approval-signature`：Human 本机批准记录及其 Ed25519
+   签名（64-byte 原始签名的单行 base64），绑定一次性 `authorization_id`、最长两小时的
+   有效期、最终合并 Git SHA、账号、folder、生产边界摘要与隔离模式；Human 私钥不交给
+   Codex，PEM 公钥信任锚须由 Human/系统管理员安装到固定路径
+   `/etc/cba-kb/m4_approval_ed25519_public.pem`，且为非符号链接、root-owned、group/world 不可写。
 6. 隔离模式二选一：`production-boundary` 要求真实 `--production-folders`；
    完全独立账号使用 `dedicated-account`，不得填写虚构生产 ID。
 7. `--receipt`：必填；运行前探测可写，结束时原子写入并回读。
@@ -24,9 +26,11 @@
 - TEST 模式下触碰 `production_folders` 中的任何文件夹 → 拒绝，零写入。
 
 执行流程：
-1. 校验 Human 签名授权与当前时间、干净 `main == origin/main`、账号及 folder 完全一致。
+1. 使用受保护的 `/usr/bin/git` 成功 fetch 后，校验 Human 签名授权与当前时间、干净
+   `main == origin/main`、账号及 folder 完全一致；验签与 JSON 解析使用同一份授权字节流。
 2. 读取认证身份（`about().get(user)`）并与获批账号精确比较；不一致时零写入。
-3. 预生成唯一 Drive ID 与 run marker；在每个 mutation 前重新验签并检查有效期。
+3. 原子消费一次性 `authorization_id`（重放拒绝），预生成唯一 Drive ID 与 run marker；
+   在每个创建及真实 `reparent` mutation 紧前重新验签并检查有效期与隔离范围。
 4. 创建合成测试文件 `M4_E2E_SYNTHETIC_report.txt`（仅测试文件夹内，显式 allowlist）。
 5. 创建目标子文件夹 `M4_E2E_SYNTHETIC_dest`（仅测试文件夹内）。
 6. 捕获移动前元数据；经 `DriveEvidenceAdapter` 读取真实证据。
@@ -62,7 +66,8 @@
 - **禁止**：测试文件夹之外的任何 Drive 内容；特别是生产归档文件夹。
 - `production-boundary` 模式要求非空的真实 `--production-folders`；
   `dedicated-account` 模式要求身份/所有权/My Drive 根目录/精确名称/空目录，
-  并枚举确认账号无其他可访问的未删除 Drive 对象。
+  并完整分页枚举确认账号除本次允许对象外无其他可访问的未删除 Drive 对象；
+  Drive 返回 `incompleteSearch` 时一律拒绝执行。
 - **账号隔离**：优先使用与生产数据隔离的测试 Google 账号或单独限制权限的测试环境。
   脚本启动时把认证用户邮箱与获批值精确比较。Full Drive scope
   不等于允许访问整个账号——所有操作仍受文件夹白名单约束。

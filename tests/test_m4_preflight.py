@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,16 +12,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 import m4_drive_e2e as m4
 from cba_kb import drive as drive_module
-
-_REAL_TRUST_CHECK = m4._assert_trusted_allowed_signers
-
-
-@pytest.fixture(autouse=True)
-def _test_signer_trust_anchor(monkeypatch):
-    # Functional signature tests use an ephemeral key. Production main() has
-    # no injection point and always enforces the real root-owned trust check.
-    monkeypatch.setattr(
-        m4, "_assert_trusted_allowed_signers", lambda path: path.resolve())
 
 
 def _authorization(tmp_path, **updates):
@@ -38,6 +27,7 @@ def _authorization(tmp_path, **updates):
         "production_folders_sha256": hashlib.sha256(b"[]").hexdigest(),
         "m5_authorized": False,
         "production_writes_authorized": False,
+        "authorization_id": "11111111-1111-4111-8111-111111111111",
         "approved_by": "human-owner",
         "approved_at": "2026-10-16T07:00:00Z",
         "expires_at": "2026-10-16T09:00:00Z",
@@ -45,21 +35,16 @@ def _authorization(tmp_path, **updates):
     record.update(updates)
     path = tmp_path / "approval.json"
     path.write_text(json.dumps(record), encoding="utf-8")
-    key = tmp_path / "human_key"
-    subprocess.run(
-        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
-        check=True)
-    public_fields = (tmp_path / "human_key.pub").read_text().split()
-    allowed = tmp_path / "m4_approval_allowed_signers"
-    allowed.write_text(
-        f"human-owner {public_fields[0]} {public_fields[1]}\n",
-        encoding="utf-8")
-    os.chmod(allowed, 0o600)
-    subprocess.run(
-        ["ssh-keygen", "-Y", "sign", "-f", str(key),
-         "-n", "cba-kb-m4-test", str(path)],
-        check=True, capture_output=True)
-    return path, Path(f"{path}.sig"), allowed
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    private_key = Ed25519PrivateKey.generate()
+    public_bytes = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo)
+    signature = tmp_path / "approval.sig"
+    signature.write_bytes(__import__("base64").b64encode(
+        private_key.sign(path.read_bytes())))
+    return path, signature, public_bytes
 
 
 def test_private_instance_loader_passes_engine_and_private_roots(tmp_path):
@@ -75,7 +60,7 @@ def test_private_instance_loader_passes_engine_and_private_roots(tmp_path):
 
 
 def test_authorization_is_exact_and_time_bounded(tmp_path):
-    path, signature, allowed = _authorization(tmp_path)
+    path, signature, public_key = _authorization(tmp_path)
     now = datetime(2026, 10, 16, 8, tzinfo=timezone.utc)
 
     record = m4._validate_authorization(
@@ -83,7 +68,7 @@ def test_authorization_is_exact_and_time_bounded(tmp_path):
         expected_account="M4-TEST@example.com", test_folder="folder-1",
         isolation_mode="dedicated-account",
         production_folders_sha256=hashlib.sha256(b"[]").hexdigest(),
-        signature_path=str(signature), allowed_signers_path=allowed, now=now)
+        signature_path=str(signature), public_key_bytes=public_key, now=now)
 
     assert record["approved_by"] == "human-owner"
 
@@ -96,19 +81,19 @@ def test_authorization_is_exact_and_time_bounded(tmp_path):
     {"production_writes_authorized": True},
 ])
 def test_authorization_rejects_expiry_and_scope_mismatch(tmp_path, updates):
-    path, signature, allowed = _authorization(tmp_path, **updates)
+    path, signature, public_key = _authorization(tmp_path, **updates)
     with pytest.raises(ValueError):
         m4._validate_authorization(
             str(path), test_go="M4-TEST-ref", engine_sha="a" * 40,
             expected_account="m4-test@example.com", test_folder="folder-1",
             isolation_mode="dedicated-account",
             production_folders_sha256=hashlib.sha256(b"[]").hexdigest(),
-            signature_path=str(signature), allowed_signers_path=allowed,
+            signature_path=str(signature), public_key_bytes=public_key,
             now=datetime(2026, 10, 16, 8, tzinfo=timezone.utc))
 
 
 def test_authorization_signature_rejects_tampered_record(tmp_path):
-    path, signature, allowed = _authorization(tmp_path)
+    path, signature, public_key = _authorization(tmp_path)
     path.write_text(path.read_text() + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="signature verification failed"):
         m4._validate_authorization(
@@ -116,22 +101,25 @@ def test_authorization_signature_rejects_tampered_record(tmp_path):
             expected_account="m4-test@example.com", test_folder="folder-1",
             isolation_mode="dedicated-account",
             production_folders_sha256=hashlib.sha256(b"[]").hexdigest(),
-            signature_path=str(signature), allowed_signers_path=allowed,
+            signature_path=str(signature), public_key_bytes=public_key,
             now=datetime(2026, 10, 16, 8, tzinfo=timezone.utc))
 
 
-def test_allowed_signers_requires_system_owned_trust_anchor(tmp_path):
+def test_trust_anchor_requires_system_owned_file(tmp_path):
     if not hasattr(os, "geteuid") or os.geteuid() == 0:
         pytest.skip("root ownership check requires an unprivileged test user")
     allowed = tmp_path / "allowed"
     allowed.write_text("human ssh-ed25519 AAAA\n", encoding="utf-8")
     with pytest.raises(ValueError, match="owned by root"):
-        _REAL_TRUST_CHECK(allowed)
+        m4._assert_root_owned_file(allowed, "test anchor")
 
 
 def test_engine_identity_rejects_dirty_worktree(monkeypatch, tmp_path):
     sha = "a" * 40
-    outputs = iter([sha + "\n", "main\n", sha + "\n", " M scripts/m4_drive_e2e.py\n"])
+    outputs = iter([
+        "", sha + "\n", "main\n", sha + "\n",
+        " M scripts/m4_drive_e2e.py\n"])
+    monkeypatch.setattr(m4, "_trusted_git", lambda: "/usr/bin/git")
     monkeypatch.setattr(
         m4.subprocess, "run",
         lambda *_args, **_kwargs: SimpleNamespace(stdout=next(outputs)))
@@ -175,8 +163,9 @@ def test_authenticated_account_mismatch_fails_closed():
 
 
 class _Files:
-    def __init__(self, inventory=None):
+    def __init__(self, inventory=None, incomplete=False):
         self.inventory = inventory or []
+        self.incomplete = incomplete
         self.deleted = []
 
     def get(self, fileId, **_kwargs):
@@ -184,7 +173,8 @@ class _Files:
         return _Execute({"id": "root-id"})
 
     def list(self, **_kwargs):
-        return _Execute({"files": list(self.inventory)})
+        return _Execute({"files": list(self.inventory),
+                         "incompleteSearch": self.incomplete})
 
     def delete(self, fileId, **_kwargs):
         return _Execute(lambda: self.deleted.append(fileId) or {})
@@ -206,9 +196,22 @@ def test_dedicated_account_requires_root_and_empty_account_inventory():
         "parents": ["root-id"],
         "owners": [{"emailAddress": "m4-test@example.com"}],
     }
-    with pytest.raises(ValueError, match="no other accessible"):
+    with pytest.raises(ValueError, match="exact approved test-run object set"):
         m4._verify_dedicated_account(
-            drive, folder, "folder-1", "m4-test@example.com")
+            drive, folder, "folder-1", "m4-test@example.com", ["folder-1"])
+
+
+def test_dedicated_account_rejects_incomplete_search():
+    files = _Files([{"id": "folder-1"}], incomplete=True)
+    drive = SimpleNamespace(api=_FilesApi(files))
+    folder = {
+        "id": "folder-1", "name": "CBA-KB-M4-ISOLATED-TEST",
+        "parents": ["root-id"],
+        "owners": [{"emailAddress": "m4-test@example.com"}],
+    }
+    with pytest.raises(ValueError, match="search was incomplete"):
+        m4._verify_dedicated_account(
+            drive, folder, "folder-1", "m4-test@example.com", ["folder-1"])
 
 
 def test_cleanup_deletes_child_before_parent_and_reads_back_marker():
@@ -233,6 +236,32 @@ def test_expired_authorization_prevents_mutation():
     with pytest.raises(ValueError, match="not currently valid"):
         m4._authorized_mutation(expired, mutate)
     assert events == ["authorize"]
+
+
+def test_reparent_revalidates_immediately_before_move():
+    events = []
+
+    class Adapter:
+        def reparent(self, *_args):
+            events.append("reparent")
+            return {"id": "f1"}
+
+    guarded = m4._AuthorizedDriveAdapter(
+        Adapter(), lambda: events.append("gate"))
+    guarded.reparent("f1", "dest", "source")
+    assert events == ["gate", "reparent"]
+
+
+def test_authorization_nonce_is_consumed_once(tmp_path):
+    instance = SimpleNamespace(data_root=tmp_path / "data")
+    record = {
+        "authorization_id": "11111111-1111-4111-8111-111111111111",
+        "_record_sha256": "a" * 64,
+    }
+    first = m4._consume_authorization(instance, record)
+    assert first.is_file()
+    with pytest.raises(ValueError, match="already consumed"):
+        m4._consume_authorization(instance, record)
 
 
 def test_expired_oauth_without_refresh_token_fails_closed(tmp_path, monkeypatch):
