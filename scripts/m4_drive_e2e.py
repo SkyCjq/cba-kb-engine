@@ -70,6 +70,19 @@ def fail(msg: str, code: int = 1) -> "NoReturn":
     sys.exit(code)
 
 
+class _E2EFailure(Exception):
+    """E2E step failure AFTER files may exist.
+
+    Unlike fail() (sys.exit), this allows the finally-block cleanup to
+    run and the exit code to be determined AFTER cleanup: residual
+    files -> exit 3 (takes priority over the original E2E error code).
+    """
+
+    def __init__(self, msg: str, code: int = 2):
+        super().__init__(msg)
+        self.code = code
+
+
 def _write_receipt(path: Optional[str], data: Dict[str, Any]) -> None:
     """Write JSON receipt (best-effort; never fails the run)."""
     if not path:
@@ -202,6 +215,8 @@ def main() -> int:
     created_ids: List[str] = []
     dest_id: Optional[str] = None
     file_id: Optional[str] = None
+    e2e_error_code: int = 0
+    e2e_error_msg: str = ""
 
     try:
         from googleapiclient.http import MediaIoBaseUpload
@@ -250,9 +265,10 @@ def main() -> int:
         ev = adapter.meta(file_id)
         if not isinstance(ev.get("sha256"), str) or not ev["sha256"]:
             step("evidence_read", False, "sha256 unavailable")
-            fail("sha256 evidence unavailable from real API "
-                 "(native doc, oversize file, or download failure); "
-                 "cannot verify content identity. Failing closed.", code=2)
+            raise _E2EFailure(
+                "sha256 evidence unavailable from real API "
+                "(native doc, oversize file, or download failure); "
+                "cannot verify content identity. Failing closed.", 2)
         step("evidence_read", True,
              f"sha256={ev['sha256'][:16]}... revision={ev['revision_id']}")
         receipt["evidence"] = {
@@ -263,12 +279,13 @@ def main() -> int:
         if ev["sha256"] != sha256:
             step("evidence_sha256_match", False,
                  f"adapter={ev['sha256'][:16]}... local={sha256[:16]}...")
-            fail(f"sha256 evidence mismatch: adapter={ev['sha256']} "
-                 f"local={sha256}", code=2)
+            raise _E2EFailure(
+                f"sha256 evidence mismatch: adapter={ev['sha256']} "
+                f"local={sha256}", 2)
         step("evidence_sha256_match", True)
         if not ev["revision_id"]:
             step("evidence_revision_present", False, "missing")
-            fail("revision_id evidence missing from real API", code=2)
+            raise _E2EFailure("revision_id evidence missing from real API", 2)
         step("evidence_revision_present", True, ev["revision_id"])
 
         # Build + approve + apply the exact plan.
@@ -300,7 +317,7 @@ def main() -> int:
             out = dp.apply_plan(plan_path, ledger_path, ctx)
             if out["failed"] is not None:
                 step("apply", False, out["failed"]["error"])
-                fail(f"apply failed: {out['failed']['error']}", code=2)
+                raise _E2EFailure(f"apply failed: {out['failed']['error']}", 2)
             step("apply", True,
                  f"verified_parents="
                  f"{out['completed'][0]['result']['verified_parents']}")
@@ -317,22 +334,31 @@ def main() -> int:
             if set(final.get("parents", [])) != {dest_id}:
                 step("readback", False,
                      f"parents={final.get('parents')}")
-                fail(f"readback mismatch: parents={final.get('parents')}",
-                     code=2)
+                raise _E2EFailure(
+                    f"readback mismatch: parents={final.get('parents')}", 2)
             step("readback", True, f"parents={[dest_id]}")
 
         step("all_checks", True)
-        receipt["status"] = "PASSED"
+        # NOTE: receipt["status"] is set AFTER cleanup (see below).
+        # Do NOT set PASSED here -- cleanup may fail.
+    except _E2EFailure as exc:
+        # E2E step failed AFTER files may exist. Record the error;
+        # do NOT exit yet -- finally-block cleanup must run first,
+        # and the exit code is determined AFTER cleanup (residuals -> 3).
+        step("e2e_failure", False, str(exc))
+        receipt["error"] = str(exc)
+        e2e_error_code = exc.code
+        e2e_error_msg = str(exc)
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001
         step("unexpected_error", False, str(exc))
-        receipt["status"] = "FAILED"
         receipt["error"] = str(exc)
-        raise
+        e2e_error_code = 2
+        e2e_error_msg = str(exc)
     finally:
         # Cleanup: delete test files. TRACK failures; residual IDs are
-        # reported and cause a non-zero exit (never silent PASS).
+        # reported and cause exit 3 (never silent PASS).
         residuals: List[str] = []
         if not args.keep:
             for fid in reversed(created_ids):
@@ -349,15 +375,28 @@ def main() -> int:
             residuals = list(created_ids)
             print(f"M4_E2E: --keep: {len(residuals)} files retained")
         receipt["residual_file_ids"] = residuals
+        # Set final status AFTER cleanup (never before).
+        if residuals:
+            receipt["status"] = "CLEANUP_INCOMPLETE"
+        elif "error" in receipt:
+            receipt["status"] = "FAILED"
+        else:
+            receipt["status"] = "PASSED"
         _write_receipt(args.receipt, receipt)
 
-    # Final determination: cleanup failures are NOT a full PASS.
+    # Final determination AFTER cleanup:
+    # - residuals exist -> exit 3 (takes priority over E2E error code)
+    # - E2E failed but cleanup OK -> original error code
+    # - all good -> exit 0
     if receipt["residual_file_ids"]:
         print(f"M4_E2E: CLEANUP INCOMPLETE -- residual files: "
               f"{receipt['residual_file_ids']}", file=sys.stderr)
         print(f"M4_E2E: Manual recovery: delete the above file IDs from "
               f"the test folder, then re-run.", file=sys.stderr)
         return 3
+    if "error" in receipt:
+        print(f"M4_E2E_FAIL: {e2e_error_msg}", file=sys.stderr)
+        return e2e_error_code
     print("M4_E2E: ALL CHECKS PASSED, cleanup complete, no residuals")
     return 0
 
