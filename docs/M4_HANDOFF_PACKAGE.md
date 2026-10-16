@@ -11,7 +11,7 @@
 | 1 | 隔离测试 folder ID | 新建空文件夹，仅用于 M4；脚本验证其为 folder 类型 | `1abc...xyz` |
 | 2 | 允许的合成样本 | 确认可使用 `M4_E2E_SYNTHETIC_` 前缀的合成文件（脚本自动创建/清理） | 确认即可 |
 | 3 | OAuth 测试身份 | 隔离测试 Google 账号；Human 本机执行 `make auth` 完成授权的 Private Instance 路径 | `/path/to/instance` |
-| 4 | TEST 授权记录 | Human 批准的本机 JSON，绑定 `test_go`、有效期、Git SHA、账号、folder 与隔离模式 | `m4-approval.json` |
+| 4 | TEST 授权记录与签名 | Human 批准的本机 JSON，绑定 `test_go`、有效期、Git SHA、账号、folder 与隔离模式；必须由 Human 控制的 OpenSSH key 签名 | `m4-approval.json` + `.sig` |
 | 5 | 隔离模式 | 独立账号用 `dedicated-account`；否则须使用 `production-boundary` 并提供真实生产 folder ID | `dedicated-account` |
 
 ## 确切运行命令
@@ -23,6 +23,7 @@ python scripts/m4_drive_e2e.py \
     --test-go "M4-TEST-2026-10-16-001" \
     --expected-account "m4-test@example.com" \
     --approval-record "/secure/path/m4-approval.json" \
+    --approval-signature "/secure/path/m4-approval.json.sig" \
     --isolation-mode dedicated-account \
     --receipt /tmp/m4-receipt.json
 ```
@@ -34,16 +35,22 @@ python scripts/m4_drive_e2e.py \
 3. 运行 `make auth` 完成交互式授权，生成 `token.json`（权限 600）。
 4. 确认 `token.json` 存在且 scope 包含 `https://www.googleapis.com/auth/drive`。
 5. 将 Private Instance 路径告知执行者（仅路径，不传输 token 内容）。
+6. 将 Human 公钥登记到 Private Instance 的 `config/m4_approval_allowed_signers`
+   （OpenSSH allowed-signers 格式），并由 Human 通过系统管理员确认安装为 root-owned、
+   不可被 group/world 写的信任锚；私钥必须受口令或硬件保护且不得交给 Codex。
+7. Human 明确批准摘要后，本人执行
+   `ssh-keygen -Y sign -f <HUMAN_PRIVATE_KEY> -n cba-kb-m4-test m4-approval.json`。
 
 ## 精确测试动作（脚本将执行）
 
-1. 在任何写入前严格核验认证邮箱、授权有效期与 commit/folder 绑定。
+1. 在任何写入前核验 Human OpenSSH 签名、认证邮箱、授权有效期与 commit/folder 绑定；
+   Engine 必须是无 staged/unstaged/untracked 内容的 `main == origin/main`。
 2. 在测试文件夹内创建 `M4_E2E_SYNTHETIC_report.txt`（合成内容，白名单校验）。
 3. 在测试文件夹内创建 `M4_E2E_SYNTHETIC_dest` 子文件夹。
 4. 捕获移动前元数据；经 `DriveEvidenceAdapter` 读取真实证据并校验 SHA-256。
 5. 构建 exact plan → 批准 → `apply_plan`（`test_go` + allowlist）→ 独立 readback。
 6. 捕获移动后元数据；比对前后差异。
-7. 清理测试文件；清理失败记录残留 ID（exit 3）。
+7. 使用预生成 ID 与 run marker 清理测试文件（先文件、后文件夹），再独立枚举残留；清理失败记录残留 ID（exit 3）。
 8. 原子写入并回读 JSON 收据；写入失败返回 exit 4，绝不报告 PASS。
 
 ## 操作前后元数据比较（收据字段）
@@ -71,6 +78,9 @@ python scripts/m4_drive_e2e.py \
 - 所有操作限制在 `--test-folder` 内；文件创建经显式白名单校验。
 - `production-boundary` 模式触碰 `production_folders` → 拒绝。
 - `dedicated-account` 模式不要求虚构生产 ID；它要求账号精确匹配、文件夹由该账号单独拥有、位于 My Drive、名称精确且运行前为空。
+- `dedicated-account` 还要求该账号在 Drive 空间中除测试 folder 外没有任何可访问的未删除对象。
+- 授权在每个创建和移动 mutation 前重新验签并检查有效期；过期后仅允许范围内清理。
+- 授权窗口最长两小时；信任锚必须 root-owned，防止执行进程替换公钥后自签。
 - `test_go` 永不能授权生产写入；与 `production_go` 互斥。
 - 清理失败 → exit 3 + 残留 ID，不报告完整 PASS。
 

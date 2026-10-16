@@ -9,10 +9,11 @@ folder. It is FAIL-CLOSED at every step:
 3. Requires --test-go: isolated TEST authorization reference.
    NOTE: --test-go authorizes ISOLATED TESTING ONLY. It can never
    authorize production operations. There is no --production-go here.
-4. Requires an exact authenticated account and a time-bounded Human approval
-   record bound to this commit, folder, account, and isolation mode.
+4. Requires an exact authenticated account and a time-bounded, Human-signed
+   approval bound to a clean main commit, folder, account, and isolation mode.
 5. Requires either a verified production-folder boundary or the stronger
-   dedicated-account proof (sole ownership, My Drive, exact name, empty).
+   dedicated-account proof (sole ownership, My Drive root, exact name, and no
+   other accessible non-trashed Drive objects).
 6. Creates synthetic test files INSIDE the test folder only
    (explicit allowlist, not just blacklist).
 7. Builds an exact drive_move plan, approves it, applies it with
@@ -27,19 +28,22 @@ USAGE (only after Human provides test folder + OAuth):
         --test-go "M4-TEST-2026-10-16-human-ref" \
         --expected-account "m4-test@example.com" \
         --approval-record /secure/path/m4-approval.json \
+        --approval-signature /secure/path/m4-approval.json.sig \
         --isolation-mode dedicated-account \
         --receipt /tmp/m4-receipt.json
 
 AUTHORIZATION MODEL:
     This script uses --test-go (isolated TEST authorization) ONLY.
     A TEST reference can never authorize a production write.
-    The approval is checked for identity, expiry, commit SHA, folder, and
-    isolation mode. File creation is restricted to an explicit allowlist.
+    The Human OpenSSH signature and approval are checked for identity, expiry,
+    clean commit SHA, folder, and isolation mode before every mutation.
+    File creation is restricted to an explicit allowlist.
 
 ACCOUNT ISOLATION:
     Prefer a dedicated test Google account. The script requires exact identity
     equality before any write. Dedicated-account mode additionally verifies
-    sole folder ownership, My Drive placement, exact name, and emptiness.
+    sole folder ownership, My Drive-root placement, exact name, and an account
+    inventory containing no other accessible non-trashed Drive objects.
     Full Drive scope does NOT imply
     permission to access the entire account -- all operations are
     constrained to the explicit folder allowlist.
@@ -61,10 +65,11 @@ EXIT CODES:
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -133,14 +138,59 @@ def _parse_utc(value: str, label: str) -> datetime:
 
 
 def _current_git_sha(engine_root: Path) -> str:
-    return subprocess.run(
+    sha = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=engine_root, check=True,
         capture_output=True, text=True).stdout.strip()
+    branch = subprocess.run(
+        ["git", "branch", "--show-current"], cwd=engine_root, check=True,
+        capture_output=True, text=True).stdout.strip()
+    upstream = subprocess.run(
+        ["git", "rev-parse", "origin/main"], cwd=engine_root, check=True,
+        capture_output=True, text=True).stdout.strip()
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=engine_root, check=True, capture_output=True, text=True).stdout.strip()
+    if branch != "main" or sha != upstream or dirty:
+        raise ValueError(
+            "Engine must be clean main at exact origin/main before real Drive writes")
+    return sha
+
+
+def _assert_trusted_allowed_signers(path: Path) -> Path:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Private Instance M4 allowed-signers file is missing/unsafe")
+    file_stat = path.stat()
+    if hasattr(os, "geteuid") and file_stat.st_uid != 0:
+        raise ValueError("M4 allowed-signers trust anchor must be owned by root")
+    if stat.S_IMODE(file_stat.st_mode) & 0o022:
+        raise ValueError("M4 allowed-signers file must not be group/world writable")
+    return path.resolve()
+
+
+def _verify_authorization_signature(record_path: str, signature_path: str,
+                                    allowed_signers_path: Path,
+                                    approved_by: str) -> None:
+    """Verify a Human-controlled OpenSSH signature over the exact JSON bytes."""
+    allowed = _assert_trusted_allowed_signers(allowed_signers_path)
+    try:
+        record_bytes = Path(record_path).read_bytes()
+        verified = subprocess.run(
+            ["ssh-keygen", "-Y", "verify", "-f", str(allowed),
+             "-I", approved_by, "-n", "cba-kb-m4-test",
+             "-s", str(Path(signature_path).resolve())],
+            input=record_bytes, capture_output=True, check=False)
+    except OSError as exc:
+        raise ValueError(f"cannot verify Human authorization signature: {exc}") from exc
+    if verified.returncode != 0:
+        raise ValueError("Human authorization signature verification failed")
 
 
 def _validate_authorization(path: str, *, test_go: str, engine_sha: str,
                             expected_account: str, test_folder: str,
                             isolation_mode: str,
+                            production_folders_sha256: str,
+                            signature_path: str,
+                            allowed_signers_path: Path,
                             now: Optional[datetime] = None) -> Dict[str, Any]:
     """Validate a Human-approved, time-bounded, exact M4 TEST record."""
     try:
@@ -149,6 +199,11 @@ def _validate_authorization(path: str, *, test_go: str, engine_sha: str,
         raise ValueError(f"cannot read authorization record: {exc}") from exc
     if not isinstance(record, dict):
         raise ValueError("authorization record must be a JSON object")
+    approved_by = record.get("approved_by")
+    if not isinstance(approved_by, str) or not approved_by.strip():
+        raise ValueError("authorization approved_by is required")
+    _verify_authorization_signature(
+        path, signature_path, allowed_signers_path, approved_by)
     exact = {
         "schema": "cba-kb-m4-test-authorization/v1",
         "approved": True,
@@ -158,6 +213,7 @@ def _validate_authorization(path: str, *, test_go: str, engine_sha: str,
         "expected_account": expected_account.lower(),
         "test_folder": test_folder,
         "isolation_mode": isolation_mode,
+        "production_folders_sha256": production_folders_sha256,
         "m5_authorized": False,
         "production_writes_authorized": False,
     }
@@ -168,13 +224,13 @@ def _validate_authorization(path: str, *, test_go: str, engine_sha: str,
         if actual != expected:
             raise ValueError(
                 f"authorization {field} mismatch: expected {expected!r}")
-    if not isinstance(record.get("approved_by"), str) or not record["approved_by"].strip():
-        raise ValueError("authorization approved_by is required")
     approved_at = _parse_utc(record.get("approved_at"), "approved_at")
     expires_at = _parse_utc(record.get("expires_at"), "expires_at")
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     if not approved_at <= current < expires_at:
         raise ValueError("authorization is not currently valid")
+    if expires_at - approved_at > timedelta(hours=2):
+        raise ValueError("authorization validity window must not exceed two hours")
     return record
 
 
@@ -198,6 +254,97 @@ def _verify_authenticated_account(drive: Any, expected_account: str) -> str:
     return actual
 
 
+def _list_all_drive_objects(drive: Any) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    page: Optional[str] = None
+    while True:
+        result = drive.api.files().list(
+            q="trashed=false", spaces="drive", corpora="user",
+            pageToken=page, pageSize=1000,
+            fields="nextPageToken,files(id,name,mimeType,parents,driveId)",
+            supportsAllDrives=True, includeItemsFromAllDrives=True,
+        ).execute(num_retries=0)
+        items.extend(result.get("files", []))
+        page = result.get("nextPageToken")
+        if not page:
+            return items
+
+
+def _verify_dedicated_account(drive: Any, folder_meta: Dict[str, Any],
+                              test_folder: str, expected_account: str) -> None:
+    owners = {item.get("emailAddress", "").lower()
+              for item in folder_meta.get("owners", [])}
+    root_id = drive.api.files().get(
+        fileId="root", fields="id", supportsAllDrives=True,
+    ).execute(num_retries=0).get("id")
+    if folder_meta.get("driveId") or owners != {expected_account}:
+        raise ValueError(
+            "dedicated-account folder must be solely owned by the approved "
+            "account and must not be in a shared drive")
+    if folder_meta.get("name") != "CBA-KB-M4-ISOLATED-TEST":
+        raise ValueError(
+            "dedicated-account folder must be named CBA-KB-M4-ISOLATED-TEST")
+    if not root_id or set(folder_meta.get("parents", [])) != {root_id}:
+        raise ValueError("dedicated-account folder must be directly under My Drive root")
+    inventory = _list_all_drive_objects(drive)
+    if {item.get("id") for item in inventory} != {test_folder}:
+        raise ValueError(
+            "dedicated-account must have no other accessible, non-trashed "
+            "Drive objects")
+
+
+def _is_not_found(exc: Exception) -> bool:
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    return status == 404
+
+
+def _find_run_objects(drive: Any, run_marker: str) -> List[str]:
+    found: List[str] = []
+    page: Optional[str] = None
+    query = ("trashed=false and appProperties has { key='cba_m4_run' "
+             f"and value='{run_marker}' }}")
+    while True:
+        result = drive.api.files().list(
+            q=query, spaces="drive", corpora="user", pageToken=page,
+            pageSize=1000, fields="nextPageToken,files(id)",
+            supportsAllDrives=True, includeItemsFromAllDrives=True,
+        ).execute(num_retries=0)
+        found.extend(item["id"] for item in result.get("files", []))
+        page = result.get("nextPageToken")
+        if not page:
+            return sorted(set(found))
+
+
+def _cleanup_created(drive: Any, created_ids: List[str],
+                     run_marker: str) -> List[str]:
+    """Delete child before parent, tolerate already-gone IDs, then read back."""
+    deletion_failures: List[str] = []
+    for file_id in created_ids:  # source file first, destination folder second
+        try:
+            drive.api.files().delete(
+                fileId=file_id, supportsAllDrives=True,
+            ).execute(num_retries=0)
+            print(f"M4_E2E: cleaned up {file_id}")
+        except Exception as exc:  # noqa: BLE001
+            if _is_not_found(exc):
+                print(f"M4_E2E: cleanup confirmed already absent {file_id}")
+                continue
+            deletion_failures.append(file_id)
+            print(f"M4_E2E_FAIL: cleanup failed for {file_id}: {exc}",
+                  file=sys.stderr)
+    try:
+        return sorted(set(deletion_failures + _find_run_objects(drive, run_marker)))
+    except Exception as exc:  # noqa: BLE001
+        print(f"M4_E2E_FAIL: cleanup readback failed: {exc}", file=sys.stderr)
+        return sorted(set(deletion_failures + created_ids))
+
+
+def _authorized_mutation(require_authorization, mutation):
+    """Revalidate signed authorization immediately before one mutation."""
+    require_authorization()
+    return mutation()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="M4 isolated Drive E2E")
     ap.add_argument("--instance-root", required=True,
@@ -210,6 +357,8 @@ def main() -> int:
                     help="Exact Google account approved for this isolated test")
     ap.add_argument("--approval-record", required=True,
                     help="Human-approved, time-bounded local TEST authorization JSON")
+    ap.add_argument("--approval-signature", required=True,
+                    help="Human OpenSSH signature over the exact approval JSON")
     ap.add_argument("--isolation-mode", required=True,
                     choices=("production-boundary", "dedicated-account"),
                     help="Isolation proof used for this run")
@@ -245,30 +394,7 @@ def main() -> int:
     if not expected_account or "@" not in expected_account:
         fail("--expected-account must be a valid explicit email address")
 
-    # --- Gate 1b: exact, time-bounded Human authorization ---
-    try:
-        engine_sha = _current_git_sha(engine_root)
-        approval = _validate_authorization(
-            args.approval_record, test_go=args.test_go.strip(),
-            engine_sha=engine_sha, expected_account=expected_account,
-            test_folder=args.test_folder.strip(),
-            isolation_mode=args.isolation_mode)
-    except Exception as exc:  # noqa: BLE001
-        fail(f"invalid TEST authorization: {exc}")
-    receipt["engine_sha"] = engine_sha
-    receipt["approval"] = {
-        "approved_by": approval["approved_by"],
-        "approved_at": approval["approved_at"],
-        "expires_at": approval["expires_at"],
-        "scope": approval["scope"],
-    }
-    step("test_authorization_verified", True, approval["test_go"])
-    try:
-        _write_receipt(args.receipt, receipt)
-    except _ReceiptWriteFailure as exc:
-        fail(str(exc))
-
-    # --- Gate 1c: isolation policy ---
+    # --- Gate 1b: isolation policy ---
     prod_folders = [f.strip() for f in args.production_folders.split(",")
                     if f.strip()]
     if args.isolation_mode == "production-boundary" and not prod_folders:
@@ -283,6 +409,43 @@ def main() -> int:
     if test_folder in prod_folders:
         fail("--test-folder must not coincide with a production folder ID; "
              "refusing to run.")
+    prod_folders_sha256 = hashlib.sha256(json.dumps(
+        sorted(prod_folders), separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    # --- Gate 1c: Private Instance + signed, time-bounded Human approval ---
+    try:
+        inst = _load_private_instance(args.instance_root, engine_root=engine_root)
+        engine_sha = _current_git_sha(engine_root)
+    except Exception as exc:  # noqa: BLE001
+        fail(f"cannot establish clean Engine/Private Instance boundary: {exc}")
+    allowed_signers = Path(inst.config_root) / "m4_approval_allowed_signers"
+
+    def require_current_authorization() -> Dict[str, Any]:
+        return _validate_authorization(
+            args.approval_record, test_go=args.test_go.strip(),
+            engine_sha=engine_sha, expected_account=expected_account,
+            test_folder=test_folder, isolation_mode=args.isolation_mode,
+            production_folders_sha256=prod_folders_sha256,
+            signature_path=args.approval_signature,
+            allowed_signers_path=allowed_signers)
+
+    try:
+        approval = require_current_authorization()
+    except Exception as exc:  # noqa: BLE001
+        fail(f"invalid TEST authorization: {exc}")
+    receipt["engine_sha"] = engine_sha
+    receipt["approval"] = {
+        "approved_by": approval["approved_by"],
+        "approved_at": approval["approved_at"],
+        "expires_at": approval["expires_at"],
+        "scope": approval["scope"],
+        "production_folders_sha256": prod_folders_sha256,
+    }
+    step("test_authorization_verified", True, approval["test_go"])
+    try:
+        _write_receipt(args.receipt, receipt)
+    except _ReceiptWriteFailure as exc:
+        fail(str(exc))
 
     # Explicit creation allowlist: test folder only (subdirs added as created).
     # File creation is RESTRICTED to this allowlist -- the production_folders
@@ -301,10 +464,6 @@ def main() -> int:
     except ImportError as exc:
         fail(f"cannot import drive modules: {exc}")
 
-    try:
-        inst = _load_private_instance(args.instance_root, engine_root=engine_root)
-    except Exception as exc:
-        fail(f"cannot load Private Instance: {exc}")
     token = Path(inst.credentials_store) / "token.json"
     if not token.exists():
         fail(f"Drive OAuth token missing at {token}; run make auth first. "
@@ -339,14 +498,11 @@ def main() -> int:
     if folder_meta.get("trashed"):
         fail("--test-folder is trashed")
     if args.isolation_mode == "dedicated-account":
-        owners = {item.get("emailAddress", "").lower()
-                  for item in folder_meta.get("owners", [])}
-        if folder_meta.get("driveId") or owners != {expected_account}:
-            fail("dedicated-account test folder must be owned only by the "
-                 "approved account and must not be in a shared drive")
-        if folder_meta.get("name") != "CBA-KB-M4-ISOLATED-TEST":
-            fail("dedicated-account test folder must be named "
-                 "CBA-KB-M4-ISOLATED-TEST")
+        try:
+            _verify_dedicated_account(
+                drive, folder_meta, test_folder, expected_account)
+        except ValueError as exc:
+            fail(str(exc))
     existing = drive.list(test_folder)
     if existing:
         fail(f"--test-folder must be empty before the run; found "
@@ -364,6 +520,10 @@ def main() -> int:
 
     content = b"M4_E2E_SYNTHETIC content 2026-10-16"
     sha256 = hashlib.sha256(content).hexdigest()
+    run_marker = hashlib.sha256(
+        f"{args.test_go.strip()}\0{engine_sha}\0{test_folder}".encode("utf-8")
+    ).hexdigest()
+    receipt["run_marker"] = run_marker
     created_ids: List[str] = []
     dest_id: Optional[str] = None
     file_id: Optional[str] = None
@@ -374,30 +534,48 @@ def main() -> int:
         from googleapiclient.http import MediaIoBaseUpload
         import io
 
+        # Pre-allocate exact IDs so a successful create with a lost response
+        # remains discoverable and cleanable.
+        allocated = drive.api.files().generateIds(
+            count=2, space="drive", type="files",
+        ).execute(num_retries=0).get("ids", [])
+        if len(allocated) != 2 or len(set(allocated)) != 2:
+            raise _E2EFailure("Drive did not allocate two unique cleanup IDs", 2)
+        file_id, dest_id = allocated
+        created_ids.extend([file_id, dest_id])
+
         # Create source file (allowlist-checked).
         assert_in_scope(test_folder, "source file creation")
-        created = drive.api.files().create(
-            body={"name": "M4_E2E_SYNTHETIC_report.txt",
-                  "parents": [test_folder],
-                  "mimeType": "text/plain"},
-            media_body=MediaIoBaseUpload(io.BytesIO(content),
-                                         mimetype="text/plain"),
-            fields="id", supportsAllDrives=True).execute(num_retries=0)
-        file_id = created["id"]
-        created_ids.append(file_id)
+        created = _authorized_mutation(
+            require_current_authorization,
+            lambda: drive.api.files().create(
+                body={"id": file_id,
+                      "name": "M4_E2E_SYNTHETIC_report.txt",
+                      "parents": [test_folder],
+                      "mimeType": "text/plain",
+                      "appProperties": {"cba_m4_run": run_marker}},
+                media_body=MediaIoBaseUpload(io.BytesIO(content),
+                                             mimetype="text/plain"),
+                fields="id", supportsAllDrives=True).execute(num_retries=0))
+        if created.get("id") != file_id:
+            raise _E2EFailure("source create returned an unexpected ID", 2)
         step("create_test_file", True, file_id)
         receipt["source_file_id"] = file_id
         receipt["source_sha256_local"] = sha256
 
         # Create destination subfolder (allowlist-checked).
         assert_in_scope(test_folder, "destination folder creation")
-        dest = drive.api.files().create(
-            body={"name": "M4_E2E_SYNTHETIC_dest",
-                  "parents": [test_folder],
-                  "mimeType": "application/vnd.google-apps.folder"},
-            fields="id", supportsAllDrives=True).execute(num_retries=0)
-        dest_id = dest["id"]
-        created_ids.append(dest_id)
+        dest = _authorized_mutation(
+            require_current_authorization,
+            lambda: drive.api.files().create(
+                body={"id": dest_id,
+                      "name": "M4_E2E_SYNTHETIC_dest",
+                      "parents": [test_folder],
+                      "mimeType": "application/vnd.google-apps.folder",
+                      "appProperties": {"cba_m4_run": run_marker}},
+                fields="id", supportsAllDrives=True).execute(num_retries=0))
+        if dest.get("id") != dest_id:
+            raise _E2EFailure("destination create returned an unexpected ID", 2)
         allowed_create_folders.append(dest_id)
         step("create_dest_folder", True, dest_id)
         receipt["dest_folder_id"] = dest_id
@@ -469,7 +647,9 @@ def main() -> int:
                    "test_go": args.test_go,
                    "allowed_folders": [test_folder, dest_id],
                    "production_folders": prod_folders}
-            out = dp.apply_plan(plan_path, ledger_path, ctx)
+            out = _authorized_mutation(
+                require_current_authorization,
+                lambda: dp.apply_plan(plan_path, ledger_path, ctx))
             if out["failed"] is not None:
                 step("apply", False, out["failed"]["error"])
                 raise _E2EFailure(f"apply failed: {out['failed']['error']}", 2)
@@ -516,18 +696,12 @@ def main() -> int:
         # reported and cause exit 3 (never silent PASS).
         residuals: List[str] = []
         if not args.keep:
-            for fid in reversed(created_ids):
-                try:
-                    drive.api.files().delete(
-                        fileId=fid,
-                        supportsAllDrives=True).execute(num_retries=0)
-                    print(f"M4_E2E: cleaned up {fid}")
-                except Exception as exc:  # noqa: BLE001
-                    print(f"M4_E2E_FAIL: cleanup failed for {fid}: {exc}",
-                          file=sys.stderr)
-                    residuals.append(fid)
+            residuals = _cleanup_created(drive, created_ids, run_marker)
         else:
-            residuals = list(created_ids)
+            try:
+                residuals = _find_run_objects(drive, run_marker)
+            except Exception:
+                residuals = list(created_ids)
             print(f"M4_E2E: --keep: {len(residuals)} files retained")
         receipt["residual_file_ids"] = residuals
         # Set final status AFTER cleanup (never before).
@@ -547,9 +721,13 @@ def main() -> int:
             print(f"M4_E2E_FAIL: {exc}", file=sys.stderr)
 
     # Final determination AFTER cleanup:
-    # - residuals exist -> exit 3 (takes priority over E2E error code)
+    # - receipt failure -> exit 4 (takes priority; formal evidence is missing)
+    # - residuals exist -> exit 3 (takes priority over ordinary E2E errors)
     # - E2E failed but cleanup OK -> original error code
     # - all good -> exit 0
+    if receipt.get("status") == "RECEIPT_WRITE_FAILED":
+        print(f"M4_E2E_FAIL: {e2e_error_msg}", file=sys.stderr)
+        return 4
     if receipt["residual_file_ids"]:
         print(f"M4_E2E: CLEANUP INCOMPLETE -- residual files: "
               f"{receipt['residual_file_ids']}", file=sys.stderr)

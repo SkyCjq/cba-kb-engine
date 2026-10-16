@@ -11,7 +11,9 @@
 2. `--test-folder`：隔离测试文件夹 ID；脚本验证其为 folder 类型。
 3. `--test-go`：隔离 TEST 授权引用（**不是** production GO；两者互斥）。
 4. `--expected-account`：获批测试邮箱，运行时与 Google `about.user` 精确匹配。
-5. `--approval-record`：Human 本机批准记录，绑定有效期、Git SHA、账号、folder、隔离模式。
+5. `--approval-record` + `--approval-signature`：Human 本机批准记录及其 OpenSSH
+   签名，绑定最长两小时的有效期、Git SHA、账号、folder、生产边界摘要与隔离模式；
+   Human 私钥不交给 Codex，allowed-signers 信任锚须由 Human 安装为 root-owned。
 6. 隔离模式二选一：`production-boundary` 要求真实 `--production-folders`；
    完全独立账号使用 `dedicated-account`，不得填写虚构生产 ID。
 7. `--receipt`：必填；运行前探测可写，结束时原子写入并回读。
@@ -22,15 +24,16 @@
 - TEST 模式下触碰 `production_folders` 中的任何文件夹 → 拒绝，零写入。
 
 执行流程：
-1. 校验 Human 授权记录与当前时间、HEAD、账号及 folder 完全一致。
+1. 校验 Human 签名授权与当前时间、干净 `main == origin/main`、账号及 folder 完全一致。
 2. 读取认证身份（`about().get(user)`）并与获批账号精确比较；不一致时零写入。
-3. 创建合成测试文件 `M4_E2E_SYNTHETIC_report.txt`（仅测试文件夹内，显式 allowlist）。
-4. 创建目标子文件夹 `M4_E2E_SYNTHETIC_dest`（仅测试文件夹内）。
-5. 捕获移动前元数据；经 `DriveEvidenceAdapter` 读取真实证据。
-6. 构建 exact plan → 人工批准记录 → `apply_plan`（`test_go` + allowlist）→ 独立 readback。
-7. 捕获移动后元数据；比对前后差异。
-8. 清理测试文件；**清理失败时记录残留 ID 并返回 exit 3，不报告完整 PASS**。
-9. 原子写入并回读 JSON 收据（含步骤、证据、残留 ID）；失败返回 exit 4。
+3. 预生成唯一 Drive ID 与 run marker；在每个 mutation 前重新验签并检查有效期。
+4. 创建合成测试文件 `M4_E2E_SYNTHETIC_report.txt`（仅测试文件夹内，显式 allowlist）。
+5. 创建目标子文件夹 `M4_E2E_SYNTHETIC_dest`（仅测试文件夹内）。
+6. 捕获移动前元数据；经 `DriveEvidenceAdapter` 读取真实证据。
+7. 构建 exact plan → 人工批准记录 → `apply_plan`（`test_go` + allowlist）→ 独立 readback。
+8. 捕获移动后元数据；比对前后差异。
+9. 先删除子文件、再删除文件夹，并按 run marker 独立枚举残留；**残留时 exit 3**。
+10. 原子写入并回读 JSON 收据；写入失败优先返回 exit 4，不报告 PASS。
 
 退出码：`0`=全过且清理完成；`1`=环境/授权/隔离失败；`2`=E2E 断言失败；
 `3`=清理未完成（残留文件，需人工恢复）；`4`=正式收据无法持久化。
@@ -58,7 +61,8 @@
   不是主要控制手段。
 - **禁止**：测试文件夹之外的任何 Drive 内容；特别是生产归档文件夹。
 - `production-boundary` 模式要求非空的真实 `--production-folders`；
-  `dedicated-account` 模式改用等效且更强的身份/所有权/My Drive/精确名称/空目录组合证明。
+  `dedicated-account` 模式要求身份/所有权/My Drive 根目录/精确名称/空目录，
+  并枚举确认账号无其他可访问的未删除 Drive 对象。
 - **账号隔离**：优先使用与生产数据隔离的测试 Google 账号或单独限制权限的测试环境。
   脚本启动时把认证用户邮箱与获批值精确比较。Full Drive scope
   不等于允许访问整个账号——所有操作仍受文件夹白名单约束。
