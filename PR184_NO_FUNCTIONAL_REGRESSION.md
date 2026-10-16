@@ -125,10 +125,10 @@ Before-edit targeted baseline: `66 passed in 0.56s`. The final targeted suite, i
 | Post-change M4 targeted tests | `73 passed in 0.48s` |
 | Related Drive evidence/plan/apply/readback/cleanup tests | `363 passed in 176.26s`; the later ACL-format adjustment is covered by the final targeted and full runs |
 | Full pytest on final working tree | `1745 passed, 6 skipped in 202.69s`; no new skip/xfail added |
-| Tracked secret scan | `Secret scan passed` before commit; final commit scan recorded separately below |
+| Tracked secret scan | `Secret scan passed` on committed tree `46861cfbf414590681c316a0178f536eafd9cf0f` |
 | LACD status / strict verify | v1.0.2 `VALIDATED`; local validation pass, drift clean, blocking none; remote enforcement explicitly `unverified (LOCAL_ONLY)` |
 | Git diff / changed-file scope | 5 existing PR files plus these 2 required reports; no `.github/`, production config, M5, release pointer, or core product module change |
-| GitHub CI for new exact HEAD | PENDING |
+| GitHub CI for code-bearing commit `46861cfbf414590681c316a0178f536eafd9cf0f` | 6/6 SUCCESS: `cleanroom-smoke`, `tests`, `evidence`, `policy`, and two `lacd-verify` checks; the tests job completed in 8m51s |
 
 ## Conclusion
 
