@@ -78,6 +78,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+sys.dont_write_bytecode = True
+
 SYSTEM_GIT = Path("/usr/bin/git")
 SYSTEM_APPROVAL_PUBLIC_KEY = Path(
     "/etc/cba-kb/m4_approval_ed25519_public.pem")
@@ -160,24 +162,33 @@ def _trusted_git() -> str:
     return str(_assert_root_owned_file(SYSTEM_GIT, "system Git executable"))
 
 
+def _run_git(args: List[str], engine_root: Path, check: bool = True,
+             timeout: Optional[int] = 120) -> subprocess.CompletedProcess:
+    git_bin = _trusted_git()
+    resolved_engine = engine_root.resolve()
+    git_dir = resolved_engine / ".git"
+    work_tree = resolved_engine
+
+    clean_env = {
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "LC_ALL": "C",
+    }
+    full_cmd = [git_bin, f"--git-dir={git_dir}", f"--work-tree={work_tree}"] + args
+    return subprocess.run(
+        full_cmd, cwd=resolved_engine, env=clean_env,
+        check=check, capture_output=True, text=True,
+        timeout=timeout)
+
+
 def _current_git_sha(engine_root: Path, verify_fetch: bool = True) -> str:
-    git = _trusted_git()
     if verify_fetch:
-        subprocess.run(
-            [git, "fetch", "origin", "--prune", "--tags"], cwd=engine_root,
-            check=True, capture_output=True, text=True, timeout=120)
-    sha = subprocess.run(
-        [git, "rev-parse", "HEAD"], cwd=engine_root, check=True,
-        capture_output=True, text=True).stdout.strip()
-    branch = subprocess.run(
-        [git, "branch", "--show-current"], cwd=engine_root, check=True,
-        capture_output=True, text=True).stdout.strip()
-    upstream = subprocess.run(
-        [git, "rev-parse", "origin/main"], cwd=engine_root, check=True,
-        capture_output=True, text=True).stdout.strip()
-    dirty = subprocess.run(
-        [git, "status", "--porcelain=v1", "--untracked-files=all"],
-        cwd=engine_root, check=True, capture_output=True, text=True).stdout.strip()
+        _run_git(["fetch", "origin", "--prune", "--tags"], engine_root=engine_root)
+    sha = _run_git(["rev-parse", "HEAD"], engine_root=engine_root).stdout.strip()
+    branch = _run_git(["branch", "--show-current"], engine_root=engine_root).stdout.strip()
+    upstream = _run_git(["rev-parse", "origin/main"], engine_root=engine_root).stdout.strip()
+    dirty = _run_git(
+        ["status", "--porcelain=v1", "--untracked-files=all"],
+        engine_root=engine_root).stdout.strip()
     if branch != "main" or sha != upstream or dirty:
         raise ValueError(
             "Engine must be clean main at exact origin/main before real Drive writes")
@@ -218,15 +229,49 @@ def _bind_and_sanitize_python_path(engine_root: Path) -> None:
     sys.path.insert(0, src_str)
 
 
-def _assert_trusted_cba_kb_import(module: Any, engine_root: Path) -> None:
-    trusted_dir = (engine_root / "src").resolve()
-    if not (trusted_dir / "cba_kb").exists():
+def _verify_cba_kb_module_identity(module: Any, engine_root: Path) -> None:
+    trusted_src = (engine_root / "src").resolve()
+    trusted_legacy = (engine_root / "legacy").resolve()
+    if not (trusted_src / "cba_kb").exists():
         return
     mod_file = getattr(module, "__file__", None)
-    if not mod_file or not Path(mod_file).resolve().is_relative_to(trusted_dir):
+    if not mod_file:
         raise ValueError(
-            f"untrusted module {getattr(module, '__name__', 'unknown')} "
-            f"loaded from: {mod_file}")
+            f"module {getattr(module, '__name__', 'unknown')} has no __file__")
+    mod_path = Path(mod_file).resolve()
+    if not (mod_path.is_relative_to(trusted_src) or mod_path.is_relative_to(trusted_legacy)):
+        raise ValueError(
+            f"untrusted module {getattr(module, '__name__', 'unknown')} loaded from: {mod_file}")
+    if not mod_path.name.endswith(".py"):
+        raise ValueError(
+            f"module {getattr(module, '__name__', 'unknown')} file {mod_file} is not a Python source file")
+
+    if (engine_root / ".git").exists():
+        rel_path = mod_path.relative_to(engine_root.resolve()).as_posix()
+        try:
+            proc = _run_git(["rev-parse", f"HEAD:{rel_path}"], engine_root=engine_root)
+            expected_blob = proc.stdout.strip()
+        except Exception as exc:
+            raise ValueError(
+                f"module {rel_path} cannot be resolved in Git HEAD: {exc}") from exc
+        actual_content = mod_path.read_bytes()
+        actual_blob = hashlib.sha1(
+            f"blob {len(actual_content)}\0".encode("ascii") + actual_content).hexdigest()
+        if actual_blob != expected_blob:
+            raise ValueError(
+                f"module {rel_path} content does not match Git HEAD blob: "
+                f"expected {expected_blob}, got {actual_blob}")
+
+
+def _assert_trusted_cba_kb_import(module: Any, engine_root: Path) -> None:
+    _verify_cba_kb_module_identity(module, engine_root)
+
+
+def _verify_all_cba_kb_modules(engine_root: Path) -> None:
+    for name, mod in list(sys.modules.items()):
+        if name == "cba_kb" or name.startswith("cba_kb."):
+            if mod is not None and hasattr(mod, "__file__"):
+                _verify_cba_kb_module_identity(mod, engine_root)
 
 
 def _read_root_trust_anchor(path: Path = SYSTEM_APPROVAL_PUBLIC_KEY) -> bytes:
@@ -316,7 +361,7 @@ def _validate_authorization(path: str, *, test_go: str, engine_sha: str,
 
 
 def _consume_authorization(instance: Any, record: Dict[str, Any],
-                           independent_consumed_root: Optional[Path] = None) -> Path:
+                           trusted_consumed_root: Optional[Path] = None) -> Path:
     authorization_id = record.get("authorization_id")
     if not isinstance(authorization_id, str) or not authorization_id:
         raise ValueError("authorization_id is required")
@@ -324,17 +369,25 @@ def _consume_authorization(instance: Any, record: Dict[str, Any],
             or any(ch not in "0123456789abcdef-" for ch in authorization_id)):
         raise ValueError("authorization_id must be lowercase hex/UUID form")
 
-    # Determine independent persistent root (Cat-2 #2 fix: cannot be rolled back by deleting instance data_root)
-    if independent_consumed_root is None:
-        env_root = os.environ.get("CBA_KB_INDEPENDENT_CONSUMED_ROOT")
-        if env_root:
-            independent_consumed_root = Path(env_root).resolve()
-        else:
-            try:
-                SYSTEM_CONSUMED_DIR.mkdir(parents=True, exist_ok=True)
-                independent_consumed_root = SYSTEM_CONSUMED_DIR
-            except (OSError, PermissionError):
-                independent_consumed_root = Path.home() / ".cba-kb" / "consumed_authorizations"
+    # Production execution path strictly uses SYSTEM_CONSUMED_DIR (/etc/cba-kb/consumed_authorizations).
+    # No environment variable overrides, no weak user-home fallbacks.
+    # trusted_consumed_root is accepted only when explicitly passed (e.g. in unit tests).
+    if trusted_consumed_root is None:
+        try:
+            SYSTEM_CONSUMED_DIR.mkdir(parents=True, exist_ok=True)
+        except (OSError, PermissionError) as exc:
+            raise ValueError(
+                f"system authorization ledger directory {SYSTEM_CONSUMED_DIR} cannot be accessed/created: {exc}"
+            ) from exc
+        stat_info = SYSTEM_CONSUMED_DIR.stat()
+        if hasattr(os, "geteuid") and stat_info.st_uid != 0:
+            raise ValueError(
+                f"system authorization ledger directory {SYSTEM_CONSUMED_DIR} must be owned by root"
+            )
+        independent_consumed_root = SYSTEM_CONSUMED_DIR
+    else:
+        independent_consumed_root = Path(trusted_consumed_root).resolve()
+        independent_consumed_root.mkdir(parents=True, exist_ok=True)
 
     consumed_roots = [
         Path(instance.data_root) / "m4_consumed_authorizations",
@@ -355,20 +408,21 @@ def _consume_authorization(instance: Any, record: Dict[str, Any],
     primary_target: Optional[Path] = None
     for root in consumed_roots:
         root.mkdir(parents=True, exist_ok=True)
-        try:
-            os.chmod(root, 0o700)
-        except OSError:
-            pass
         target = root / f"{authorization_id}.json"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         try:
-            descriptor = os.open(target, flags, 0o600)
+            descriptor = os.open(target, flags, 0o400)
         except FileExistsError as exc:
             raise ValueError("TEST authorization was already consumed") from exc
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+        if hasattr(os, "chflags") and hasattr(stat, "UF_IMMUTABLE"):
+            try:
+                os.chflags(target, stat.UF_IMMUTABLE)
+            except OSError:
+                pass
         if primary_target is None:
             primary_target = target
 
@@ -441,52 +495,74 @@ def _verify_dedicated_account(drive: Any, folder_meta: Dict[str, Any],
 
 def _verify_production_boundary(drive: Any, test_folder: str,
                                 prod_folders: List[str]) -> None:
-    """Verify test folder and its ancestors are separate from production folders,
-    and verify all production folders are valid accessible non-trashed folders."""
+    """Verify test folder is directly under My Drive canonical root,
+    is not in a shared drive, and is completely disjoint from production folders.
+    Also verify all production folders exist, are folders, and are not trashed."""
     if not prod_folders:
         raise ValueError(
             "production-boundary mode requires at least one production folder")
     prod_set = set(prod_folders)
 
-    # Cat-2 #1: Validate production folders exist, are folders, and not trashed
+    # 1. Fetch canonical My Drive root ID
+    try:
+        root_meta = drive.api.files().get(
+            fileId="root", fields="id,mimeType,trashed",
+            supportsAllDrives=True).execute(num_retries=0)
+        canonical_root_id = root_meta.get("id")
+    except Exception as exc:
+        raise ValueError(f"cannot verify canonical My Drive root: {exc}") from exc
+
+    if not canonical_root_id or not isinstance(canonical_root_id, str):
+        raise ValueError("canonical My Drive root ID is missing or invalid")
+    if canonical_root_id in prod_set:
+        raise ValueError(
+            f"canonical root {canonical_root_id} coincides with a production folder ID")
+
+    # 2. Verify test folder metadata
+    try:
+        test_meta = drive.api.files().get(
+            fileId=test_folder,
+            fields="id,name,mimeType,parents,trashed,driveId",
+            supportsAllDrives=True).execute(num_retries=0)
+    except Exception as exc:
+        raise ValueError(f"cannot verify test folder {test_folder}: {exc}") from exc
+
+    if test_meta.get("mimeType") != "application/vnd.google-apps.folder":
+        raise ValueError(f"test folder {test_folder} is not a folder")
+    if test_meta.get("trashed"):
+        raise ValueError(f"test folder {test_folder} is trashed")
+    if test_meta.get("driveId"):
+        raise ValueError(
+            f"test folder {test_folder} must not be in a shared drive")
+    if test_folder in prod_set:
+        raise ValueError(
+            f"test folder {test_folder} coincides with a production folder ID")
+
+    # 3. Exact parent proof: parents must be non-empty and exactly equal to {canonical_root_id}
+    parents = test_meta.get("parents")
+    if not parents or not isinstance(parents, list):
+        raise ValueError(
+            f"test folder {test_folder} has no parents or parents are missing")
+    if set(parents) != {canonical_root_id}:
+        raise ValueError(
+            f"test folder {test_folder} parent set {parents} does not match canonical root {canonical_root_id}")
+
+    # 4. Verify all production folders exist, are folders, and not trashed
     for prod_id in prod_folders:
+        if prod_id == test_folder:
+            raise ValueError(
+                f"test folder {test_folder} coincides with a production folder ID")
         try:
             prod_meta = drive.api.files().get(
                 fileId=prod_id, fields="id,mimeType,trashed",
                 supportsAllDrives=True).execute(num_retries=0)
         except Exception as exc:
-            raise ValueError(f"cannot verify production boundary {prod_id}: {exc}") from exc
+            raise ValueError(
+                f"cannot verify production boundary {prod_id}: {exc}") from exc
         if prod_meta.get("mimeType") != "application/vnd.google-apps.folder":
             raise ValueError(f"production boundary {prod_id} is not a folder")
         if prod_meta.get("trashed"):
             raise ValueError(f"production boundary {prod_id} is trashed")
-
-    # Cat-2 #1: Verify test_folder does not coincide with production folders
-    if test_folder in prod_set:
-        raise ValueError(
-            f"test folder {test_folder} coincides with a production folder ID")
-
-    # Cat-2 #1: Traverse ancestor chain to verify test_folder is not inside any production folder
-    queue = [test_folder]
-    visited = set()
-    while queue:
-        curr = queue.pop(0)
-        if curr in visited or curr == "root":
-            continue
-        visited.add(curr)
-        if curr in prod_set:
-            raise ValueError(
-                f"test folder {test_folder} or its ancestor {curr} is inside "
-                f"production folders {prod_folders}")
-        try:
-            meta = drive.api.files().get(
-                fileId=curr, fields="id,parents",
-                supportsAllDrives=True).execute(num_retries=0)
-        except Exception as exc:
-            raise ValueError(f"cannot trace parent hierarchy of {curr}: {exc}") from exc
-        for p in meta.get("parents", []):
-            if p not in visited:
-                queue.append(p)
 
 
 def _is_not_found(exc: Exception) -> bool:
@@ -765,6 +841,9 @@ def main() -> int:
             raise ValueError(
                 f"Engine Git SHA or worktree status changed during run: "
                 f"{current_sha} != {engine_sha}")
+        # Cat-2 #3: Re-verify all cba_kb loaded modules match Git HEAD
+        _verify_all_cba_kb_modules(engine_root)
+
         current_approval = require_current_authorization()
         if args.isolation_mode == "dedicated-account":
             current_folder = drive.api.files().get(
