@@ -75,6 +75,20 @@ def main() -> int:
     if not args.test_go.strip():
         fail("explicit --test-go required (isolated TEST authorization)")
 
+    # --- Gate 1b: production scope must be explicitly non-empty ---
+    # required=True only ensures the flag is present; an empty string
+    # ("", ",") would parse to an empty list and silently disable the
+    # production isolation guard. Reject before any Drive client init.
+    prod_folders = [f.strip() for f in args.production_folders.split(",")
+                    if f.strip()]
+    if not prod_folders:
+        fail("--production-folders must list at least one production "
+             "folder ID; refusing real Drive writes with unknown "
+             "production scope.")
+    if args.test_folder.strip() in prod_folders:
+        fail("--test-folder must not coincide with a production folder ID; "
+             "refusing to run.")
+
     # --- Gate 2: OAuth must exist (fail-closed, no interactive auth) ---
     try:
         from cba_kb.drive import Drive, SCOPES
@@ -185,9 +199,7 @@ def main() -> int:
             ctx = {"drive_adapter": adapter,
                    "test_go": args.test_go,
                    "allowed_folders": [args.test_folder, dest_id],
-                   "production_folders": [
-                       f.strip() for f in args.production_folders.split(",")
-                       if f.strip()]}
+                   "production_folders": prod_folders}
             out = dp.apply_plan(plan_path, ledger_path, ctx)
             if out["failed"] is not None:
                 fail(f"apply failed: {out['failed']['error']}", code=2)
