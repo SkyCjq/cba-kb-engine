@@ -720,7 +720,8 @@ def test_consume_authorization_enforces_mandatory_uf_immutable(tmp_path, monkeyp
     def failing_chflags(*_args, **_kwargs):
         raise OSError("filesystem does not support flags")
 
-    monkeypatch.setattr(m4.os, "chflags", failing_chflags)
+    monkeypatch.setattr(m4.stat, "UF_IMMUTABLE", getattr(stat, "UF_IMMUTABLE", 0x2), raising=False)
+    monkeypatch.setattr(m4.os, "chflags", failing_chflags, raising=False)
     with pytest.raises(ValueError, match="failed to set mandatory UF_IMMUTABLE flag"):
         m4._consume_authorization(instance, record, trusted_consumed_root=independent)
 
@@ -734,7 +735,8 @@ def test_consume_authorization_verifies_uf_immutable_is_actually_set(tmp_path, m
     }
 
     # Simulate chflags being a no-op (doesn't set flag)
-    monkeypatch.setattr(m4.os, "chflags", lambda *_args, **_kw: None)
+    monkeypatch.setattr(m4.stat, "UF_IMMUTABLE", getattr(stat, "UF_IMMUTABLE", 0x2), raising=False)
+    monkeypatch.setattr(m4.os, "chflags", lambda *_args, **_kw: None, raising=False)
     orig_stat = Path.stat
     def mock_stat(self):
         st = orig_stat(self)
