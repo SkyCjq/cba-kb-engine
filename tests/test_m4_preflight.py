@@ -24,23 +24,26 @@ def _mock_chflags_on_non_bsd(monkeypatch):
         flags_map = {}
 
         def mock_chflags(path, flags):
-            flags_map[str(Path(path).resolve())] = flags
+            flags_map[os.path.abspath(str(path))] = flags
 
         orig_stat = Path.stat
 
         def mock_stat(self, *args, **kwargs):
             st = orig_stat(self, *args, **kwargs)
-            res_flags = flags_map.get(str(self.resolve()), 0)
+            key = os.path.abspath(str(self))
+            if key in flags_map:
+                res_flags = flags_map[key]
 
-            class StatWrapper:
-                def __init__(self, orig, fl):
-                    self._orig = orig
-                    self.st_flags = fl
+                class StatWrapper:
+                    def __init__(self, orig, fl):
+                        self._orig = orig
+                        self.st_flags = fl
 
-                def __getattr__(self, item):
-                    return getattr(self._orig, item)
+                    def __getattr__(self, item):
+                        return getattr(self._orig, item)
 
-            return StatWrapper(st, res_flags)
+                return StatWrapper(st, res_flags)
+            return st
 
         monkeypatch.setattr(m4.os, "chflags", mock_chflags, raising=False)
         monkeypatch.setattr(m4.stat, "UF_IMMUTABLE", 0x2, raising=False)
