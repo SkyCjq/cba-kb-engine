@@ -4,7 +4,7 @@
 
 **A headline is not a verified fact.** CBA-KB is an open-source, evidence-first knowledge engine for research on the Chinese Basketball Association (CBA). It helps researchers and developers organize reports, rosters, official notices, and documents without losing their sources, identities, rights, or verification status. The question behind every result is simple: **“Where did this come from?”**
 
-> **Latest effective release: v2.0.2.** The `main` branch includes the integrated **v2.0.4-2 development code**, but it has not completed real Google Drive end-to-end acceptance or production activation. It is not a released production version.
+> **v2.0.4-2 released on GitHub** (Engine Release, tag `74f8987`). Note the four distinct states: Python package version is still `2.0.2`; Drive data production release is still `v2.0.1-1`; production Drive has read-only run verification only — full write features are not enabled and Human final acceptance has not passed.
 
 ## Why CBA-KB exists
 
@@ -28,7 +28,7 @@ CBA-KB is designed to keep the pieces separate:
 | Examine a report | Separate statements, claims, verified facts, and outstanding checks | AI-generated summaries never become facts automatically |
 | Try a local inbox | Discover `.txt` files, register Source/Document, deduplicate, inspect status, and search | v2.0.4 development capability; requires a rights sidecar |
 | Discover Google Drive material | Read-only discovery, change polling, revision tracking, gated search and index | Development capability, not activated production Drive |
-| Plan archiving | Prepare exact plans, require approval, run guarded operations and verify results | Integrated development code; real Drive E2E and production activation remain unverified |
+| Plan archiving | Prepare exact plans, require approval, run guarded operations and verify results | Released in v2.0.4-2; production write features not yet enabled |
 | Serve people and AI | Produce research data with identities, evidence, and rights context | Users remain responsible for validation and copyright compliance |
 
 **CBA-KB is not a chatbot or a service that automatically crawls the whole web and declares basketball facts.** It is a reusable engine; you choose appropriate data sources, run it in your environment, and define human-review processes.
@@ -40,16 +40,17 @@ CBA-KB is designed to keep the pieces separate:
 | **v1.5.x** | Registration data model, reproducible Excel output and early Drive publication tools | Historical milestone |
 | **v1.8.x** | Document evidence, stable player identities and consumer checks | Historical milestone |
 | **v1.9.0** | Source intake, Statements, Claims, verification queues and research views | Historical milestone |
-| **v2.0.2** | Public open-source Engine, licensing, sanitized repository, synthetic fixtures and reproducible tooling | **Latest effective release** |
+| **v2.0.2** | Public open-source Engine, licensing, sanitized repository, synthetic fixtures and reproducible tooling | Historical milestone |
+| **v2.0.4-2** | Drive discovery/polling, rights-aware indexing, guarded plans, recovery, M4 E2E tooling | **Latest Engine Release** (package `2.0.2`, data `v2.0.1-1`) |
 
-**Next version — v2.0.4-2:** Development code is integrated into `main`, including local Inbox processing, Drive discovery and polling, rights-aware indexing, guarded plans and recovery. **Real isolated Drive E2E, final product acceptance and production activation are still pending.** It is not a new effective release.
+**v2.0.4-2 (released):** Includes local Inbox processing, Drive discovery and polling, rights-aware indexing, guarded plans and recovery. Real isolated Drive E2E (business path) verified; production Drive read-only verification done. Full write features and Human final acceptance are still pending.
 
 ## 5-minute quick start
 
 Requirements: Python **3.11+** and Git. Commands below target Linux/macOS or a compatible terminal. You do not need private CBA data or Google credentials.
 
 ```bash
-# 1. Clone the public repository (main is the development branch)
+# 1. Clone the public repository
 git clone https://github.com/SkyOneBranch/cba-kb-engine.git
 cd cba-kb-engine
 
@@ -67,7 +68,7 @@ make test
 cba-kb --help
 ```
 
-To reproduce the **released v2.0.2 source**, explicitly check out the `v2.0.2` tag before installation. A default clone of `main` includes development code; it is not a v2.0.4-2 release.
+To reproduce the **v2.0.2 source**, explicitly check out the `v2.0.2` tag before installation. A default clone of `main` includes the released v2.0.4-2 code.
 
 ### Try 1: an entirely synthetic research workflow
 
@@ -123,7 +124,7 @@ This demo does not move, delete, or publish originals. Actual results depend on 
 
 CBA-KB can discover and track Drive files, then prepare an explicit plan for archiving or retaining them. **A file move requires authorization and a check of the actual result.** If required file or revision evidence is missing, the operation must stop.
 
-The guarded move implementation is in development code, but **real Drive E2E acceptance and production activation are not complete**. Production writes require separate human authorization. Keep OAuth credentials and private folder information outside this public repository.
+The guarded move implementation is released in v2.0.4-2 (M4 business E2E verified), but **full production activation is not complete**. Production writes require separate human authorization. Keep OAuth credentials and private folder information outside this public repository.
 
 ## Who is it for?
 
