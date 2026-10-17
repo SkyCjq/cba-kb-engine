@@ -564,9 +564,18 @@ def main():
             from .drive_search import load_registry
             from .drive_search_index import build_index, save_index
             texts = None
-            if getattr(a, 'texts', None) and a.texts.is_file():
+            if getattr(a, 'texts', None):
                 import json as _json
-                texts = _json.loads(a.texts.read_text(encoding='utf-8'))
+                texts_path = a.texts
+                if not texts_path.is_file():
+                    raise ValueError(f'TEXTS_FILE_NOT_FOUND: {texts_path}')
+                try:
+                    texts_data = _json.loads(texts_path.read_text(encoding='utf-8'))
+                except (ValueError, UnicodeDecodeError, OSError) as exc:
+                    raise ValueError(f'TEXTS_FILE_INVALID: {texts_path}: {exc}') from exc
+                if not isinstance(texts_data, dict):
+                    raise ValueError(f'TEXTS_FILE_NOT_OBJECT: {texts_path}')
+                texts = texts_data
             index=build_index(load_registry(a.registry), texts=texts)
             save_index(a.index, index)
             result={"indexed_docs": len(index["docs"]),

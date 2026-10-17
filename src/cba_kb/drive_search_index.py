@@ -50,6 +50,38 @@ _ASCII_ALNUM_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]+")
 
 
+def _resolve_body_text(file_id: str, record: Dict[str, Any],
+                       texts: Dict[str, Any]) -> str:
+    """Resolve body text for indexing with explicit precedence and validation.
+
+    Precedence: explicit ``texts`` dict > record ``body_text`` > record
+    ``text`` > record ``ocr_text``. A key present with value None is
+    treated as absent (falls through); a key present with an empty string
+    is treated as an explicit empty (does NOT fall through).
+
+    All values must be strings; non-string values raise ValueError
+    (fail-closed) rather than being silently coerced.
+    """
+    # Explicit texts dict takes precedence (None = absent)
+    if file_id in texts:
+        val = texts[file_id]
+        if val is None:
+            pass  # fall through to record fields
+        elif not isinstance(val, str):
+            raise ValueError(f"SEARCH_BODY_TEXT_NOT_STRING: {file_id}")
+        else:
+            return val
+    # Record fallback chain (None = absent, "" = explicit empty)
+    for key in ("body_text", "text", "ocr_text"):
+        val = record.get(key)
+        if val is None:
+            continue
+        if not isinstance(val, str):
+            raise ValueError(f"SEARCH_BODY_TEXT_NOT_STRING: {file_id}.{key}")
+        return val
+    return ""
+
+
 def tokenize(text: str) -> List[str]:
     """Lowercase word tokens; empty input yields [].
 
@@ -101,7 +133,7 @@ def build_index(
     for file_id in sorted(registry.keys()):
         record = registry[file_id] or {}
         title = str(record.get("name") or record.get("title") or "")
-        body = str(texts.get(file_id) or record.get("body_text") or record.get("text") or record.get("ocr_text") or "")
+        body = _resolve_body_text(file_id, record, texts)
         tokens = set(tokenize(title)) | set(tokenize(body))
         for token in tokens:
             terms.setdefault(token, set()).add(file_id)
@@ -218,6 +250,17 @@ def search_index(
     query_terms = set(tokenize(query))
     if not query_terms:
         return {"results": []}
+
+    # Precision guard for CJK queries: if the query contains a multi-character
+    # CJK run, drop single-character CJK tokens to avoid excessive false
+    # positives from union semantics (e.g. query "青春风暴" should not match
+    # a document containing only "青"). Single-character queries are unaffected.
+    _cjk_query_runs = _CJK_RE.findall(query)
+    if any(len(run) > 1 for run in _cjk_query_runs):
+        query_terms = {t for t in query_terms
+                       if not (_CJK_RE.fullmatch(t) and len(t) == 1)}
+        if not query_terms:
+            return {"results": []}
 
     terms = index.get("terms", {})
     docs = index.get("docs", {})
