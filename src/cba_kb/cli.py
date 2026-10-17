@@ -89,6 +89,7 @@ def main():
     q=sub.add_parser('drive-build-index')
     q.add_argument('--registry',type=Path,required=True)
     q.add_argument('--index',type=Path,required=True)
+    q.add_argument('--texts',type=Path,default=None)
     q=sub.add_parser('drive-search-index')
     q.add_argument('--index',type=Path,required=True)
     q.add_argument('--registry',type=Path,required=True)
@@ -559,10 +560,23 @@ def main():
                 include_review=a.include_review, mime_prefix=a.mime_prefix,
                 limit=a.limit)
         elif a.command=='drive-build-index':
-            # Build the persistent keyword index from the registry (titles).
+            # Build the persistent keyword index from the registry (titles and optional body texts).
             from .drive_search import load_registry
             from .drive_search_index import build_index, save_index
-            index=build_index(load_registry(a.registry))
+            texts = None
+            if getattr(a, 'texts', None):
+                import json as _json
+                texts_path = a.texts
+                if not texts_path.is_file():
+                    raise ValueError(f'TEXTS_FILE_NOT_FOUND: {texts_path}')
+                try:
+                    texts_data = _json.loads(texts_path.read_text(encoding='utf-8'))
+                except (ValueError, UnicodeDecodeError, OSError) as exc:
+                    raise ValueError(f'TEXTS_FILE_INVALID: {texts_path}: {exc}') from exc
+                if not isinstance(texts_data, dict):
+                    raise ValueError(f'TEXTS_FILE_NOT_OBJECT: {texts_path}')
+                texts = texts_data
+            index=build_index(load_registry(a.registry), texts=texts)
             save_index(a.index, index)
             result={"indexed_docs": len(index["docs"]),
                     "terms": len(index["terms"]),
