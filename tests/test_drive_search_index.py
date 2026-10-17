@@ -230,3 +230,65 @@ def test_cli_search_index_end_to_end(tmp_path):
     assert r.returncode == 0, r.stderr
     out = json.loads(r.stdout)
     assert [x["file_id"] for x in out["results"]] == ["f1"]
+
+
+def test_chinese_search_positive_and_negative_evidence():
+    """Verify Chinese keyword search with bidirectional evidence (positive hit + negative isolation)."""
+    reg = {
+        "zh_approved": _rec("深圳男篮活动总结", "approved", "zh_approved", _grant("zh_approved")),
+        "zh_review": _rec("2010年新世纪青春风暴", "review", "zh_review"),
+        "zh_private": _rec("深圳秘密报告", "private", "zh_private"),
+    }
+    texts = {
+        "zh_approved": "多种形式践行篮球公益，推动体育文化发展。",
+        "zh_review": "新世纪青春风暴凸显青涩。",
+        "zh_private": "涉及深圳未公开信息。",
+    }
+    idx = si.build_index(reg, texts)
+
+    # 1. Positive hit: authorized document hits on title Chinese term
+    res_title = _search(idx, reg, "深圳")
+    assert [r["file_id"] for r in res_title["results"]] == ["zh_approved"]
+    assert any("深圳" in term for term in res_title["results"][0]["matched_terms"])
+
+    # 2. Positive hit: authorized document hits on body text Chinese term
+    res_body = _search(idx, reg, "公益")
+    assert [r["file_id"] for r in res_body["results"]] == ["zh_approved"]
+    assert any("公益" in term for term in res_body["results"][0]["matched_terms"])
+
+    # 3. Negative evidence: unapproved review doc matching query is strictly excluded
+    res_review = _search(idx, reg, "青春风暴")
+    assert res_review["results"] == []
+
+    # 4. Negative evidence: private doc matching query term '深圳' is strictly excluded
+    assert "zh_private" not in [r["file_id"] for r in res_title["results"]]
+
+
+def test_cli_search_index_with_texts_and_chinese(tmp_path):
+    """Verify CLI build-index with --texts and Chinese search."""
+    reg = {
+        "doc1": _rec("公益活动简报", "approved", "doc1", _grant("doc1")),
+    }
+    texts = {"doc1": "深圳烈豹与广东东莞女篮开展交流活动"}
+    reg_p = tmp_path / "reg.json"
+    texts_p = tmp_path / "texts.json"
+    idx_p = tmp_path / "idx.json"
+    reg_p.write_text(json.dumps(reg, ensure_ascii=False), encoding="utf-8")
+    texts_p.write_text(json.dumps(texts, ensure_ascii=False), encoding="utf-8")
+
+    r = subprocess.run(
+        [sys.executable, "-m", "cba_kb.cli", "drive-build-index",
+         "--registry", str(reg_p), "--index", str(idx_p),
+         "--texts", str(texts_p)],
+        capture_output=True, text=True, cwd=SRC_DIR)
+    assert r.returncode == 0, r.stderr
+
+    r = subprocess.run(
+        [sys.executable, "-m", "cba_kb.cli", "drive-search-index",
+         "--index", str(idx_p), "--registry", str(reg_p),
+         "--query", "女篮", "--principal", "alice"],
+        capture_output=True, text=True, cwd=SRC_DIR)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert [x["file_id"] for x in out["results"]] == ["doc1"]
+

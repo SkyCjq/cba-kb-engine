@@ -46,14 +46,35 @@ from .drive_search import _rights_approved_for_search
 INDEX_CORRUPT = "SEARCH_INDEX_CORRUPT"
 INDEX_VERSION = 1
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+_ASCII_ALNUM_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]+")
 
 
 def tokenize(text: str) -> List[str]:
-    """Lowercase word tokens; empty input yields []."""
+    """Lowercase word tokens; empty input yields [].
+
+    Extracts ASCII alphanumeric tokens ([a-z0-9]+) and Chinese (CJK) tokens.
+    For CJK contiguous segments:
+    - unigrams (each individual character)
+    - bigrams (each adjacent 2-character window)
+    - trigrams (each adjacent 3-character window)
+    - full segment if 3 < length <= 6 (e.g. '新世纪', '深圳男篮')
+    """
     if not text:
         return []
-    return _TOKEN_RE.findall(text.lower())
+    tokens: List[str] = []
+    tokens.extend(_ASCII_ALNUM_RE.findall(text.lower()))
+    for cjk_run in _CJK_RE.findall(text):
+        cjk_len = len(cjk_run)
+        for ch in cjk_run:
+            tokens.append(ch)
+        for i in range(cjk_len - 1):
+            tokens.append(cjk_run[i:i + 2])
+        for i in range(cjk_len - 2):
+            tokens.append(cjk_run[i:i + 3])
+        if 3 < cjk_len <= 6:
+            tokens.append(cjk_run)
+    return tokens
 
 
 def build_index(
@@ -80,7 +101,7 @@ def build_index(
     for file_id in sorted(registry.keys()):
         record = registry[file_id] or {}
         title = str(record.get("name") or record.get("title") or "")
-        body = str(texts.get(file_id) or "")
+        body = str(texts.get(file_id) or record.get("body_text") or record.get("text") or record.get("ocr_text") or "")
         tokens = set(tokenize(title)) | set(tokenize(body))
         for token in tokens:
             terms.setdefault(token, set()).add(file_id)
