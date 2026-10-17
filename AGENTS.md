@@ -44,7 +44,7 @@ Engine 仓库公开；Private Instance（私有数据/凭证/生产）严格分�
 
 ## 风险速查
 
-T2（走 13 阶段，不进轻量流）：`.github/**`、`**/release/**`、`**/drive*.py`、`**/schema/**`、`**/evidence/**`、依赖/工作流/AI 指令文件、`automation/drive_io.py`、`scripts/prepare_production.py`
+T2（走 LACD v1.0.2 完整流程：Bot Broker + Human 审批，不进轻量流）：`.github/**`、`**/release/**`、`**/drive*.py`、`**/schema/**`、`**/evidence/**`、依赖/工作流/AI 指令文件、`automation/drive_io.py`、`scripts/prepare_production.py`
 
 <!-- LACD:MANAGED:BEGIN section="lacd-agent-protocol" version="1.0.2" -->
 ## LACD Agent Protocol (managed section — do not edit manually)
