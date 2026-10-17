@@ -90,7 +90,7 @@ def tokenize(text: str) -> List[str]:
     - unigrams (each individual character)
     - bigrams (each adjacent 2-character window)
     - trigrams (each adjacent 3-character window)
-    - full segment if 3 < length <= 6 (e.g. '新世纪', '深圳男篮')
+    - full segment if 3 < length <= 6 (e.g. '深圳男篮')
     """
     if not text:
         return []
